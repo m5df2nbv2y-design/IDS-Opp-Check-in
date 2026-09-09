@@ -1,0 +1,319 @@
+// IDS Opportunity Check-In — workflow + audit datastore.
+//
+// Salesforce/SFX is the system of record. This database stores only what is
+// needed to run a check-in campaign and keep an audit trail.
+//
+// The central modelling decision: the person who receives a check-in is an
+// EXTERNAL CONTACT at a partner organization — not an internal IDS sales rep.
+// One contact receives one email covering every opportunity they are
+// responsible for, even when those opportunities belong to several different
+// IDS reps. The internal rep is retained on each opportunity as internal
+// context and is never shown to the external recipient.
+//
+// Local dev uses SQLite. For production, change the provider to "postgresql"
+// and point DATABASE_URL at Postgres — no model changes needed.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// An external organization: agency, distributor, direct client.
+/// Maps to a Salesforce Account.
+model Account {
+  id         String   @id @default(cuid())
+  externalId String   @unique
+  name       String
+  /// AGENCY | DISTRIBUTOR | DIRECT_CLIENT | OTHER — see lib/account-types.ts
+  type       String   @default("OTHER")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  contacts      ExternalContact[]
+  opportunities Opportunity[]
+  auditEvents   AuditEvent[]
+}
+
+/// A person at an external organization. This is the check-in RECIPIENT.
+/// Maps to a Salesforce Contact.
+model ExternalContact {
+  id         String   @id @default(cuid())
+  externalId String   @unique
+  accountId  String
+  name       String
+  email      String
+  /// The account's designated recipient when several contacts exist.
+  isPrimary  Boolean  @default(false)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  account       Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  opportunities Opportunity[]
+  recipients    CheckInRecipient[]
+  auditEvents   AuditEvent[]
+
+  @@index([accountId])
+}
+
+/// An internal IDS employee who owns opportunities. Maps to a Salesforce User.
+/// Kept for internal reporting and the audit trail — never a recipient.
+model SalesRep {
+  id         String   @id @default(cuid())
+  externalId String   @unique
+  name       String
+  email      String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  opportunities Opportunity[]
+  auditEvents   AuditEvent[]
+}
+
+/// Local cache of an open Salesforce/SFX opportunity.
+model Opportunity {
+  id              String  @id @default(cuid())
+  externalId      String  @unique
+  /// The partner organization whose contact reviews this opportunity.
+  accountId       String
+  /// The end customer / project site shown to the recipient, e.g. "Memorial
+  /// Hospital". For a direct client this equals the account name.
+  customerName    String
+  /// Salesforce Opportunity.Name.
+  opportunityName String
+  /// The project, when captured separately from the opportunity name.
+  projectName     String?
+  amount          Float
+  currentStage    String
+  /// The IDS employee who owns this opportunity. Internal only.
+  internalRepId   String
+  /// The resolved recipient. Null when resolution failed — see resolutionStatus.
+  contactId       String?
+  /// RESOLVED | UNRESOLVED — set by the recipient resolution service.
+  resolutionStatus String @default("UNRESOLVED")
+  /// Why the recipient was (or was not) chosen. See recipient-resolution-service.ts
+  resolutionReason String?
+  salesforceUrl   String
+  closeDate       DateTime?
+  /// False once the opportunity leaves the open set in Salesforce. Closed
+  /// opportunities are kept, never deleted, so past campaigns survive.
+  isOpen          Boolean @default(true)
+  lastSyncedAt    DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  account      Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  internalRep  SalesRep             @relation(fields: [internalRepId], references: [id], onDelete: Cascade)
+  contact      ExternalContact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  checkInItems CheckInOpportunity[]
+  auditEvents  AuditEvent[]
+
+  @@index([accountId])
+  @@index([contactId])
+  @@index([internalRepId])
+}
+
+/// One bi-annual campaign, e.g. "Fall 2026".
+model Campaign {
+  id          String    @id @default(cuid())
+  name        String
+  period      String
+  status      String    @default("DRAFT") // DRAFT | IN_PROGRESS | COMPLETE
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  recipients  CheckInRecipient[]
+  auditEvents AuditEvent[]
+}
+
+/// One external contact's personalized check-in within a campaign.
+/// This is the unit that receives an email and holds the secure token.
+model CheckInRecipient {
+  id          String    @id @default(cuid())
+  campaignId  String
+  contactId   String
+  /// SHA-256 of the token. The raw token exists only in the emailed URL.
+  tokenHash   String    @unique
+  /// Short non-secret suffix for admin display and support lookups.
+  tokenHint   String
+  expiresAt   DateTime
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  openedAt    DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  revokedAt   DateTime?
+  /// PENDING | SENT | FAILED — delivery state of the invitation itself.
+  sendStatus  String    @default("PENDING")
+  sendError   String?
+  remindedAt  DateTime?
+  reminderCount Int     @default(0)
+  createdAt   DateTime  @default(now())
+
+  campaign Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  ExternalContact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  items    CheckInOpportunity[]
+
+  @@unique([campaignId, contactId])
+  @@index([contactId])
+}
+
+/// One opportunity placed in front of one recipient. The unit of work the
+/// recipient answers and the unit synced back to Salesforce.
+model CheckInOpportunity {
+  id            String @id @default(cuid())
+  recipientId   String
+  opportunityId String
+
+  /// Snapshot taken when the campaign was created, so the audit trail stays
+  /// truthful even if Salesforce changes underneath it.
+  customerName     String
+  opportunityName  String
+  projectName      String?
+  amount           Float
+  salesforceUrl    String
+  accountName      String
+  /// Internal rep at the time of asking — audit context, never shown externally.
+  internalRepName  String
+
+  previousStatus String
+  updatedStatus  String?
+  repComment     String?
+  submittedAt    DateTime?
+
+  /// PENDING | SYNCED | FAILED | SKIPPED
+  syncStatus   String    @default("PENDING")
+  syncedAt     DateTime?
+  syncError    String?
+  syncAttempts Int       @default(0)
+
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recipient   CheckInRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  opportunity Opportunity      @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([recipientId, opportunityId])
+  @@index([syncStatus])
+}
+
+/// Append-only audit trail. Carries the full picture of a change: which
+/// opportunity, at which organization, updated by which external contact, for
+/// which internal IDS rep, and what Salesforce did with it.
+model AuditEvent {
+  id            String   @id @default(cuid())
+  type          String
+  summary       String
+  /// Who caused it — an external contact's name, an admin, or "system".
+  actor         String
+  /// EXTERNAL_CONTACT | ADMIN | SYSTEM
+  actorKind     String   @default("SYSTEM")
+  fromStatus    String?
+  toStatus      String?
+  detail        String?
+  campaignId    String?
+  accountId     String?
+  contactId     String?
+  repId         String?
+  opportunityId String?
+  createdAt     DateTime @default(now())
+
+  campaign    Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  account     Account?         @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  contact     ExternalContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  rep         SalesRep?        @relation(fields: [repId], references: [id], onDelete: SetNull)
+  opportunity Opportunity?     @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId])
+  @@index([createdAt])
+}
+
+/// Outbox. Every message the app sends, real or simulated.
+model EmailMessage {
+  id          String    @id @default(cuid())
+  provider    String
+  kind        String // INVITE | REMINDER
+  toEmail     String
+  toName      String
+  subject     String
+  html        String
+  text        String
+  linkUrl     String?
+  campaignId  String?
+  contactId   String?
+  /// SENT | FAILED. deliveredAt/openedAt are filled in by providers that
+  /// report them; the mock provider leaves them null.
+  status      String    @default("SENT")
+  error       String?
+  deliveredAt DateTime?
+  openedAt    DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Mock Salesforce org.
+//
+// These tables belong to the MOCK provider only — they stand in for the real
+// org so the demo has a system of record that actually changes. Nothing outside
+// src/server/integrations/salesforce/mock may read or write them.
+// ---------------------------------------------------------------------------
+
+model MockSalesforceUser {
+  externalId String  @id
+  name       String
+  email      String
+  isActive   Boolean @default(true)
+}
+
+model MockSalesforceAccount {
+  externalId String  @id
+  name       String
+  /// Salesforce Account.Type picklist value, e.g. "Agency", "Distributor".
+  type       String
+  isActive   Boolean @default(true)
+}
+
+model MockSalesforceContact {
+  externalId       String  @id
+  accountExternalId String
+  name             String
+  email            String
+  isActive         Boolean @default(true)
+  /// Stands in for a "primary check-in contact" flag on the Contact record.
+  isPrimary        Boolean @default(false)
+
+  @@index([accountExternalId])
+}
+
+model MockSalesforceOpportunity {
+  externalId        String    @id
+  ownerExternalId   String
+  /// The partner Account (agency/distributor/direct client).
+  accountExternalId String
+  name              String
+  /// End customer / project site.
+  siteName          String
+  amount            Float
+  stageName         String
+  closeDate         DateTime?
+  isClosed          Boolean   @default(false)
+  /// Stands in for an Opportunity Contact Role naming a specific contact.
+  contactExternalId String?
+  description       String?
+  lastModifiedAt    DateTime  @default(now())
+  /// Simulates an org validation rule that rejects stage changes.
+  syncBlocked       Boolean   @default(false)
+
+  @@index([ownerExternalId])
+  @@index([accountExternalId])
+}

@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/*
+ * IDS Opportunity Check-In design tokens.
+ *
+ * Neutral, professional, easy to rebrand: change the values here and the
+ * matching hex values in src/lib/brand.ts (which the email templates use) and
+ * the whole product follows. Light-only by design — this is a work tool people
+ * open from an email once every six months, and a single predictable surface
+ * beats a theme toggle.
+ */
+@theme {
+  --color-ink: #0b1524;
+  --color-body: #4a5768;
+  --color-muted: #6b7a8d;
+  --color-line: #e3e8ef;
+  --color-line-strong: #cfd7e3;
+  --color-surface: #ffffff;
+  --color-canvas: #f6f8fb;
+
+  --color-brand: #0f4c81;
+  --color-brand-dark: #0b3a63;
+  --color-brand-soft: #eef4fa;
+
+  --color-accent: #0ea5a4;
+  --color-success: #127a45;
+  --color-success-soft: #e8f5ee;
+  --color-warning: #b45309;
+  --color-warning-soft: #fdf3e7;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdeeec;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-card: 16px;
+}
+
+html {
+  color-scheme: light;
+  background: var(--color-canvas);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* Keeps iOS from zooming when a rep taps the note field. */
+  font-size: 16px;
+}
+
+/* Consistent, visible focus for keyboard and switch users. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
