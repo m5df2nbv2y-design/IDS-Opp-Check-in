@@ -47,7 +47,6 @@ export async function syncCampaignResponses(
     }
 
     const stageChanged = nextStage !== item.previousStatus;
-    const hasComment = Boolean(item.repComment?.trim());
     const label = `${item.customerName} — ${item.projectName ?? item.opportunityName}`;
 
     const auditContext = {
@@ -58,7 +57,8 @@ export async function syncCampaignResponses(
       opportunityId: item.opportunityId,
     };
 
-    if (!stageChanged && !hasComment) {
+    // Nothing to push when the stage is unchanged — notes are not written.
+    if (!stageChanged) {
       await prisma.checkInOpportunity.update({
         where: { id: item.id },
         data: { syncStatus: "SKIPPED", syncedAt: new Date(), syncError: null },
@@ -75,11 +75,11 @@ export async function syncCampaignResponses(
     }
 
     try {
+      // Stage only. The recipient's comment is stored locally and shown in the
+      // admin UI and audit trail, but is never written to Salesforce.
       await salesforce.applyUpdate({
         externalId: item.opportunity.externalId,
         stage: nextStage,
-        comment: item.repComment,
-        source: item.recipient.campaign.name,
       });
 
       await prisma.$transaction([
@@ -100,9 +100,7 @@ export async function syncCampaignResponses(
 
       await recordAudit({
         type: AUDIT_EVENTS.SYNC_SUCCEEDED,
-        summary: stageChanged
-          ? `${label} synced to Salesforce: ${stageLabel(item.previousStatus)} → ${stageLabel(nextStage)}`
-          : `${label} note synced to Salesforce`,
+        summary: `${label} synced to Salesforce: ${stageLabel(item.previousStatus)} → ${stageLabel(nextStage)}`,
         actor,
         actorKind: "SYSTEM",
         fromStatus: item.previousStatus,

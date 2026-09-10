@@ -1,11 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { sendReminders } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
+  sendDraft,
   setSelection,
 } from "@/server/services/campaign-draft-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
@@ -40,6 +42,20 @@ export async function setSelectionAction(opportunityIds: string[], selected: boo
   await setSelection({ campaignId: draft.id, opportunityIds, selected, actor: "admin" });
   revalidatePath("/admin");
   revalidatePath("/admin/campaigns/review");
+}
+
+/**
+ * Send to the selected recipients. Re-resolves every selection server-side
+ * first — the client's selection is never trusted on its own — and excludes
+ * anything that drifted. With EMAIL_PROVIDER=mock nothing leaves the building.
+ * No Salesforce record is written here.
+ */
+export async function sendDraftAction() {
+  const draft = await getOrCreateDraft("admin");
+  const result = await sendDraft(draft.id, "admin");
+  revalidatePath("/admin");
+  revalidatePath("/admin/outbox");
+  if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}`);
 }
 
 export async function clearSelectionsAction() {

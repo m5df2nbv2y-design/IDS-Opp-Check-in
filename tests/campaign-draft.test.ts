@@ -7,7 +7,9 @@ import {
   getOrCreateDraft,
   getReviewRecipients,
   listDraftAccounts,
+  sendDraft,
   setSelection,
+  validateSelection,
 } from "@/server/services/campaign-draft-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { resetDatabase } from "./fixtures";
@@ -225,5 +227,186 @@ describe("campaign draft selection", () => {
       orderBy: { externalId: "asc" },
     });
     expect(after).toEqual(before);
+  });
+});
+
+describe("selection drift and selected-only sending", () => {
+  let campaignId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+    const draft = await getOrCreateDraft("test");
+    campaignId = draft.id;
+  });
+
+  async function selectResolved(take: number) {
+    const opportunities = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      include: { contact: true },
+      take,
+    });
+    await setSelection({ campaignId, opportunityIds: opportunities.map((o) => o.id), selected: true });
+    return opportunities;
+  }
+
+  it("sends ONLY the selected opportunities, never the whole catalog", async () => {
+    const totalResolved = await prisma.opportunity.count({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+    });
+    const selected = await selectResolved(3);
+    expect(totalResolved).toBeGreaterThan(selected.length);
+
+    const result = await sendDraft(campaignId, "test");
+
+    expect(result.sent).toBe(3);
+    expect(result.drifted).toEqual([]);
+
+    const items = await prisma.checkInOpportunity.findMany({
+      where: { recipient: { campaignId } },
+    });
+    expect(items).toHaveLength(3);
+    expect(new Set(items.map((i) => i.opportunityId))).toEqual(new Set(selected.map((o) => o.id)));
+  });
+
+  it("excludes an opportunity CLOSED after selection", async () => {
+    const [first, ...rest] = await selectResolved(3);
+    await prisma.opportunity.update({ where: { id: first.id }, data: { isOpen: false } });
+
+    const validation = await validateSelection(campaignId);
+    expect(validation.sendableOpportunityIds).not.toContain(first.id);
+    expect(validation.drifted.map((d) => d.reason)).toContain("OPPORTUNITY_CLOSED");
+
+    const result = await sendDraft(campaignId, "test");
+    expect(result.sent).toBe(rest.length);
+    const items = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } } });
+    expect(items.map((i) => i.opportunityId)).not.toContain(first.id);
+  });
+
+  it("excludes an opportunity whose PRIMARY CONTACT ROLE was removed", async () => {
+    const [first] = await selectResolved(2);
+    await prisma.opportunity.update({
+      where: { id: first.id },
+      data: { contactId: null, resolutionStatus: "UNRESOLVED", resolutionReason: "NO_PRIMARY_CONTACT_ROLE" },
+    });
+
+    const validation = await validateSelection(campaignId);
+    expect(validation.drifted).toContainEqual(
+      expect.objectContaining({ opportunityId: first.id, reason: "NO_PRIMARY_CONTACT_ROLE" }),
+    );
+
+    const result = await sendDraft(campaignId, "test");
+    expect(result.drifted).toHaveLength(1);
+    const items = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } } });
+    expect(items.map((i) => i.opportunityId)).not.toContain(first.id);
+  });
+
+  it("excludes an opportunity whose primary contact LOST THEIR EMAIL", async () => {
+    const [first] = await selectResolved(2);
+    await prisma.externalContact.update({
+      where: { id: first.contactId! },
+      data: { email: "" },
+    });
+
+    const validation = await validateSelection(campaignId);
+    expect(validation.drifted).toContainEqual(
+      expect.objectContaining({ opportunityId: first.id, reason: "PRIMARY_CONTACT_NO_EMAIL" }),
+    );
+
+    const result = await sendDraft(campaignId, "test");
+    const items = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } } });
+    expect(items.map((i) => i.opportunityId)).not.toContain(first.id);
+    // Every opportunity routed to that contact drifts, not just the first —
+    // the contact is the unit of delivery.
+    expect(result.drifted.length).toBeGreaterThanOrEqual(1);
+    for (const entry of result.drifted) {
+      expect(entry.reason).toBe("PRIMARY_CONTACT_NO_EMAIL");
+    }
+  });
+
+  it("NEVER substitutes another contact when a selection drifts", async () => {
+    const [first] = await selectResolved(1);
+    const accountId = (await prisma.opportunity.findUniqueOrThrow({ where: { id: first.id } })).accountId;
+    // Leave a perfectly good alternative contact at the same account.
+    const alternatives = await prisma.externalContact.count({
+      where: { accountId, email: { not: "" } },
+    });
+    expect(alternatives).toBeGreaterThan(0);
+
+    await prisma.opportunity.update({
+      where: { id: first.id },
+      data: { contactId: null, resolutionStatus: "UNRESOLVED", resolutionReason: "NO_PRIMARY_CONTACT_ROLE" },
+    });
+
+    const result = await sendDraft(campaignId, "test");
+    expect(result.sent).toBe(0);
+    expect(result.recipients).toBe(0);
+    expect(await prisma.checkInRecipient.count({ where: { campaignId } })).toBe(0);
+  });
+
+  it("records drifted exclusions in the audit trail", async () => {
+    const [first] = await selectResolved(2);
+    await prisma.opportunity.update({ where: { id: first.id }, data: { isOpen: false } });
+    await sendDraft(campaignId, "test");
+
+    const events = await prisma.auditEvent.findMany({
+      where: { campaignId, summary: { contains: "excluded at send" } },
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it("sends nothing at all when every selection has drifted", async () => {
+    const selected = await selectResolved(2);
+    await prisma.opportunity.updateMany({
+      where: { id: { in: selected.map((o) => o.id) } },
+      data: { isOpen: false },
+    });
+
+    const result = await sendDraft(campaignId, "test");
+    expect(result.sent).toBe(0);
+    expect(result.drifted).toHaveLength(2);
+    expect(await prisma.checkInRecipient.count({ where: { campaignId } })).toBe(0);
+    // The campaign must not be marked launched when nothing was sent.
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campaign.status).toBe("DRAFT");
+  });
+
+  it("captures the close date for the future write-back without writing it", async () => {
+    await selectResolved(2);
+    await sendDraft(campaignId, "test");
+
+    const items = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } } });
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      // Snapshotted from Salesforce…
+      expect(item.previousCloseDate).not.toBeNull();
+      // …but nothing has been captured or written for the new value yet.
+      expect(item.updatedCloseDate).toBeNull();
+    }
+  });
+
+  it("writes nothing to Salesforce when sending", async () => {
+    const before = await prisma.mockSalesforceOpportunity.findMany({
+      select: { externalId: true, stageName: true, description: true, lastModifiedAt: true },
+      orderBy: { externalId: "asc" },
+    });
+
+    await selectResolved(3);
+    await sendDraft(campaignId, "test");
+
+    const after = await prisma.mockSalesforceOpportunity.findMany({
+      select: { externalId: true, stageName: true, description: true, lastModifiedAt: true },
+      orderBy: { externalId: "asc" },
+    });
+    expect(after).toEqual(before);
+  });
+
+  it("routes messages to the mock outbox rather than a real provider", async () => {
+    await selectResolved(2);
+    await sendDraft(campaignId, "test");
+
+    const emails = await prisma.emailMessage.findMany({ where: { campaignId } });
+    expect(emails.length).toBeGreaterThan(0);
+    for (const message of emails) expect(message.provider).toBe("mock");
   });
 });

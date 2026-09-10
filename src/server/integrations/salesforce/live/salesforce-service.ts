@@ -31,12 +31,10 @@ import { requestAccessToken } from "./auth";
  * The field questions are now settled against the real org (see
  * ../FIELD-MAPPING.md): "open" is IsClosed = false, the account is standard
  * AccountId, and the recipient is the primary OpportunityContactRole. Write-back
- * scope is StageName and CloseDate only — NOTE_FIELD is retained for the mock
- * provider's benefit but is not part of the confirmed write scope.
+ * scope is StageName and CloseDate only; notes are never written.
  */
 
 const API_VERSION = "v61.0";
-const NOTE_FIELD = "Description";
 
 /**
  * The primary contact role subquery is the recipient. Confirmed against the
@@ -167,22 +165,11 @@ export class LiveSalesforceService implements SalesforceService {
     await this.patchOpportunity(externalId, { StageName: stageToSalesforce(stage) });
   }
 
-  async updateOpportunityComment(
-    externalId: string,
-    comment: string,
-    source?: string,
-  ): Promise<void> {
-    const stamp = source ? `[${source}] ` : "";
-    await this.patchOpportunity(externalId, { [NOTE_FIELD]: `${stamp}${comment}` });
-  }
-
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    const payload: Record<string, unknown> = { StageName: stageToSalesforce(update.stage) };
-    if (update.comment?.trim()) {
-      const stamp = update.source ? `[${update.source}] ` : "";
-      payload[NOTE_FIELD] = `${stamp}${update.comment.trim()}`;
-    }
-    await this.patchOpportunity(update.externalId, payload);
+    // Stage only. Notes are never written to Salesforce — see ../FIELD-MAPPING.md.
+    await this.patchOpportunity(update.externalId, {
+      StageName: stageToSalesforce(update.stage),
+    });
   }
 
   // -- transport ------------------------------------------------------------

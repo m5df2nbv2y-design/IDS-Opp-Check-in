@@ -192,6 +192,14 @@ model CheckInOpportunity {
   repComment     String?
   submittedAt    DateTime?
 
+  /// Close date modelling for the confirmed future write scope
+  /// (StageName + CloseDate). `previousCloseDate` is the value snapshotted from
+  /// Salesforce when the campaign launched. `updatedCloseDate` is where a
+  /// recipient's revised date will land once that step exists — it is NOT
+  /// captured from anyone yet and is NEVER written to Salesforce today.
+  previousCloseDate DateTime?
+  updatedCloseDate  DateTime?
+
   /// PENDING | SYNCED | FAILED | SKIPPED
   syncStatus   String    @default("PENDING")
   syncedAt     DateTime?

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { deriveSendState, type SendState } from "@/lib/send-states";
+import { launchCampaign } from "./campaign-service";
 import { currentPeriod } from "./campaign-service";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
 
@@ -308,6 +309,153 @@ export async function getReviewRecipients(campaignId: string): Promise<ReviewRec
   }
 
   return [...byContact.values()].sort((a, b) => a.contactName.localeCompare(b.contactName));
+}
+
+// ---------------------------------------------------------------------------
+// Selection drift
+// ---------------------------------------------------------------------------
+
+/**
+ * Salesforce changes between the moment an admin selects an opportunity and the
+ * moment they confirm the send. Every selection is therefore re-validated from
+ * server state before anything is created — the client's selection is never
+ * trusted on its own.
+ */
+export const DRIFT_REASONS = {
+  OPPORTUNITY_CLOSED: "OPPORTUNITY_CLOSED",
+  NO_PRIMARY_CONTACT_ROLE: "NO_PRIMARY_CONTACT_ROLE",
+  PRIMARY_CONTACT_NO_EMAIL: "PRIMARY_CONTACT_NO_EMAIL",
+  PRIMARY_CONTACT_NOT_FOUND: "PRIMARY_CONTACT_NOT_FOUND",
+} as const;
+
+export type DriftReason = (typeof DRIFT_REASONS)[keyof typeof DRIFT_REASONS];
+
+export const DRIFT_REASON_LABELS: Record<DriftReason, string> = {
+  OPPORTUNITY_CLOSED: "Closed in Salesforce since it was selected",
+  NO_PRIMARY_CONTACT_ROLE: "Primary contact role removed since it was selected",
+  PRIMARY_CONTACT_NO_EMAIL: "Primary contact no longer has an email address",
+  PRIMARY_CONTACT_NOT_FOUND: "Primary contact record can no longer be read",
+};
+
+export type DriftedSelection = {
+  opportunityId: string;
+  opportunityName: string;
+  accountName: string;
+  reason: DriftReason;
+};
+
+export type ValidatedSelection = {
+  /** Opportunity ids that still resolve and may be sent. */
+  sendableOpportunityIds: string[];
+  /** Selections that no longer qualify. Excluded from the send, never sent. */
+  drifted: DriftedSelection[];
+};
+
+/**
+ * Re-resolve every selected opportunity from current server state.
+ *
+ * The Primary Opportunity Contact Role remains authoritative and there is no
+ * fallback: anything that has become unresolved since selection is excluded and
+ * reported, never quietly substituted with another contact.
+ */
+export async function validateSelection(campaignId: string): Promise<ValidatedSelection> {
+  const selections = await prisma.campaignSelection.findMany({
+    where: { campaignId },
+    include: { opportunity: { include: { contact: true, account: true } } },
+  });
+
+  const sendableOpportunityIds: string[] = [];
+  const drifted: DriftedSelection[] = [];
+
+  for (const selection of selections) {
+    const opportunity = selection.opportunity;
+    const base = {
+      opportunityId: opportunity.id,
+      opportunityName: opportunity.opportunityName,
+      accountName: opportunity.account.name,
+    };
+
+    if (!opportunity.isOpen) {
+      drifted.push({ ...base, reason: DRIFT_REASONS.OPPORTUNITY_CLOSED });
+      continue;
+    }
+    if (opportunity.resolutionStatus !== "RESOLVED" || !opportunity.contactId) {
+      const reason =
+        opportunity.resolutionReason === DRIFT_REASONS.PRIMARY_CONTACT_NO_EMAIL
+          ? DRIFT_REASONS.PRIMARY_CONTACT_NO_EMAIL
+          : opportunity.resolutionReason === DRIFT_REASONS.PRIMARY_CONTACT_NOT_FOUND
+            ? DRIFT_REASONS.PRIMARY_CONTACT_NOT_FOUND
+            : DRIFT_REASONS.NO_PRIMARY_CONTACT_ROLE;
+      drifted.push({ ...base, reason });
+      continue;
+    }
+    if (!opportunity.contact) {
+      drifted.push({ ...base, reason: DRIFT_REASONS.PRIMARY_CONTACT_NOT_FOUND });
+      continue;
+    }
+    if (!opportunity.contact.email?.trim()) {
+      drifted.push({ ...base, reason: DRIFT_REASONS.PRIMARY_CONTACT_NO_EMAIL });
+      continue;
+    }
+
+    sendableOpportunityIds.push(opportunity.id);
+  }
+
+  return { sendableOpportunityIds, drifted };
+}
+
+export type SendDraftResult = {
+  campaignId: string;
+  sent: number;
+  recipients: number;
+  emailsFailed: number;
+  drifted: DriftedSelection[];
+};
+
+/**
+ * Convert the draft into a real campaign and send to the selected recipients.
+ *
+ * The client's selection is never trusted: every selection is re-resolved from
+ * server state first, and anything that drifted is excluded and reported rather
+ * than sent. With EMAIL_PROVIDER=mock the messages land in the in-app outbox.
+ * Salesforce is not touched — no stage or close date is written here.
+ */
+export async function sendDraft(campaignId: string, actor = "admin"): Promise<SendDraftResult> {
+  const { sendableOpportunityIds, drifted } = await validateSelection(campaignId);
+
+  if (sendableOpportunityIds.length === 0) {
+    return { campaignId, sent: 0, recipients: 0, emailsFailed: 0, drifted };
+  }
+
+  const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+  const result = await launchCampaign({
+    campaignId,
+    name: campaign.name,
+    period: campaign.period,
+    actor,
+    opportunityIds: sendableOpportunityIds,
+  });
+
+  if (drifted.length > 0) {
+    await recordAudit({
+      type: AUDIT_EVENTS.CAMPAIGN_CREATED,
+      summary: `${drifted.length} selected ${drifted.length === 1 ? "opportunity was" : "opportunities were"} excluded at send — no longer resolvable`,
+      actor,
+      actorKind: "ADMIN",
+      campaignId,
+      detail: drifted
+        .map((entry) => `${entry.accountName} — ${entry.opportunityName}: ${DRIFT_REASON_LABELS[entry.reason]}`)
+        .join("; "),
+    });
+  }
+
+  return {
+    campaignId,
+    sent: result.opportunities,
+    recipients: result.recipients,
+    emailsFailed: result.emailsFailed,
+    drifted,
+  };
 }
 
 /** Owners with open opportunities — populates the owner filter. */

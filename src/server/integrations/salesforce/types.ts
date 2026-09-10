@@ -67,12 +67,14 @@ export type SalesforceOpportunity = {
   primaryContactExternalId: string | null;
 };
 
+/**
+ * Confirmed write scope: stage only (CloseDate is modelled but not yet written).
+ * Notes/comments are deliberately NOT written to Salesforce — the recipient's
+ * comment is captured and shown in the admin UI and audit trail instead.
+ */
 export type OpportunityStatusUpdate = {
   externalId: string;
   stage: OpportunityStage;
-  comment?: string | null;
-  /** Context written alongside the note, e.g. "Fall 2026 Check-In". */
-  source?: string;
 };
 
 export type SalesforceProviderInfo = {
@@ -102,10 +104,7 @@ export interface SalesforceService {
   /** Push a stage change. Throws SalesforceSyncError when the org rejects it. */
   updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void>;
 
-  /** Push a recipient note. Throws SalesforceSyncError when the org rejects it. */
-  updateOpportunityComment(externalId: string, comment: string, source?: string): Promise<void>;
-
-  /** Convenience: stage + comment as a single logical write. */
+  /** The single write the application performs. */
   applyUpdate(update: OpportunityStatusUpdate): Promise<void>;
 }
 

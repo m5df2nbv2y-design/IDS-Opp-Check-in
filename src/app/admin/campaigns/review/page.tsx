@@ -3,11 +3,14 @@ import { Card, EmptyState } from "@/components/ui/primitives";
 import { formatAmount, pluralize } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import {
+  DRIFT_REASON_LABELS,
   getDraftSummary,
   getOrCreateDraft,
   getReviewRecipients,
+  validateSelection,
 } from "@/server/services/campaign-draft-service";
-import { SendPlaceholder } from "./send-placeholder";
+import { getEmailService } from "@/server/integrations/email";
+import { SendPanel } from "./send-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -16,16 +19,20 @@ export const dynamic = "force-dynamic";
  * person who would receive it — one contact, one email, every opportunity they
  * were selected for.
  *
- * The send action is an architectural boundary only: it is deliberately inert
- * (see ./send-placeholder.tsx). Nothing here can email anyone or modify
- * Salesforce.
+ * Sending re-resolves every selection server-side first, so the client's
+ * selection is never trusted on its own, and anything that drifted since
+ * selection is surfaced here and excluded. Salesforce is never modified by
+ * sending; whether a message actually leaves the building is decided by the
+ * configured email provider.
  */
 export default async function ReviewPage() {
   const draft = await getOrCreateDraft();
-  const [summary, recipients] = await Promise.all([
+  const [summary, recipients, validation] = await Promise.all([
     getDraftSummary(draft.id),
     getReviewRecipients(draft.id),
+    validateSelection(draft.id),
   ]);
+  const email = getEmailService();
 
   if (summary.selectedOpportunities === 0) {
     return (
@@ -115,7 +122,38 @@ export default async function ReviewPage() {
         </Card>
       </section>
 
-      <SendPlaceholder summary={summary} />
+      {validation.drifted.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="text-[15px] font-semibold tracking-tight text-danger">
+            {validation.drifted.length}{" "}
+            {pluralize(validation.drifted.length, "selection")} can no longer be sent
+          </h2>
+          <Card className="divide-y divide-line border-danger/30">
+            {validation.drifted.map((entry) => (
+              <div
+                key={entry.opportunityId}
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"
+              >
+                <div>
+                  <div className="text-[14px] font-medium text-ink">{entry.opportunityName}</div>
+                  <div className="text-[12px] text-muted">{entry.accountName}</div>
+                </div>
+                <div className="text-[13px] text-danger">{DRIFT_REASON_LABELS[entry.reason]}</div>
+              </div>
+            ))}
+          </Card>
+          <p className="text-[13px] text-muted">
+            These changed in Salesforce after you selected them. They are excluded from
+            the send — no recipient is substituted.
+          </p>
+        </section>
+      ) : null}
+
+      <SendPanel
+        summary={summary}
+        emailProviderLabel={email.info.label}
+        simulated={email.info.simulated}
+      />
     </div>
   );
 }

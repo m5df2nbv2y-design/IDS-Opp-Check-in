@@ -140,29 +140,9 @@ export class MockSalesforceService implements SalesforceService {
     });
   }
 
-  async updateOpportunityComment(
-    externalId: string,
-    comment: string,
-    source?: string,
-  ): Promise<void> {
-    const record = await this.requireRecord(externalId);
-    this.assertWritable(record);
-
-    const stamp = source ? `[${source}] ` : "";
-    const entry = `${stamp}${comment}`.trim();
-    const description = record.description ? `${record.description}\n${entry}` : entry;
-
-    await prisma.mockSalesforceOpportunity.update({
-      where: { externalId },
-      data: { description, lastModifiedAt: new Date() },
-    });
-  }
-
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
+    // Stage only, mirroring the live provider's confirmed write scope.
     await this.updateOpportunityStatus(update.externalId, update.stage);
-    if (update.comment?.trim()) {
-      await this.updateOpportunityComment(update.externalId, update.comment.trim(), update.source);
-    }
   }
 
   private async requireRecord(externalId: string) {

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { assertDemoEnvironment } from "@/lib/demo-guard";
 import { prisma } from "@/lib/db";
 import type { OpportunityStage } from "@/lib/stages";
 import { MockSalesforceService } from "@/server/integrations/salesforce/mock/mock-salesforce-service";
@@ -25,6 +26,10 @@ import { refreshSmartsheetSignals } from "@/server/services/smartsheet-signal-se
 const DAY = 24 * 60 * 60 * 1000;
 
 async function main() {
+  // FIRST — before any wipe, Salesforce call, or campaign launch. Fails closed
+  // if either provider is missing or is anything other than "mock".
+  assertDemoEnvironment("npm run db:seed");
+
   console.log("Resetting database…");
   await prisma.auditEvent.deleteMany();
   await prisma.emailMessage.deleteMany();

@@ -153,18 +153,26 @@ export type LaunchResult = {
 };
 
 /**
- * The whole "SEND CHECK-IN TO ALL" workflow: group the resolved opportunities
- * by external contact, create one recipient record per contact, mint a token,
- * and send one personalized email each.
+ * Group opportunities by external contact, create one recipient per contact,
+ * mint a token, and send one personalized email each. A contact responsible for
+ * opportunities belonging to three different IDS reps receives ONE email
+ * covering all of them.
  *
- * A contact responsible for opportunities belonging to three different IDS reps
- * receives ONE email covering all of them.
+ * `opportunityIds` scopes the launch to an explicit, human-selected set. It is
+ * REQUIRED for any admin-initiated send — there is deliberately no code path
+ * that launches against the whole catalog from the UI. Omitting it (the seed
+ * script and tests) falls back to every resolved opportunity, which is why the
+ * seed is guarded by assertDemoEnvironment().
  */
 export async function launchCampaign(options?: {
   name?: string;
   period?: string;
   actor?: string;
   sendEmails?: boolean;
+  /** Explicit selection. When omitted, every resolved opportunity is included. */
+  opportunityIds?: string[];
+  /** Convert this existing DRAFT campaign rather than creating a new one. */
+  campaignId?: string;
 }): Promise<LaunchResult> {
   const actor = options?.actor ?? "admin";
   const period = options?.period ?? currentPeriod();
@@ -172,7 +180,12 @@ export async function launchCampaign(options?: {
   const sendEmails = options?.sendEmails ?? true;
 
   const opportunities = await prisma.opportunity.findMany({
-    where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    where: {
+      isOpen: true,
+      resolutionStatus: "RESOLVED",
+      contactId: { not: null },
+      ...(options?.opportunityIds ? { id: { in: options.opportunityIds } } : {}),
+    },
     include: { contact: { include: { account: true } }, internalRep: true, account: true },
     orderBy: { amount: "desc" },
   });
@@ -184,9 +197,14 @@ export async function launchCampaign(options?: {
     else byContact.set(opportunity.contactId!, [opportunity]);
   }
 
-  const campaign = await prisma.campaign.create({
-    data: { name, period, status: "IN_PROGRESS", startedAt: new Date() },
-  });
+  const campaign = options?.campaignId
+    ? await prisma.campaign.update({
+        where: { id: options.campaignId },
+        data: { name, status: "IN_PROGRESS", startedAt: new Date() },
+      })
+    : await prisma.campaign.create({
+        data: { name, period, status: "IN_PROGRESS", startedAt: new Date() },
+      });
 
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let emailsSent = 0;
@@ -218,6 +236,9 @@ export async function launchCampaign(options?: {
         accountName: opportunity.account.name,
         internalRepName: opportunity.internalRep.name,
         previousStatus: opportunity.currentStage,
+        // Snapshotted for the confirmed future write scope. Not captured from
+        // the recipient yet, and never written to Salesforce today.
+        previousCloseDate: opportunity.closeDate,
         position: index,
       })),
     });

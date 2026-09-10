@@ -91,7 +91,7 @@ describe("campaign workflow", () => {
     }
   });
 
-  it("pushes a changed stage and the contact's note to Salesforce", async () => {
+  it("pushes a changed stage to Salesforce — and never the note", async () => {
     const token = tokens.get("Jane Doe")!;
     await answerAll(campaignId, "Jane Doe", token, {
       "MRI Suite Renovation": { stage: "NEGOTIATION", comment: "Board signs this week." },
@@ -111,8 +111,10 @@ describe("campaign workflow", () => {
       where: { name: "MRI Suite Renovation" },
     });
     expect(record.stageName).toBe("Negotiation");
-    expect(record.description).toContain("Board signs this week.");
-    expect(record.description).toContain("Fall Test Check-In");
+    // Notes are descoped from write-back: captured locally, never sent to
+    // Salesforce. The contact's comment must not appear on the record.
+    expect(record.description).toBeNull();
+    expect(item.repComment).toBe("Board signs this week.");
   });
 
   it("writes nothing to Salesforce when the contact confirms the current stage", async () => {
