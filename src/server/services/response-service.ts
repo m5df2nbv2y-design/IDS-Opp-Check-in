@@ -15,6 +15,10 @@ export type CheckInSessionItem = {
   amount: number;
   currentStage: string;
   selectedStage: OpportunityStage | null;
+  /** The date Salesforce currently expects this to close. */
+  currentCloseDate: string | null;
+  /** The recipient's revised date, if they gave one. ISO yyyy-mm-dd. */
+  selectedCloseDate: string | null;
   comment: string;
   submitted: boolean;
 };
@@ -72,11 +76,20 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
         amount: item.amount,
         currentStage: item.previousStatus,
         selectedStage: isOpportunityStage(item.updatedStatus) ? item.updatedStatus : null,
+        currentCloseDate: item.previousCloseDate?.toISOString().slice(0, 10) ?? null,
+        selectedCloseDate: item.updatedCloseDate?.toISOString().slice(0, 10) ?? null,
         comment: item.repComment ?? "",
         submitted: item.submittedAt !== null,
       })),
     },
   };
+}
+
+/** Accepts only a plain yyyy-mm-dd date, ignoring anything else. */
+function parseCloseDate(value: string | null | undefined): Date | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 /** Records the first open of a personalized link. Idempotent. */
@@ -119,6 +132,8 @@ export async function saveResponse(input: {
   itemId: string;
   stage: string;
   comment?: string | null;
+  /** Revised close date as ISO yyyy-mm-dd, or null to leave it unchanged. */
+  closeDate?: string | null;
 }): Promise<SaveResponseResult> {
   if (!isOpportunityStage(input.stage)) return { ok: false, reason: "INVALID_STAGE" };
 
@@ -135,11 +150,16 @@ export async function saveResponse(input: {
   const revised = item.submittedAt !== null;
   const comment = input.comment?.trim() ? input.comment.trim() : null;
 
+  // Recorded for the confirmed future write scope. Still never pushed to
+  // Salesforce — capturing it is what makes close-date movement measurable.
+  const closeDate = parseCloseDate(input.closeDate);
+
   await prisma.$transaction([
     prisma.checkInOpportunity.update({
       where: { id: item.id },
       data: {
         updatedStatus: input.stage,
+        updatedCloseDate: closeDate,
         repComment: comment,
         submittedAt: new Date(),
         syncStatus: "PENDING",

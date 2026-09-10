@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { env } from "@/lib/env";
 import { isOpportunityStage, stageLabel } from "@/lib/stages";
 import { getSalesforceService, SalesforceSyncError } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
@@ -8,6 +9,8 @@ export type SyncOutcome = {
   synced: number;
   skipped: number;
   failed: number;
+  /** Recorded locally but deliberately not pushed — write-back is disabled. */
+  withheld: number;
 };
 
 /**
@@ -23,13 +26,22 @@ export async function syncCampaignResponses(
 ): Promise<SyncOutcome> {
   const salesforce = getSalesforceService();
 
+  /**
+   * Never write to a REAL org unless someone deliberately turned it on.
+   * Reading real pipeline data must not carry a risk of modifying it.
+   *
+   * The mock org is exempt: those writes land in our own demo tables, and
+   * showing the completed sync is the point of the demo.
+   */
+  const writeEnabled = salesforce.info.simulated || env.salesforce.writeEnabled;
+
   const items = await prisma.checkInOpportunity.findMany({
     where: {
       recipient: { campaignId: filter.campaignId },
       ...(filter.recipientId ? { recipientId: filter.recipientId } : {}),
       ...(filter.itemIds ? { id: { in: filter.itemIds } } : {}),
       submittedAt: { not: null },
-      syncStatus: { in: ["PENDING", "FAILED"] },
+      syncStatus: { in: ["PENDING", "FAILED", "WITHHELD"] },
     },
     include: {
       recipient: { include: { contact: true, campaign: { select: { name: true } } } },
@@ -37,7 +49,13 @@ export async function syncCampaignResponses(
     },
   });
 
-  const outcome: SyncOutcome = { attempted: items.length, synced: 0, skipped: 0, failed: 0 };
+  const outcome: SyncOutcome = {
+    attempted: items.length,
+    synced: 0,
+    skipped: 0,
+    failed: 0,
+    withheld: 0,
+  };
 
   for (const item of items) {
     const nextStage = item.updatedStatus;
@@ -71,6 +89,27 @@ export async function syncCampaignResponses(
         ...auditContext,
       });
       outcome.skipped += 1;
+      continue;
+    }
+
+    // The answer is already safely stored. Withholding the push keeps
+    // Salesforce untouched while still showing exactly what WOULD be sent.
+    if (!writeEnabled) {
+      await prisma.checkInOpportunity.update({
+        where: { id: item.id },
+        data: { syncStatus: "WITHHELD", syncError: null },
+      });
+      await recordAudit({
+        type: AUDIT_EVENTS.SYNC_WITHHELD,
+        summary: `${label} — ${stageLabel(item.previousStatus)} → ${stageLabel(nextStage)} recorded, not pushed`,
+        actor,
+        actorKind: "SYSTEM",
+        fromStatus: item.previousStatus,
+        toStatus: nextStage,
+        detail: "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\").",
+        ...auditContext,
+      });
+      outcome.withheld += 1;
       continue;
     }
 

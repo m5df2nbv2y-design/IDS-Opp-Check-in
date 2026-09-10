@@ -49,6 +49,7 @@ const SYNC_STATUS_STYLES: Record<string, { label: string; className: string }> =
   PENDING: { label: "Pending sync", className: "bg-canvas text-muted border-line-strong" },
   SYNCED: { label: "Synced", className: "bg-success-soft text-success border-success/25" },
   SKIPPED: { label: "No change", className: "bg-canvas text-muted border-line-strong" },
+  WITHHELD: { label: "Held — write-back off", className: "bg-warning-soft text-warning border-warning/25" },
   FAILED: { label: "Sync error", className: "bg-danger-soft text-danger border-danger/25" },
 };
 
@@ -130,6 +131,47 @@ export function StatTile({
         {value}
       </div>
       {hint ? <div className="mt-1 text-[13px] text-muted">{hint}</div> : null}
+    </Card>
+  );
+}
+
+/**
+ * Executive read: the dollar value is the headline, the opportunity count is
+ * the supporting detail. Keeps "how much pipeline" and "how many deals"
+ * structurally distinct rather than relying on the reader to notice.
+ */
+export function ValueTile({
+  label,
+  value,
+  count,
+  hint,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  /** Null when the count is genuinely unknown — rendered as "—", never as 0. */
+  count: number | null;
+  hint?: string;
+  tone?: "default" | "success" | "warning" | "danger";
+}) {
+  const toneClass = {
+    default: "text-ink",
+    success: "text-success",
+    warning: "text-warning",
+    danger: "text-danger",
+  }[tone];
+
+  return (
+    <Card className="px-5 py-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">{label}</div>
+      <div className={`mt-1.5 text-3xl font-semibold tracking-tight tabular-nums ${toneClass}`}>
+        {value}
+      </div>
+      <div className="mt-1 text-[13px] text-muted">
+        <span className="tabular-nums">{count ?? "—"}</span>{" "}
+        {count === 1 ? "opportunity" : "opportunities"}
+        {hint ? ` · ${hint}` : ""}
+      </div>
     </Card>
   );
 }

@@ -7,6 +7,7 @@ const LINKS = [
   { href: "/admin", label: "Dashboard", exact: true },
   { href: "/admin/organizations", label: "Organizations" },
   { href: "/admin/outbox", label: "Outbox" },
+  { href: "/admin/analytics", label: "Measurement" },
   { href: "/admin/audit", label: "Audit trail" },
   { href: "/admin/salesforce", label: "Salesforce" },
 ];

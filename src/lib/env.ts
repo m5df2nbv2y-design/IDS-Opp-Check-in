@@ -47,6 +47,12 @@ export const env = {
      * "password" — legacy username/password grant, for orgs that require it.
      */
     authFlow: str("SF_AUTH_FLOW", "client_credentials"),
+    /**
+     * Write-back master switch. Defaults to FALSE — the integration is
+     * read-only unless someone deliberately turns writing on. Reading real
+     * pipeline data must never carry a risk of modifying it.
+     */
+    writeEnabled: process.env.SALESFORCE_WRITE_ENABLED === "true",
     loginUrl: str("SF_LOGIN_URL", "https://login.salesforce.com"),
     instanceUrl: process.env.SF_INSTANCE_URL ?? "",
     clientId: process.env.SF_CLIENT_ID ?? "",

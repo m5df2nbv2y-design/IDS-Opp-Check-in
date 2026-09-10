@@ -11,6 +11,7 @@ export async function POST(
     itemId?: string;
     stage?: string;
     comment?: string | null;
+    closeDate?: string | null;
   } | null;
 
   if (!body?.itemId || !body?.stage) {
@@ -22,6 +23,7 @@ export async function POST(
     itemId: body.itemId,
     stage: body.stage,
     comment: body.comment ?? null,
+    closeDate: body.closeDate ?? null,
   });
 
   if (result.ok) {

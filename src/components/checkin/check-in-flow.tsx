@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { formatAmount, firstName, pluralize } from "@/lib/format";
+import { formatAmount, firstName, formatShortDate, pluralize } from "@/lib/format";
 import { OPPORTUNITY_STAGES, stageLabel, type OpportunityStage } from "@/lib/stages";
 import type { CheckInSessionItem } from "@/server/services/response-service";
 
@@ -12,7 +12,7 @@ type Props = {
   items: CheckInSessionItem[];
 };
 
-type Answer = { stage: OpportunityStage | null; comment: string };
+type Answer = { stage: OpportunityStage | null; comment: string; closeDate: string };
 
 /**
  * The external contact's entire experience: land on opportunity 1, tap a
@@ -28,7 +28,11 @@ type Answer = { stage: OpportunityStage | null; comment: string };
  */
 export function CheckInFlow({ token, contactName, items }: Props) {
   const [answers, setAnswers] = useState<Answer[]>(() =>
-    items.map((item) => ({ stage: item.selectedStage, comment: item.comment })),
+    items.map((item) => ({
+      stage: item.selectedStage,
+      comment: item.comment,
+      closeDate: item.selectedCloseDate ?? item.currentCloseDate ?? "",
+    })),
   );
 
   const firstUnanswered = answers.findIndex((answer) => answer.stage === null);
@@ -62,6 +66,12 @@ export function CheckInFlow({ token, contactName, items }: Props) {
         itemId: items[position].id,
         stage: value.stage,
         comment: value.comment.trim() || null,
+        // Only send a revised date when it actually differs from the one we
+        // showed them, so "unchanged" stays distinguishable from "confirmed".
+        closeDate:
+          value.closeDate && value.closeDate !== items[position].currentCloseDate
+            ? value.closeDate
+            : null,
       }),
     })
       .then((response) => response.ok)
@@ -188,6 +198,31 @@ export function CheckInFlow({ token, contactName, items }: Props) {
             </div>
           </dl>
 
+          {item.currentCloseDate ? (
+            <div className="mt-2.5 rounded-xl border border-line bg-surface px-3.5 py-2.5">
+              <label
+                htmlFor={`close-${item.id}`}
+                className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted"
+              >
+                Expected completion
+              </label>
+              <input
+                id={`close-${item.id}`}
+                type="date"
+                value={answer.closeDate}
+                onChange={(event) => update({ closeDate: event.target.value })}
+                className="mt-1 w-full bg-transparent text-[17px] font-semibold text-ink focus:outline-none"
+              />
+              {answer.closeDate !== item.currentCloseDate ? (
+                <p className="mt-1 text-[12px] font-medium text-brand">
+                  Updated from {formatShortDate(item.currentCloseDate)}
+                </p>
+              ) : (
+                <p className="mt-1 text-[12px] text-muted">Change it if this has moved.</p>
+              )}
+            </div>
+          ) : null}
+
           <h2 className="mt-3 text-[16px] font-semibold tracking-tight text-ink">
             What&apos;s the current status?
           </h2>
@@ -293,7 +328,11 @@ function Complete({
   answers: Answer[];
 }) {
   const [dismissed, setDismissed] = useState(false);
-  const changed = items.filter((item, i) => answers[i].stage !== item.currentStage);
+  const changed = items.filter(
+    (item, i) =>
+      answers[i].stage !== item.currentStage ||
+      (answers[i].closeDate && answers[i].closeDate !== item.currentCloseDate),
+  );
 
   return (
     <main className="mx-auto w-full max-w-lg px-6 py-12">
@@ -314,7 +353,7 @@ function Complete({
       {changed.length > 0 ? (
         <div className="mt-7">
           <p className="text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">
-            {changed.length} {pluralize(changed.length, "status change")}
+            {changed.length} {pluralize(changed.length, "update")} recorded
           </p>
           <ul className="mt-2.5 divide-y divide-line rounded-card border border-line bg-surface">
             {changed.map((item) => {
@@ -322,10 +361,20 @@ function Complete({
               return (
                 <li key={item.id} className="px-4 py-3">
                   <div className="text-[15px] font-medium text-ink">{item.customerName}</div>
-                  <div className="mt-0.5 text-[13px] text-muted">
-                    {stageLabel(item.currentStage)} <span aria-hidden>→</span>{" "}
-                    <span className="font-semibold text-body">{stageLabel(answers[i].stage)}</span>
-                  </div>
+                  {answers[i].stage !== item.currentStage ? (
+                    <div className="mt-0.5 text-[13px] text-muted">
+                      {stageLabel(item.currentStage)} <span aria-hidden>→</span>{" "}
+                      <span className="font-semibold text-body">{stageLabel(answers[i].stage)}</span>
+                    </div>
+                  ) : null}
+                  {answers[i].closeDate && answers[i].closeDate !== item.currentCloseDate ? (
+                    <div className="mt-0.5 text-[13px] text-muted">
+                      Completion {formatShortDate(item.currentCloseDate)} <span aria-hidden>→</span>{" "}
+                      <span className="font-semibold text-body">
+                        {formatShortDate(answers[i].closeDate)}
+                      </span>
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
