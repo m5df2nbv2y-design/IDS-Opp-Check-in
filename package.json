@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sf:smoke": "tsx scripts/salesforce-smoke-test.ts"
+    "sf:smoke": "tsx scripts/salesforce-smoke-test.ts",
+    "sf:discover": "tsx scripts/salesforce-discovery.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.10.0",
