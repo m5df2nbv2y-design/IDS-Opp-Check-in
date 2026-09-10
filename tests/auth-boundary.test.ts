@@ -17,7 +17,7 @@ const read = (relative: string) => readFileSync(`${root}${relative}`, "utf8");
 describe("requireAdmin", () => {
   it("throws UnauthorizedError when there is no session", async () => {
     vi.resetModules();
-    vi.doMock("@/server/auth/config", () => ({ auth: async () => null }));
+    vi.doMock("@/server/auth/config", () => ({ auth: async () => null, DEV_BYPASS_ENABLED: false }));
 
     const { requireAdmin, requireAdminActor, UnauthorizedError, getAdminUser } = await import(
       "@/server/auth/require-admin"
@@ -31,28 +31,56 @@ describe("requireAdmin", () => {
 
   it("throws when a session exists but carries no user", async () => {
     vi.resetModules();
-    vi.doMock("@/server/auth/config", () => ({ auth: async () => ({ expires: "soon" }) }));
+    vi.doMock("@/server/auth/config", () => ({ auth: async () => ({ expires: "soon" }), DEV_BYPASS_ENABLED: false }));
 
     const { requireAdmin, UnauthorizedError } = await import("@/server/auth/require-admin");
     await expect(requireAdmin()).rejects.toThrow(UnauthorizedError);
     vi.doUnmock("@/server/auth/config");
   });
 
-  it("returns the signed-in admin and their audit identity", async () => {
+  it("returns the signed-in admin and their audit identity when AUTHORIZED", async () => {
     vi.resetModules();
+    vi.stubEnv("AUTH_REQUIRED_APP_ROLE", "SalesOps.Admin");
     vi.doMock("@/server/auth/config", () => ({
-      auth: async () => ({ user: { id: "u1", name: "Josh Young", email: "josh@idsculpture.com" } }),
+      DEV_BYPASS_ENABLED: false,
+      auth: async () => ({
+        user: {
+          id: "u1",
+          name: "Josh Young",
+          email: "josh@idsculpture.com",
+          // Authentication alone is no longer enough — the role is what admits.
+          roles: ["SalesOps.Admin"],
+          oid: "entra-oid-1",
+        },
+      }),
     }));
 
     const { requireAdmin, requireAdminActor } = await import("@/server/auth/require-admin");
 
-    expect(await requireAdmin()).toEqual({
-      id: "u1",
-      name: "Josh Young",
-      email: "josh@idsculpture.com",
-    });
+    const user = await requireAdmin();
+    expect(user.email).toBe("josh@idsculpture.com");
+    expect(user.roles).toContain("SalesOps.Admin");
     // Audit entries attribute changes to a real person, not a generic "admin".
     expect(await requireAdminActor()).toBe("josh@idsculpture.com");
+
+    vi.unstubAllEnvs();
+    vi.doUnmock("@/server/auth/config");
+  });
+
+  it("REJECTS an authenticated user who lacks the role", async () => {
+    vi.resetModules();
+    vi.stubEnv("AUTH_REQUIRED_APP_ROLE", "SalesOps.Admin");
+    vi.doMock("@/server/auth/config", () => ({
+      DEV_BYPASS_ENABLED: false,
+      auth: async () => ({
+        user: { id: "u9", email: "someone.else@idsculpture.com", roles: [] },
+      }),
+    }));
+
+    const { requireAdmin, ForbiddenError } = await import("@/server/auth/require-admin");
+    await expect(requireAdmin()).rejects.toThrow(ForbiddenError);
+
+    vi.unstubAllEnvs();
     vi.doUnmock("@/server/auth/config");
   });
 });

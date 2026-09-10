@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
+import { claimsFromProfile } from "./authorization";
 
 /**
  * Authentication for the IDS admin console.
@@ -38,6 +39,9 @@ const DEV_ADMIN = {
   email: "local-admin@ids.invalid",
 };
 
+/** Marks the development identity so authorization can recognise it. */
+export const DEV_ADMIN_ID = DEV_ADMIN.id;
+
 function buildProviders() {
   const providers = [];
 
@@ -73,11 +77,42 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
   pages: { signIn: "/signin" },
   callbacks: {
-    // Nothing beyond identity is needed today. When IDS restricts access to a
-    // Sales Operations group, assert the group/role claim HERE — do not
-    // allow-list individual email addresses.
+    /**
+     * Capture the authorization claims onto the token at sign-in. Roles are
+     * carried in the JWT so every subsequent request can be authorized without
+     * a round trip to Entra — and so a mutation is authorized from the token,
+     * not from anything the client sends.
+     */
+    async jwt({ token, profile, account }) {
+      if (account?.provider === "dev-bypass") {
+        token.isDevAdmin = true;
+        return token;
+      }
+
+      if (profile) {
+        const claims = claimsFromProfile(profile as Record<string, unknown>);
+        token.roles = claims.roles;
+        token.groups = claims.groups;
+        token.groupsOverage = claims.groupsOverage;
+        // Entra's stable per-tenant identifier. Recorded in the audit trail
+        // alongside the email, which can change.
+        if (typeof (profile as Record<string, unknown>).oid === "string") {
+          token.oid = (profile as Record<string, unknown>).oid as string;
+        }
+      }
+
+      return token;
+    },
+
     async session({ session, token }) {
-      if (session.user && token.sub) session.user.id = token.sub;
+      if (session.user) {
+        if (token.sub) session.user.id = token.sub;
+        session.user.roles = (token.roles as string[]) ?? [];
+        session.user.groups = (token.groups as string[]) ?? [];
+        session.user.groupsOverage = Boolean(token.groupsOverage);
+        session.user.isDevAdmin = Boolean(token.isDevAdmin);
+        session.user.oid = typeof token.oid === "string" ? token.oid : null;
+      }
       return session;
     },
   },
