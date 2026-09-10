@@ -153,6 +153,17 @@ function explainAuthFailure(body: string, flow: SalesforceAuthFlow): string {
           "allow-listed, or the password grant is blocked by org policy.";
   }
 
+  if (code === "invalid_app_access") {
+    return (
+      "invalid_app_access — the credentials are valid and the app was found, but the Run As user " +
+      "is not authorized to use it. Salesforce requires the user to be granted access to the app " +
+      "explicitly: assign the External Client App to the integration user via a Permission Set " +
+      "(Setup → Permission Sets → your set → External Client App Access → enable the app → assign " +
+      "the set to the user), or relax the app's Policies → Permitted Users. Also confirm the app " +
+      "is deployed, not left in Draft."
+    );
+  }
+
   if (code === "inactive_user") return "inactive_user — the integration user is deactivated.";
   if (code === "inactive_org") return "inactive_org — the Salesforce org is inactive or locked.";
 
