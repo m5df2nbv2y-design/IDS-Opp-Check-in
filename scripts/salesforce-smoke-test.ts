@@ -276,13 +276,25 @@ async function main() {
       ok(`Running as: ${identity.displayName} <${identity.username}>`);
       info(`user id:         ${identity.userId}`);
       info(`organization id: ${identity.organizationId}`);
-      if (/@idsculpture\.com$/i.test(identity.username) && identity.username.startsWith("ids.opportunitycheckin")) {
-        ok("This is the dedicated integration user, as intended.");
+
+      // Optional guard against the app silently running as the wrong user —
+      // e.g. a Run As setting changed to someone's personal account. Opt-in,
+      // because the correct username differs between orgs and sandboxes, and
+      // hardcoding one here would be wrong everywhere except a single org.
+      const expected = (process.env.SF_EXPECTED_USERNAME ?? "").trim();
+      if (!expected) {
+        info("");
+        info("Set SF_EXPECTED_USERNAME in .env to assert this is the intended");
+        info("integration user on every run.");
+      } else if (identity.username.toLowerCase() === expected.toLowerCase()) {
+        ok(`Matches SF_EXPECTED_USERNAME — this is the intended integration user.`);
       } else {
         warn(
-          `Expected the dedicated integration user (ids.opportunitycheckin@idsculpture.com). ` +
-            `Acting as a personal account means this app inherits that person's permissions and ` +
-            `breaks when they leave — check the External Client App's Run As setting.`,
+          `Identity does not match SF_EXPECTED_USERNAME.\n` +
+            `      expected: ${expected}\n` +
+            `      actual:   ${identity.username}\n` +
+            `      Check the External Client App's Policies → Run As user. Running as a personal ` +
+            `account means the app inherits that person's permissions and breaks when they leave.`,
         );
       }
     }
