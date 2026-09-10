@@ -26,7 +26,21 @@ export async function resetDatabase() {
  */
 export async function launchCampaignAndCollectTokens(name = "Test Campaign") {
   await refreshCatalogFromSalesforce("test");
-  const result = await launchCampaign({ name, period: "Test", actor: "test" });
+
+  // launchCampaign requires an explicit selection — no whole-catalog fallback
+  // exists. These workflow fixtures want every resolved opportunity, so they
+  // ask for them by id.
+  const everyResolved = await prisma.opportunity.findMany({
+    where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    select: { id: true },
+  });
+
+  const result = await launchCampaign({
+    opportunityIds: everyResolved.map((opportunity) => opportunity.id),
+    name,
+    period: "Test",
+    actor: "test",
+  });
 
   const emails = await prisma.emailMessage.findMany({
     where: { campaignId: result.campaignId, kind: "INVITE" },

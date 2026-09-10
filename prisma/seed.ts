@@ -53,7 +53,15 @@ async function main() {
 
   // ---- Spring 2026: a finished campaign, for history ----------------------
   console.log("Simulating the Spring 2026 campaign (historical)…");
+  // launchCampaign has no whole-catalog fallback. The seed genuinely wants
+  // every resolved opportunity, so it asks for them explicitly — and is only
+  // reachable at all behind assertDemoEnvironment() above.
+  const everyResolved = await prisma.opportunity.findMany({
+    where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    select: { id: true },
+  });
   const spring = await launchCampaign({
+    opportunityIds: everyResolved.map((opportunity) => opportunity.id),
     name: "Spring 2026 Check-In",
     period: "Spring 2026",
     actor: "seed",

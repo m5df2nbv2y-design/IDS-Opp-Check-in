@@ -153,38 +153,48 @@ export type LaunchResult = {
 };
 
 /**
- * Group opportunities by external contact, create one recipient per contact,
- * mint a token, and send one personalized email each. A contact responsible for
- * opportunities belonging to three different IDS reps receives ONE email
- * covering all of them.
+ * Group the given opportunities by external contact, create one recipient per
+ * contact, mint a token, and send one personalized email each. A contact
+ * responsible for opportunities belonging to three different IDS reps receives
+ * ONE email covering all of them.
  *
- * `opportunityIds` scopes the launch to an explicit, human-selected set. It is
- * REQUIRED for any admin-initiated send — there is deliberately no code path
- * that launches against the whole catalog from the UI. Omitting it (the seed
- * script and tests) falls back to every resolved opportunity, which is why the
- * seed is guarded by assertDemoEnvironment().
+ * `opportunityIds` is REQUIRED and has no fallback. There is deliberately no
+ * way — accidental or otherwise — to launch against the whole catalog: an
+ * omitted list is a programming error, not an instruction to contact everyone.
+ * Callers that genuinely want every resolved opportunity (the guarded seed
+ * script) must query for them and pass them explicitly, so the intent is
+ * visible at the call site.
  */
-export async function launchCampaign(options?: {
+export async function launchCampaign(options: {
+  /** The explicit, human-selected set to contact. Never optional. */
+  opportunityIds: string[];
   name?: string;
   period?: string;
   actor?: string;
   sendEmails?: boolean;
-  /** Explicit selection. When omitted, every resolved opportunity is included. */
-  opportunityIds?: string[];
   /** Convert this existing DRAFT campaign rather than creating a new one. */
   campaignId?: string;
 }): Promise<LaunchResult> {
-  const actor = options?.actor ?? "admin";
-  const period = options?.period ?? currentPeriod();
-  const name = options?.name ?? `${period} Check-In`;
-  const sendEmails = options?.sendEmails ?? true;
+  // Runtime half of the type-level guarantee: a JavaScript caller, a bad cast,
+  // or a deserialized payload cannot slip past the compiler into a full send.
+  if (!Array.isArray(options?.opportunityIds)) {
+    throw new Error(
+      "launchCampaign requires an explicit opportunityIds array. There is no " +
+        "whole-catalog fallback — pass the selected opportunities.",
+    );
+  }
+
+  const actor = options.actor ?? "admin";
+  const period = options.period ?? currentPeriod();
+  const name = options.name ?? `${period} Check-In`;
+  const sendEmails = options.sendEmails ?? true;
 
   const opportunities = await prisma.opportunity.findMany({
     where: {
       isOpen: true,
       resolutionStatus: "RESOLVED",
       contactId: { not: null },
-      ...(options?.opportunityIds ? { id: { in: options.opportunityIds } } : {}),
+      id: { in: options.opportunityIds },
     },
     include: { contact: { include: { account: true } }, internalRep: true, account: true },
     orderBy: { amount: "desc" },
@@ -197,7 +207,7 @@ export async function launchCampaign(options?: {
     else byContact.set(opportunity.contactId!, [opportunity]);
   }
 
-  const campaign = options?.campaignId
+  const campaign = options.campaignId
     ? await prisma.campaign.update({
         where: { id: options.campaignId },
         data: { name, status: "IN_PROGRESS", startedAt: new Date() },

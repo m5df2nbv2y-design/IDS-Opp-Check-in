@@ -11,6 +11,7 @@ import {
   setSelection,
   validateSelection,
 } from "@/server/services/campaign-draft-service";
+import { launchCampaign } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { resetDatabase } from "./fixtures";
 
@@ -408,5 +409,87 @@ describe("selection drift and selected-only sending", () => {
     const emails = await prisma.emailMessage.findMany({ where: { campaignId } });
     expect(emails.length).toBeGreaterThan(0);
     for (const message of emails) expect(message.provider).toBe("mock");
+  });
+});
+
+describe("launchCampaign has no whole-catalog fallback", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+  });
+
+  /**
+   * The loaded gun: an earlier version treated an omitted opportunityIds as
+   * "every resolved opportunity", so a single missing argument would have
+   * contacted the entire catalog. The list is now required at the type
+   * boundary AND re-checked at runtime, because a compiler guarantee does not
+   * survive a bad cast, a JavaScript caller, or a deserialized payload.
+   */
+  it("THROWS rather than sending to everyone when the selection is omitted", async () => {
+    const resolved = await prisma.opportunity.count({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+    });
+    expect(resolved).toBeGreaterThan(0);
+
+    await expect(
+      // Deliberately bypassing the type system, as a careless caller would.
+      (launchCampaign as (options?: unknown) => Promise<unknown>)({
+        name: "Should never launch",
+        actor: "test",
+      }),
+    ).rejects.toThrow(/requires an explicit opportunityIds/);
+
+    // Nothing was created — no campaign, no recipients, no email.
+    expect(await prisma.checkInRecipient.count()).toBe(0);
+    expect(await prisma.emailMessage.count()).toBe(0);
+    expect(await prisma.campaign.count({ where: { status: "IN_PROGRESS" } })).toBe(0);
+  });
+
+  it("THROWS when called with no arguments at all", async () => {
+    await expect(
+      (launchCampaign as (options?: unknown) => Promise<unknown>)(),
+    ).rejects.toThrow(/requires an explicit opportunityIds/);
+
+    expect(await prisma.checkInRecipient.count()).toBe(0);
+    expect(await prisma.emailMessage.count()).toBe(0);
+  });
+
+  it("THROWS when opportunityIds is not an array", async () => {
+    for (const bad of [null, undefined, "all", 42, {}]) {
+      await expect(
+        (launchCampaign as (options?: unknown) => Promise<unknown>)({
+          opportunityIds: bad,
+          actor: "test",
+        }),
+      ).rejects.toThrow(/requires an explicit opportunityIds/);
+    }
+    expect(await prisma.checkInRecipient.count()).toBe(0);
+  });
+
+  it("sends nothing for an empty selection — explicit, and still not everyone", async () => {
+    const result = await launchCampaign({ opportunityIds: [], actor: "test" });
+
+    expect(result.opportunities).toBe(0);
+    expect(result.recipients).toBe(0);
+    expect(await prisma.checkInRecipient.count()).toBe(0);
+    expect(await prisma.emailMessage.count()).toBe(0);
+  });
+
+  it("sends to exactly the selection it is given, never more", async () => {
+    const all = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      select: { id: true },
+    });
+    const chosen = all.slice(0, 2);
+
+    const result = await launchCampaign({
+      opportunityIds: chosen.map((o) => o.id),
+      actor: "test",
+    });
+
+    expect(result.opportunities).toBe(2);
+    const items = await prisma.checkInOpportunity.findMany({ select: { opportunityId: true } });
+    expect(new Set(items.map((i) => i.opportunityId))).toEqual(new Set(chosen.map((o) => o.id)));
+    expect(all.length).toBeGreaterThan(chosen.length);
   });
 });
