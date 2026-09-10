@@ -41,6 +41,12 @@ export const env = {
   checkInTokenTtlDays: int("CHECKIN_TOKEN_TTL_DAYS", 45),
 
   salesforce: {
+    /**
+     * "client_credentials" (default) — External Client App acting as its
+     * configured Run As user. Only the key and secret are needed.
+     * "password" — legacy username/password grant, for orgs that require it.
+     */
+    authFlow: str("SF_AUTH_FLOW", "client_credentials"),
     loginUrl: str("SF_LOGIN_URL", "https://login.salesforce.com"),
     instanceUrl: process.env.SF_INSTANCE_URL ?? "",
     clientId: process.env.SF_CLIENT_ID ?? "",

@@ -249,7 +249,8 @@ sandbox run.
 
 - [ ] Integration user with API Enabled; Read on `User`, `Account`, `Contact`,
       `Opportunity`; Edit on `Opportunity.StageName` and the chosen note field.
-- [ ] Connected App (OAuth), client id + secret issued.
+- [ ] External Client App with the Client Credentials flow enabled, a Run As
+      user set to the integration user, and Consumer Key + Secret issued.
 - [ ] Decide the rep set (§1).
 - [ ] Confirm the account type picklist (§2).
 - [ ] **Create/identify the primary-contact flag and the contact-inactive
@@ -284,12 +285,30 @@ SELECT AccountId, COUNT(Id) FROM Contact WHERE Email != null GROUP BY AccountId 
 
 ```bash
 SALESFORCE_PROVIDER=salesforce
-SF_LOGIN_URL=https://login.salesforce.com     # or the sandbox / My Domain URL
-SF_INSTANCE_URL=https://ids.my.salesforce.com
-SF_CLIENT_ID=…
-SF_CLIENT_SECRET=…
-SF_USERNAME=…
-SF_PASSWORD=…                                  # append the security token if required
+SF_AUTH_FLOW=client_credentials
+SF_LOGIN_URL=https://idsculpture.my.salesforce.com   # My Domain host, not login.salesforce.com
+SF_CLIENT_ID=…                                       # External Client App Consumer Key
+SF_CLIENT_SECRET=…                                   # External Client App Consumer Secret
+```
+
+**Authentication** — the app uses the OAuth 2.0 **client credentials** flow
+against an External Client App. The integration identity
+(`ids.opportunitycheckin@idsculpture.com`) is configured in Salesforce as the
+app's **Run As** user and is never sent in the request, so there is no user
+password to rotate or leak. This requires, on the External Client App:
+
+- OAuth Settings → Flow Enablement → **Enable Client Credentials Flow**
+- Policies → Client Credentials Flow → **Run As** = the integration user
+
+Set `SF_AUTH_FLOW=password` (plus `SF_USERNAME`/`SF_PASSWORD`) only if org
+policy forbids client credentials. The flow logic is isolated in
+`live/auth.ts`; adding JWT bearer later means adding a branch there and
+nothing else.
+
+Verify any org before switching the provider on:
+
+```bash
+npm run sf:smoke     # read-only: authenticates, confirms identity, describes objects
 ```
 
 **Rehearsal** — point at a **sandbox** first and run one campaign against two or

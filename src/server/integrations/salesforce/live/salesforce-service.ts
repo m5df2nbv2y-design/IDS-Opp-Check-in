@@ -11,6 +11,7 @@ import {
   type SalesforceRep,
   type SalesforceService,
 } from "../types";
+import { requestAccessToken } from "./auth";
 
 /**
  * ===========================================================================
@@ -20,9 +21,12 @@ import {
  * Nothing else in the application changes: set
  *
  *   SALESFORCE_PROVIDER=salesforce
- *   SF_LOGIN_URL / SF_CLIENT_ID / SF_CLIENT_SECRET / SF_USERNAME / SF_PASSWORD
+ *   SF_LOGIN_URL / SF_CLIENT_ID / SF_CLIENT_SECRET
  *
  * and the factory in ../index.ts returns this class instead of the mock.
+ * Authentication (External Client App, client credentials by default) lives in
+ * ./auth.ts — this file only queries and writes. Verify an org before turning
+ * the provider on with `npm run sf:smoke`, which is read-only.
  *
  * Four queries need org-specific confirmation before go-live — each is a single
  * constant below, and each is listed in ../FIELD-MAPPING.md:
@@ -180,39 +184,17 @@ export class LiveSalesforceService implements SalesforceService {
 
   // -- transport ------------------------------------------------------------
 
+  /**
+   * Obtains and caches an access token. The flow itself lives in ./auth.ts —
+   * this only decides when to re-request one.
+   */
   private async authenticate(): Promise<SalesforceAuth> {
     if (this.auth && this.auth.expiresAt > Date.now()) return this.auth;
 
-    const { clientId, clientSecret, username, password, loginUrl } = env.salesforce;
-    if (!clientId || !clientSecret || !username || !password) {
-      throw new SalesforceSyncError(
-        "Salesforce credentials are not configured. Set SF_CLIENT_ID, SF_CLIENT_SECRET, SF_USERNAME and SF_PASSWORD, or run with SALESFORCE_PROVIDER=mock.",
-        { code: "NOT_CONFIGURED", retryable: false },
-      );
-    }
-
-    const response = await fetch(`${loginUrl}/services/oauth2/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "password",
-        client_id: clientId,
-        client_secret: clientSecret,
-        username,
-        password,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new SalesforceSyncError(`Salesforce authentication failed (${response.status}).`, {
-        code: "AUTH_FAILED",
-      });
-    }
-
-    const json = (await response.json()) as { access_token: string; instance_url: string };
+    const token = await requestAccessToken();
     this.auth = {
-      accessToken: json.access_token,
-      instanceUrl: env.salesforce.instanceUrl || json.instance_url,
+      accessToken: token.accessToken,
+      instanceUrl: token.instanceUrl,
       expiresAt: Date.now() + 30 * 60 * 1000,
     };
     return this.auth;

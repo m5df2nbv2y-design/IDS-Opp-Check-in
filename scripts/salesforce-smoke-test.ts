@@ -2,6 +2,13 @@ import "dotenv/config";
 import { ACCOUNT_TYPES } from "@/lib/account-types";
 import { env } from "@/lib/env";
 import { OPPORTUNITY_STAGES } from "@/lib/stages";
+import {
+  fetchIdentity,
+  getAuthFlow,
+  missingCredentials,
+  requestAccessToken,
+} from "@/server/integrations/salesforce/live/auth";
+import { LiveSalesforceService } from "@/server/integrations/salesforce/live/salesforce-service";
 
 /**
  * Read-only Salesforce/SFX connection smoke test.
@@ -83,64 +90,54 @@ function info(message: string) {
   console.log(`    ${message}`);
 }
 
-/** Last four characters only — enough to identify, useless to steal. */
+/**
+ * Last four characters only — enough to confirm which credential loaded,
+ * useless to steal. Values too short to mask safely are never echoed.
+ */
 function fingerprint(value: string): string {
   if (!value) return "(not set)";
-  return `${"•".repeat(Math.max(0, Math.min(8, value.length - 4)))}${value.slice(-4)}`;
+  if (value.length < 12) return `(set, ${value.length} chars — too short to display safely)`;
+  return `${"•".repeat(8)}${value.slice(-4)} (${value.length} chars)`;
 }
 
+/**
+ * Reports the loaded configuration (masked) and authenticates through the same
+ * module the application itself uses, so a pass here means the app's own auth
+ * path works — not merely that some credentials exist somewhere.
+ */
 async function authenticate(): Promise<{ accessToken: string; instanceUrl: string }> {
-  const { clientId, clientSecret, username, password, loginUrl } = env.salesforce;
+  const flow = getAuthFlow();
 
-  const missing = [
-    !clientId && "SF_CLIENT_ID",
-    !clientSecret && "SF_CLIENT_SECRET",
-    !username && "SF_USERNAME",
-    !password && "SF_PASSWORD",
-  ].filter(Boolean);
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required credentials in .env: ${missing.join(", ")}.\n` +
-        `    The OAuth password grant needs all four — the Consumer Key and Secret alone are not enough.`,
-    );
+  info(`auth flow:     ${flow}${flow === "client_credentials" ? "  (External Client App Run As user)" : ""}`);
+  info(`login url:     ${env.salesforce.loginUrl}`);
+  info(`client id:     ${fingerprint(env.salesforce.clientId)}`);
+  info(`client secret: ${fingerprint(env.salesforce.clientSecret)}`);
+  if (flow === "password") {
+    info(`username:      ${env.salesforce.username || "(not set)"}`);
+    info(`password:      ${fingerprint(env.salesforce.password)} (security token appended?)`);
+  } else {
+    info(`username/password: not used by this flow — identity comes from the app's Run As user`);
   }
-
-  info(`login url:     ${loginUrl}`);
-  info(`client id:     ${fingerprint(clientId)}`);
-  info(`client secret: ${fingerprint(clientSecret)}`);
-  info(`username:      ${username}`);
-  info(`password:      ${fingerprint(password)} (security token appended?)`);
   console.log();
 
-  const response = await fetch(`${loginUrl}/services/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "password",
-      client_id: clientId,
-      client_secret: clientSecret,
-      username,
-      password,
-    }),
-  });
-
-  const body = await response.text();
-  if (!response.ok) {
-    let hint = "";
-    if (body.includes("invalid_grant")) {
-      hint =
-        "\n    invalid_grant usually means: wrong password, missing security token appended to " +
-        "the password, the user's IP isn't allow-listed, or the password grant is disabled on " +
-        "the Connected App (OAuth policies → permitted flows).";
-    } else if (body.includes("invalid_client")) {
-      hint = "\n    invalid_client usually means the Consumer Key/Secret don't match this login URL (prod vs sandbox).";
-    }
-    throw new Error(`Authentication failed (${response.status}): ${body}${hint}`);
+  const missing = missingCredentials(flow);
+  if (missing.length > 0) {
+    throw new Error(`Missing required credentials in .env for the ${flow} flow: ${missing.join(", ")}.`);
   }
 
-  const json = JSON.parse(body) as { access_token: string; instance_url: string };
-  return { accessToken: json.access_token, instanceUrl: env.salesforce.instanceUrl || json.instance_url };
+  // The client credentials flow is issued by the org's My Domain host. The
+  // generic login host usually rejects it, so flag it before the round trip.
+  if (flow === "client_credentials" && /(^|\/\/)(login|test)\.salesforce\.com/.test(env.salesforce.loginUrl)) {
+    warn(
+      `SF_LOGIN_URL is "${env.salesforce.loginUrl}". The client credentials flow normally requires ` +
+        `your My Domain host (e.g. https://idsculpture.my.salesforce.com, or ` +
+        `https://idsculpture--<sandbox>.sandbox.my.salesforce.com). Expect invalid_client if this is wrong.`,
+    );
+    console.log();
+  }
+
+  const token = await requestAccessToken(flow);
+  return { accessToken: token.accessToken, instanceUrl: token.instanceUrl };
 }
 
 async function describe(
@@ -269,6 +266,30 @@ async function main() {
     process.exit(1);
   }
 
+  // ---- 1b. Who are we actually acting as? ---------------------------------
+  section("1b. Integration identity (who this application acts as)");
+  try {
+    const identity = await fetchIdentity({ ...auth, identityUrl: null });
+    if (!identity) {
+      warn("Could not read /services/oauth2/userinfo — the token works, but identity is unconfirmed.");
+    } else {
+      ok(`Running as: ${identity.displayName} <${identity.username}>`);
+      info(`user id:         ${identity.userId}`);
+      info(`organization id: ${identity.organizationId}`);
+      if (/@idsculpture\.com$/i.test(identity.username) && identity.username.startsWith("ids.opportunitycheckin")) {
+        ok("This is the dedicated integration user, as intended.");
+      } else {
+        warn(
+          `Expected the dedicated integration user (ids.opportunitycheckin@idsculpture.com). ` +
+            `Acting as a personal account means this app inherits that person's permissions and ` +
+            `breaks when they leave — check the External Client App's Run As setting.`,
+        );
+      }
+    }
+  } catch (error) {
+    warn(error instanceof Error ? error.message : String(error));
+  }
+
   // ---- 2. Opportunity -----------------------------------------------------
   section("2. Opportunity fields");
   let opportunityDescribe: DescribeResult | null = null;
@@ -376,6 +397,30 @@ async function main() {
     }
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
+  }
+
+  // ---- 7. The application's own provider ----------------------------------
+  section("7. The application's Salesforce provider (read-only call)");
+  try {
+    // Exercises LiveSalesforceService end to end — auth, SOQL, and mapping —
+    // using getSalesReps(), which touches only standard User fields and so is
+    // unaffected by the custom-field decisions still outstanding above.
+    const reps = await new LiveSalesforceService().getSalesReps();
+    ok(`LiveSalesforceService.getSalesReps() returned ${reps.length} active users.`);
+    if (reps.length === 0) {
+      warn("No active users returned — check the integration user's access to the User object.");
+    } else {
+      info("Sample (first 3):");
+      for (const rep of reps.slice(0, 3)) info(`  ${rep.name} <${rep.email}>`);
+      info("");
+      info("Note: this returns ALL active users. Narrowing it to actual sales reps is");
+      info("decision #1 in FIELD-MAPPING.md — a Role, Profile, or custom flag.");
+    }
+  } catch (error) {
+    fail(
+      `The application's provider could not read from Salesforce: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   // ---- Summary ------------------------------------------------------------
