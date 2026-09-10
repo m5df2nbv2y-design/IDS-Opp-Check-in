@@ -5,6 +5,11 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { launchCampaign, sendReminders } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
+import {
+  markSignalReviewed,
+  refreshSmartsheetSignals,
+  saveSignalDraftResponse,
+} from "@/server/services/smartsheet-signal-service";
 import { retryFailedSyncs } from "@/server/services/sync-service";
 
 /**
@@ -60,4 +65,26 @@ export async function clearMockValidationBlockAction(externalId: string) {
     data: { syncBlocked: false },
   });
   revalidatePath("/admin/salesforce");
+}
+
+/**
+ * Pull the latest Smartsheet signals and re-run matching against the cached
+ * opportunity catalog. Read-only against Smartsheet; writes only to our own
+ * OpportunitySignal cache — never to Salesforce or back to Smartsheet.
+ */
+export async function refreshSmartsheetSignalsAction() {
+  await refreshSmartsheetSignals("admin");
+  revalidatePath("/admin");
+}
+
+export async function markSignalReviewedAction(signalId: string) {
+  await markSignalReviewed(signalId, "admin");
+  revalidatePath("/admin");
+}
+
+/** Saves a draft reply locally. Nothing is sent anywhere. */
+export async function saveSignalDraftResponseAction(signalId: string, formData: FormData) {
+  const draft = String(formData.get("draftResponse") ?? "");
+  await saveSignalDraftResponse(signalId, draft, "admin");
+  revalidatePath("/admin");
 }

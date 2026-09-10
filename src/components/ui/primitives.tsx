@@ -71,6 +71,40 @@ export function AccountTypeBadge({ label }: { label: string }) {
   );
 }
 
+const SIGNAL_MATCH_STYLES: Record<string, { label: string; className: string }> = {
+  MATCHED: { label: "Matched", className: "bg-success-soft text-success border-success/25" },
+  AMBIGUOUS: { label: "Ambiguous", className: "bg-warning-soft text-warning border-warning/25" },
+  UNMATCHED: { label: "Unmatched", className: "bg-danger-soft text-danger border-danger/25" },
+};
+
+export function SignalMatchBadge({ status }: { status: string }) {
+  const style = SIGNAL_MATCH_STYLES[status] ?? SIGNAL_MATCH_STYLES.UNMATCHED;
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${style.className}`}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+const SIGNAL_STATUS_STYLES: Record<string, { label: string; className: string }> = {
+  NEW: { label: "New", className: "bg-brand-soft text-brand border-brand/25" },
+  REVIEWED: { label: "Reviewed", className: "bg-canvas text-muted border-line-strong" },
+  DRAFTED: { label: "Draft saved", className: "bg-success-soft text-success border-success/25" },
+};
+
+export function SignalStatusBadge({ status }: { status: string }) {
+  const style = SIGNAL_STATUS_STYLES[status] ?? SIGNAL_STATUS_STYLES.NEW;
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${style.className}`}
+    >
+      {style.label}
+    </span>
+  );
+}
+
 export function StatTile({
   label,
   value,

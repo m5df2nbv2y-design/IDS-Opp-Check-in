@@ -29,6 +29,9 @@ export const env = {
   /** "mock" | "salesforce" */
   salesforceProvider: str("SALESFORCE_PROVIDER", "mock"),
 
+  /** "mock" | "smartsheet" */
+  smartsheetProvider: str("SMARTSHEET_PROVIDER", "mock"),
+
   /** "mock" | "resend" | "microsoft365" */
   emailProvider: str("EMAIL_PROVIDER", "mock"),
   emailFromName: str("EMAIL_FROM_NAME", "IDS Sales Operations"),
@@ -47,6 +50,11 @@ export const env = {
   },
 
   resendApiKey: process.env.RESEND_API_KEY ?? "",
+
+  smartsheet: {
+    baseUrl: str("SMARTSHEET_BASE_URL", "https://api.smartsheet.com/2.0"),
+    apiKey: process.env.SMARTSHEET_API_KEY ?? "",
+  },
 } as const;
 
 export const isDemoMode = env.salesforceProvider === "mock";

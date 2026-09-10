@@ -10,6 +10,7 @@ import {
 } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { completeCheckIn, saveResponse } from "@/server/services/response-service";
+import { refreshSmartsheetSignals } from "@/server/services/smartsheet-signal-service";
 
 /**
  * Builds a demo-ready dataset by driving the real workflow — mock Salesforce
@@ -85,6 +86,13 @@ async function main() {
   }
 
   await backdateCampaign(spring.campaignId, 178);
+
+  // ---- Smartsheet signals --------------------------------------------------
+  console.log("Pulling Smartsheet signals and matching them to opportunities…");
+  const signals = await refreshSmartsheetSignals("seed");
+  console.log(
+    `  ${signals.fetched} signals · ${signals.matched} matched · ${signals.ambiguous} ambiguous · ${signals.unmatched} unmatched`,
+  );
 
   // ---- Report -------------------------------------------------------------
   const summary = await getCampaignSummary(spring.campaignId);

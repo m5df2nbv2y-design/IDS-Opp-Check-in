@@ -37,6 +37,7 @@ model Account {
   contacts      ExternalContact[]
   opportunities Opportunity[]
   auditEvents   AuditEvent[]
+  signals       OpportunitySignal[]
 }
 
 /// A person at an external organization. This is the check-in RECIPIENT.
@@ -113,6 +114,7 @@ model Opportunity {
   contact      ExternalContact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
   checkInItems CheckInOpportunity[]
   auditEvents  AuditEvent[]
+  signals      OpportunitySignal[]
 
   @@index([accountId])
   @@index([contactId])
@@ -258,6 +260,59 @@ model EmailMessage {
   createdAt   DateTime  @default(now())
 
   @@index([createdAt])
+}
+
+/// A Smartsheet signal (reminder/task/comment/status change) cross-referenced
+/// against the cached Opportunity/Account catalog. This is the automated
+/// "context gathering" step that replaces a PM manually checking Salesforce
+/// after getting a Smartsheet email — see signal-matching-service.ts for the
+/// matching rules and smartsheet-signal-service.ts for ingestion + the
+/// review/draft workflow. Nothing here writes back to Salesforce or Smartsheet.
+model OpportunitySignal {
+  id         String @id @default(cuid())
+  /// Smartsheet row/event id — the join key back to the source sheet.
+  externalId String @unique
+  provider   String @default("smartsheet")
+
+  sheetName      String
+  /// REMINDER | TASK_DUE | COMMENT | STATUS_CHANGE
+  signalType     String
+  title          String
+  message        String
+  assignedToName String?
+  dueDate        DateTime?
+  occurredAt     DateTime
+  sourceUrl      String?
+
+  /// What Smartsheet actually carried, kept even after matching so the audit
+  /// trail shows what the raw signal said versus what it was resolved to.
+  rawAccountName           String?
+  rawProjectName           String?
+  rawOpportunityExternalId String?
+
+  /// Set by signal-matching-service.ts. MATCHED | AMBIGUOUS | UNMATCHED.
+  matchStatus   String  @default("UNMATCHED")
+  matchReason   String?
+  opportunityId String?
+  accountId     String?
+
+  /// PM workflow state. Purely local — no external sends or writes yet.
+  status         String    @default("NEW") // NEW | REVIEWED | DRAFTED
+  reviewedAt     DateTime?
+  reviewedBy     String?
+  draftResponse  String?
+  draftedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  account     Account?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([matchStatus])
+  @@index([status])
+  @@index([opportunityId])
+  @@index([accountId])
 }
 
 // ---------------------------------------------------------------------------

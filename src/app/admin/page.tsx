@@ -1,13 +1,18 @@
 import Link from "next/link";
-import { prepareCampaignAction } from "./actions";
+import { prepareCampaignAction, refreshSmartsheetSignalsAction } from "./actions";
 import { ActionButton } from "@/components/admin/action-button";
 import { RecipientTable } from "@/components/admin/recipient-table";
+import { SignalList, type SignalListItem } from "@/components/admin/signal-list";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StatTile } from "@/components/ui/primitives";
 import { accountTypePluralLabel } from "@/lib/account-types";
 import { formatCompactAmount, formatDate, pluralize } from "@/lib/format";
 import { listCampaigns, previewCampaign } from "@/server/services/campaign-service";
 import { listUnresolvedOpportunities } from "@/server/services/catalog-service";
+import {
+  listOpenOpportunitiesForAccount,
+  listSignals,
+} from "@/server/services/smartsheet-signal-service";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +22,41 @@ export const dynamic = "force-dynamic";
  * primary unit here is the external contact, never the internal rep.
  */
 export default async function AdminDashboardPage() {
-  const [preview, campaigns, unresolved] = await Promise.all([
+  const [preview, campaigns, unresolved, signals] = await Promise.all([
     previewCampaign(),
     listCampaigns(),
     listUnresolvedOpportunities(),
+    listSignals(),
   ]);
   const [current, ...previous] = campaigns;
+
+  const signalItems: SignalListItem[] = await Promise.all(
+    signals.map(async (signal) => ({
+      id: signal.id,
+      sheetName: signal.sheetName,
+      signalType: signal.signalType,
+      title: signal.title,
+      message: signal.message,
+      assignedToName: signal.assignedToName,
+      dueDate: signal.dueDate,
+      occurredAt: signal.occurredAt,
+      sourceUrl: signal.sourceUrl,
+      rawAccountName: signal.rawAccountName,
+      rawProjectName: signal.rawProjectName,
+      matchStatus: signal.matchStatus,
+      matchReason: signal.matchReason,
+      status: signal.status,
+      reviewedAt: signal.reviewedAt,
+      draftResponse: signal.draftResponse,
+      draftedAt: signal.draftedAt,
+      opportunity: signal.opportunity,
+      account: signal.account,
+      candidates:
+        signal.matchStatus === "AMBIGUOUS" && signal.accountId
+          ? await listOpenOpportunitiesForAccount(signal.accountId)
+          : undefined,
+    })),
+  );
 
   return (
     <div className="space-y-8">
@@ -41,6 +75,32 @@ export default async function AdminDashboardPage() {
           🚀 SEND CHECK-IN TO ALL
         </ActionButton>
       </div>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-[17px] font-semibold tracking-tight text-ink">
+            Smartsheet signals{" "}
+            <span className="font-normal text-muted">({signalItems.length})</span>
+          </h2>
+          <ActionButton action={refreshSmartsheetSignalsAction} size="sm" pendingLabel="Checking…">
+            Check Smartsheet
+          </ActionButton>
+        </div>
+        <p className="max-w-2xl text-[13px] text-muted">
+          Reminders, tasks, and comments Smartsheet would otherwise send by email —
+          matched against the opportunity catalog automatically so the context is
+          here instead of gathered by hand. Review and drafting are local only;
+          nothing is sent from this screen.
+        </p>
+        {signalItems.length === 0 ? (
+          <EmptyState
+            title="No signals yet"
+            body="Press Check Smartsheet to pull in reminders, tasks, and comments and match them against open opportunities."
+          />
+        ) : (
+          <SignalList signals={signalItems} />
+        )}
+      </section>
 
       <section className="space-y-3">
         <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-muted">
