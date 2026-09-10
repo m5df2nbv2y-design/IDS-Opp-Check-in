@@ -105,6 +105,19 @@ model Opportunity {
   /// False once the opportunity leaves the open set in Salesforce. Closed
   /// opportunities are kept, never deleted, so past campaigns survive.
   isOpen          Boolean @default(true)
+
+  /// Terminal outcome, captured once the opportunity leaves the open set.
+  /// Salesforce's open-opportunity query can never return these values, so they
+  /// are fetched deliberately and then frozen — CFO reporting must not depend on
+  /// re-reading Salesforce, which overwrites its own history.
+  isWon             Boolean?
+  finalStage        String?
+  finalAmount       Float?
+  /// The actual CloseDate on the record when it closed.
+  closedAt          DateTime?
+  /// When WE observed the outcome, which is not when it happened.
+  outcomeObservedAt DateTime?
+
   lastSyncedAt    DateTime @default(now())
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -116,10 +129,12 @@ model Opportunity {
   auditEvents  AuditEvent[]
   signals      OpportunitySignal[]
   selections   CampaignSelection[]
+  snapshots    OpportunitySnapshot[]
 
   @@index([accountId])
   @@index([contactId])
   @@index([internalRepId])
+  @@index([isOpen])
 }
 
 /// One bi-annual campaign, e.g. "Fall 2026".
@@ -289,11 +304,67 @@ model CampaignSelection {
   selectedAt    DateTime @default(now())
   selectedBy    String?
 
+  /// The opportunity's value at the moment it was selected. Frozen here so
+  /// "what pipeline did we choose to intervene on?" stays exact, rather than
+  /// being inferred later from a mutable cache.
+  amountAtSelection    Float?
+  stageAtSelection     String?
+  closeDateAtSelection DateTime?
+
   campaign    Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, opportunityId])
   @@index([campaignId])
+}
+
+/// Append-only observation history for CFO reporting.
+///
+/// The Opportunity row is a mutable cache: every catalog refresh overwrites
+/// amount, stage and close date, destroying the previous values. This table is
+/// the durable record of what was true and when, so pipeline-by-stage over
+/// time, value over time, and stage movement remain answerable without
+/// re-reading Salesforce — which overwrites its own history too.
+///
+/// A row is written only when a tracked field CHANGES (plus at campaign launch
+/// and when an outcome is observed), which makes this a change log rather than
+/// a daily fact dump.
+///
+/// Deliberately contains NO attribution. Interventions and outcomes are stored
+/// as independent timestamped facts; whether one influenced the other is a
+/// query-time methodology that can be defined and revised later. Encoding a
+/// causal claim here would make it permanent.
+model OpportunitySnapshot {
+  id            String   @id @default(cuid())
+  /// Nullable on purpose: a history row must outlive the Opportunity it
+  /// describes. `externalId` is the durable key.
+  opportunityId String?
+  /// Salesforce Id, denormalised so history survives a local cache rebuild.
+  externalId    String
+  observedAt    DateTime @default(now())
+  /// CATALOG_REFRESH | CAMPAIGN_LAUNCH | OUTCOME_OBSERVED
+  source        String
+
+  amount    Float
+  stage     String
+  closeDate DateTime?
+  isOpen    Boolean
+  /// Null while the opportunity is still open.
+  isWon     Boolean?
+
+  /// Names are denormalised on purpose: a historical row must stay readable
+  /// even if the account is renamed or the rep leaves.
+  accountId       String?
+  accountName     String
+  internalRepId   String?
+  internalRepName String
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+
+  @@index([opportunityId, observedAt])
+  @@index([observedAt])
+  @@index([externalId])
+  @@index([source])
 }
 
 /// A Smartsheet signal (reminder/task/comment/status change) cross-referenced

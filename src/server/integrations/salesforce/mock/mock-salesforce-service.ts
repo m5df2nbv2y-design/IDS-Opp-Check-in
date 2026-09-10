@@ -7,6 +7,7 @@ import {
   type SalesforceAccount,
   type SalesforceContact,
   type SalesforceOpportunity,
+  type SalesforceOpportunityOutcome,
   type SalesforceProviderInfo,
   type SalesforceRep,
   type SalesforceService,
@@ -128,6 +129,23 @@ export class MockSalesforceService implements SalesforceService {
   async getOpportunity(externalId: string): Promise<SalesforceOpportunity | null> {
     const record = await prisma.mockSalesforceOpportunity.findUnique({ where: { externalId } });
     return record ? this.toDomain(record) : null;
+  }
+
+  async getOpportunityOutcomes(externalIds: string[]): Promise<SalesforceOpportunityOutcome[]> {
+    if (externalIds.length === 0) return [];
+
+    const records = await prisma.mockSalesforceOpportunity.findMany({
+      where: { externalId: { in: externalIds } },
+    });
+
+    return records.map((record) => ({
+      externalId: record.externalId,
+      isClosed: record.isClosed,
+      isWon: record.stageName.toLowerCase() === "closed won",
+      stageName: record.stageName,
+      amount: record.amount,
+      closeDate: record.closeDate,
+    }));
   }
 
   async updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void> {

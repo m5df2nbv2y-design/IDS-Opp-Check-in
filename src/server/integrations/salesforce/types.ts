@@ -72,6 +72,24 @@ export type SalesforceOpportunity = {
  * Notes/comments are deliberately NOT written to Salesforce — the recipient's
  * comment is captured and shown in the admin UI and audit trail instead.
  */
+/**
+ * The terminal state of an opportunity that has left the open set.
+ *
+ * Deliberately NOT a `SalesforceOpportunity`: `stageName` is the raw org value
+ * ("Closed Won", "Closed Lost"), which is outside our four controlled stages
+ * and would be dropped by the normal mapping. Outcomes must be recorded as
+ * Salesforce reports them, not forced into the check-in vocabulary.
+ */
+export type SalesforceOpportunityOutcome = {
+  externalId: string;
+  isClosed: boolean;
+  isWon: boolean;
+  /** Raw Salesforce StageName — unmapped. */
+  stageName: string;
+  amount: number;
+  closeDate: Date | null;
+};
+
 export type OpportunityStatusUpdate = {
   externalId: string;
   stage: OpportunityStage;
@@ -100,6 +118,16 @@ export interface SalesforceService {
   getOpenOpportunities(options?: { ownerExternalIds?: string[] }): Promise<SalesforceOpportunity[]>;
 
   getOpportunity(externalId: string): Promise<SalesforceOpportunity | null>;
+
+  /**
+   * Terminal state for specific opportunities, including CLOSED ones.
+   *
+   * The open-opportunity query can never return these, so an outcome is only
+   * learnable by asking for the records by id after they disappear from the
+   * open set. Without this the application would silently lose every Won/Lost
+   * result.
+   */
+  getOpportunityOutcomes(externalIds: string[]): Promise<SalesforceOpportunityOutcome[]>;
 
   /** Push a stage change. Throws SalesforceSyncError when the org rejects it. */
   updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void>;

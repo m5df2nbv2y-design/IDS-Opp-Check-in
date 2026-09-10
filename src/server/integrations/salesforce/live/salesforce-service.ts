@@ -7,6 +7,7 @@ import {
   type SalesforceAccount,
   type SalesforceContact,
   type SalesforceOpportunity,
+  type SalesforceOpportunityOutcome,
   type SalesforceProviderInfo,
   type SalesforceRep,
   type SalesforceService,
@@ -159,6 +160,43 @@ export class LiveSalesforceService implements SalesforceService {
     );
     const row = rows[0];
     return row ? this.toDomain(row) : null;
+  }
+
+  async getOpportunityOutcomes(externalIds: string[]): Promise<SalesforceOpportunityOutcome[]> {
+    if (externalIds.length === 0) return [];
+
+    // SOQL IN-lists are bounded, so ask in chunks rather than one huge query.
+    const CHUNK = 200;
+    const outcomes: SalesforceOpportunityOutcome[] = [];
+
+    for (let i = 0; i < externalIds.length; i += CHUNK) {
+      const ids = externalIds.slice(i, i + CHUNK).map((id) => `'${escapeSoql(id)}'`).join(",");
+      const rows = await this.query<{
+        Id: string;
+        IsClosed: boolean;
+        IsWon: boolean;
+        StageName: string;
+        Amount: number | null;
+        CloseDate: string | null;
+      }>(
+        `SELECT Id, IsClosed, IsWon, StageName, Amount, CloseDate FROM Opportunity WHERE Id IN (${ids})`,
+      );
+
+      for (const row of rows) {
+        outcomes.push({
+          externalId: row.Id,
+          isClosed: row.IsClosed,
+          isWon: row.IsWon,
+          // Raw StageName — "Closed Won"/"Closed Lost" are outside the four
+          // controlled stages and must not be mapped away.
+          stageName: row.StageName,
+          amount: row.Amount ?? 0,
+          closeDate: row.CloseDate ? new Date(row.CloseDate) : null,
+        });
+      }
+    }
+
+    return outcomes;
   }
 
   async updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void> {

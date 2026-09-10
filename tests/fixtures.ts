@@ -5,6 +5,7 @@ import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service"
 
 /** Empties every workflow table and reloads the mock Salesforce org. */
 export async function resetDatabase() {
+  await prisma.opportunitySnapshot.deleteMany();
   await prisma.campaignSelection.deleteMany();
   await prisma.opportunitySignal.deleteMany();
   await prisma.auditEvent.deleteMany();

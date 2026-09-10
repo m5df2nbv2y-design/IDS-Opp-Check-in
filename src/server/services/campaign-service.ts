@@ -8,6 +8,7 @@ import {
 } from "@/server/integrations/email/templates/check-in-email";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
+import { recordSnapshot, SNAPSHOT_SOURCES } from "./snapshot-service";
 
 export type RecipientStatus =
   | "PENDING"
@@ -252,6 +253,25 @@ export async function launchCampaign(options: {
         position: index,
       })),
     });
+
+    // Mark the intervention point on the observation timeline, so "state when
+    // we asked" is queryable from one place without joining the check-in items.
+    for (const opportunity of items) {
+      await recordSnapshot({
+        opportunityId: opportunity.id,
+        externalId: opportunity.externalId,
+        source: SNAPSHOT_SOURCES.CAMPAIGN_LAUNCH,
+        amount: opportunity.amount,
+        stage: opportunity.currentStage,
+        closeDate: opportunity.closeDate,
+        isOpen: true,
+        isWon: null,
+        accountId: opportunity.accountId,
+        accountName: opportunity.account.name,
+        internalRepId: opportunity.internalRepId,
+        internalRepName: opportunity.internalRep.name,
+      });
+    }
 
     if (!sendEmails) continue;
 

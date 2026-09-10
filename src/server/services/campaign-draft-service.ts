@@ -216,7 +216,9 @@ export async function setSelection(input: {
       resolutionStatus: "RESOLVED",
       contactId: { not: null },
     },
-    select: { id: true },
+    // Values are frozen onto the selection below, so "what pipeline did we
+    // choose to intervene on?" stays exact even after the cache is overwritten.
+    select: { id: true, amount: true, currentStage: true, closeDate: true },
   });
 
   // Skip anything already selected. Selecting a whole account while some of its
@@ -239,6 +241,9 @@ export async function setSelection(input: {
       campaignId,
       opportunityId: opportunity.id,
       selectedBy: input.actor ?? "admin",
+      amountAtSelection: opportunity.amount,
+      stageAtSelection: opportunity.currentStage,
+      closeDateAtSelection: opportunity.closeDate,
     })),
   });
 }
