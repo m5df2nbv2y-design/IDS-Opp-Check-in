@@ -28,40 +28,41 @@ import { requestAccessToken } from "./auth";
  * ./auth.ts — this file only queries and writes. Verify an org before turning
  * the provider on with `npm run sf:smoke`, which is read-only.
  *
- * Four queries need org-specific confirmation before go-live — each is a single
- * constant below, and each is listed in ../FIELD-MAPPING.md:
- *
- *   1. OPEN_OPPORTUNITY_SOQL  — what "open" means, and where the partner
- *      account and check-in contact live on the Opportunity.
- *   2. ACCOUNT_SOQL           — which accounts are external partners.
- *   3. CONTACT_SOQL           — which contacts are check-in recipients, and
- *      which field marks the primary one.
- *   4. NOTE_FIELD             — where the recipient's note is written.
+ * The field questions are now settled against the real org (see
+ * ../FIELD-MAPPING.md): "open" is IsClosed = false, the account is standard
+ * AccountId, and the recipient is the primary OpportunityContactRole. Write-back
+ * scope is StageName and CloseDate only — NOTE_FIELD is retained for the mock
+ * provider's benefit but is not part of the confirmed write scope.
  */
 
 const API_VERSION = "v61.0";
 const NOTE_FIELD = "Description";
 
 /**
- * `IDS_CheckIn_Contact__c` and `Partner_Account__c` are placeholders for the
- * org's real fields. If IDS uses Opportunity Contact Roles instead of a lookup,
- * replace the field with a subquery on `OpportunityContactRoles` (see §2 of
- * FIELD-MAPPING.md) — the mapping in `toDomain` is the only thing that changes.
+ * The primary contact role subquery is the recipient. Confirmed against the
+ * org: 78.6% of open opportunities carry one, and IDS maintains it deliberately.
+ * There is no partner-account lookup and no custom check-in contact field —
+ * standard AccountId and OpportunityContactRole are the real model.
  */
 const OPEN_OPPORTUNITY_SOQL = `
   SELECT Id, Name, Amount, StageName, CloseDate, OwnerId,
          AccountId, Account.Name,
-         Partner_Account__c, IDS_CheckIn_Contact__c
+         (SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)
   FROM Opportunity
   WHERE IsClosed = false
 `;
 
 const ACCOUNT_SOQL = `SELECT Id, Name, Type FROM Account WHERE IsDeleted = false`;
 
+/**
+ * Contacts WITHOUT an email are deliberately included, so resolution can tell
+ * "primary contact has no email" apart from "contact not found" and report the
+ * difference on the needs-attention list.
+ */
 const CONTACT_SOQL = `
-  SELECT Id, AccountId, Name, Email, IsDeleted, IDS_Primary_CheckIn_Contact__c
+  SELECT Id, AccountId, Name, Email
   FROM Contact
-  WHERE IsDeleted = false AND Email != null
+  WHERE AccountId != null
 `;
 
 type SalesforceAuth = { accessToken: string; instanceUrl: string; expiresAt: number };
@@ -113,7 +114,6 @@ export class LiveSalesforceService implements SalesforceService {
       AccountId: string | null;
       Name: string;
       Email: string;
-      IDS_Primary_CheckIn_Contact__c?: boolean;
     }>(soql);
 
     return rows
@@ -123,7 +123,10 @@ export class LiveSalesforceService implements SalesforceService {
         accountExternalId: row.AccountId!,
         name: row.Name,
         email: row.Email,
-        isPrimary: Boolean(row.IDS_Primary_CheckIn_Contact__c),
+        // No primary-contact flag exists on Contact in this org, and
+        // resolution does not use one — the primary role on the Opportunity is
+        // the sole recipient signal.
+        isPrimary: false,
         // Salesforce Contacts have no IsActive; a deactivated contact is
         // normally modelled with a custom field or a status picklist. Confirm
         // with the org and filter here.
@@ -264,8 +267,8 @@ export class LiveSalesforceService implements SalesforceService {
       // The partner account drives recipient resolution. Orgs that sell direct
       // leave the lookup empty, in which case the opportunity's own Account is
       // both the customer and the partner.
-      accountExternalId: row.Partner_Account__c ?? row.AccountId ?? "",
-      contactExternalId: row.IDS_CheckIn_Contact__c ?? null,
+      accountExternalId: row.AccountId ?? "",
+      primaryContactExternalId: row.OpportunityContactRoles?.records?.[0]?.ContactId ?? null,
     };
   }
 }
@@ -279,8 +282,7 @@ type SalesforceOpportunityRow = {
   OwnerId: string;
   AccountId: string | null;
   Account: { Name: string } | null;
-  Partner_Account__c?: string | null;
-  IDS_CheckIn_Contact__c?: string | null;
+  OpportunityContactRoles?: { records: { ContactId: string }[] } | null;
 };
 
 function escapeSoql(value: string): string {

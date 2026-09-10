@@ -43,20 +43,22 @@ describe("campaign workflow", () => {
     const summary = await getCampaignSummary(campaignId);
     expect(summary).not.toBeNull();
 
-    // 36 open opportunities; one cannot be routed to a contact.
-    expect(summary!.opportunityCount).toBe(35);
-    expect(summary!.recipientCount).toBe(12);
-    expect(summary!.organizationCount).toBe(11);
-    expect(summary!.emailsSent).toBe(12);
+    // 36 open opportunities. Three cannot be routed under the canonical rule:
+    // Ridgeline and one Harborview opportunity have no primary contact role,
+    // and Harborview's other names Greta Sims, who has no email address.
+    expect(summary!.opportunityCount).toBe(33);
+    expect(summary!.recipientCount).toBe(11);
+    expect(summary!.organizationCount).toBe(10);
+    expect(summary!.emailsSent).toBe(11);
 
     const emails = await prisma.emailMessage.findMany({ where: { campaignId, kind: "INVITE" } });
-    expect(emails).toHaveLength(12);
+    expect(emails).toHaveLength(11);
     // One email per contact — no contact is emailed twice.
-    expect(new Set(emails.map((email) => email.toEmail)).size).toBe(12);
+    expect(new Set(emails.map((email) => email.toEmail)).size).toBe(11);
 
     const preview = await previewCampaign();
     expect(preview.totalOpenCount).toBe(36);
-    expect(preview.unresolvedCount).toBe(1);
+    expect(preview.unresolvedCount).toBe(3);
   });
 
   it("sends one check-in covering opportunities from three different IDS reps", async () => {
@@ -287,7 +289,7 @@ describe("campaign workflow", () => {
     expect(closed.completedAt).not.toBeNull();
 
     const summary = await getCampaignSummary(campaignId);
-    expect(summary!.completedCount).toBe(12);
+    expect(summary!.completedCount).toBe(11);
     expect(summary!.pendingCount).toBe(0);
   });
 });

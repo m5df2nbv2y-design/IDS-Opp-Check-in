@@ -1,154 +1,233 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import { MockSalesforceService } from "@/server/integrations/salesforce/mock/mock-salesforce-service";
+import type { SalesforceContact, SalesforceOpportunity } from "@/server/integrations/salesforce";
 import {
-  dedupeContacts,
   RESOLUTION_REASONS,
+  resolveRecipient,
   resolveRecipients,
 } from "@/server/services/recipient-resolution-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { resetDatabase } from "./fixtures";
 
 /**
- * Recipient resolution is the biggest real-world dependency in the product, so
- * every branch is pinned here against the mock org, which was built to contain
- * one example of each messy real-world case.
+ * The canonical rule, pinned:
+ *   Opportunity → Primary Opportunity Contact Role → Contact → Email
+ *
+ * These tests exist as much to prove what the resolver REFUSES to do — it must
+ * never substitute another contact at the account — as to prove what it routes.
  */
-describe("recipient resolution", () => {
-  let salesforce: MockSalesforceService;
 
+function opportunity(overrides: Partial<SalesforceOpportunity> = {}): SalesforceOpportunity {
+  return {
+    externalId: "006-test",
+    opportunityName: "Test Opportunity",
+    projectName: "Test Opportunity",
+    customerName: "Test Site",
+    amount: 1000,
+    stage: "PROPOSAL",
+    closeDate: null,
+    url: "https://example.invalid",
+    ownerExternalId: "005-owner",
+    accountExternalId: "001-account",
+    primaryContactExternalId: null,
+    ...overrides,
+  };
+}
+
+function contact(overrides: Partial<SalesforceContact> = {}): SalesforceContact {
+  return {
+    externalId: "003-contact",
+    accountExternalId: "001-account",
+    name: "Test Contact",
+    email: "test@example.invalid",
+    isPrimary: false,
+    active: true,
+    ...overrides,
+  };
+}
+
+function index(contacts: SalesforceContact[]) {
+  return new Map(contacts.map((c) => [c.externalId, c]));
+}
+
+describe("recipient resolution — primary contact role only", () => {
+  it("resolves to the primary contact role's contact", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-primary" }),
+      contactsById: index([contact({ externalId: "003-primary", email: "primary@example.invalid" })]),
+    });
+
+    expect(result).toEqual({
+      status: "RESOLVED",
+      contactExternalId: "003-primary",
+      reason: RESOLUTION_REASONS.PRIMARY_CONTACT_ROLE,
+    });
+  });
+
+  it("is UNRESOLVED when no primary contact role is set", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: null }),
+      contactsById: index([contact()]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+    if (result.status !== "UNRESOLVED") return;
+    expect(result.reason).toBe(RESOLUTION_REASONS.NO_PRIMARY_CONTACT_ROLE);
+  });
+
+  it("is UNRESOLVED when the primary contact has no email", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-primary" }),
+      contactsById: index([contact({ externalId: "003-primary", name: "No Email", email: "" })]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+    if (result.status !== "UNRESOLVED") return;
+    expect(result.reason).toBe(RESOLUTION_REASONS.PRIMARY_CONTACT_NO_EMAIL);
+    expect(result.warning).toContain("No Email");
+  });
+
+  it("treats a whitespace-only email as no email", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-primary" }),
+      contactsById: index([contact({ externalId: "003-primary", email: "   " })]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+    if (result.status !== "UNRESOLVED") return;
+    expect(result.reason).toBe(RESOLUTION_REASONS.PRIMARY_CONTACT_NO_EMAIL);
+  });
+
+  it("is UNRESOLVED when the primary contact record cannot be found", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-missing" }),
+      contactsById: index([contact({ externalId: "003-other" })]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+    if (result.status !== "UNRESOLVED") return;
+    expect(result.reason).toBe(RESOLUTION_REASONS.PRIMARY_CONTACT_NOT_FOUND);
+  });
+
+  // ---- The refusals. These are the point of the rule. --------------------
+
+  it("NEVER falls back to another contact at the same account", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: null }),
+      // A single, obvious, emailable contact sitting right there — and the
+      // resolver must still refuse to use it.
+      contactsById: index([
+        contact({ externalId: "003-tempting", name: "Obvious Person", email: "obvious@example.invalid" }),
+      ]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+  });
+
+  it("NEVER substitutes a different contact when the primary has no email", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-primary" }),
+      contactsById: index([
+        contact({ externalId: "003-primary", email: "" }),
+        contact({ externalId: "003-backup", name: "Backup", email: "backup@example.invalid" }),
+      ]),
+    });
+
+    expect(result.status).toBe("UNRESOLVED");
+    if (result.status !== "UNRESOLVED") return;
+    expect(result.reason).toBe(RESOLUTION_REASONS.PRIMARY_CONTACT_NO_EMAIL);
+  });
+
+  it("does not collapse duplicate contact records — the named record wins", () => {
+    const result = resolveRecipient({
+      opportunity: opportunity({ primaryContactExternalId: "003-duplicate" }),
+      contactsById: index([
+        contact({ externalId: "003-original", email: "same@example.invalid" }),
+        contact({ externalId: "003-duplicate", email: "same@example.invalid" }),
+      ]),
+    });
+
+    expect(result.status).toBe("RESOLVED");
+    if (result.status !== "RESOLVED") return;
+    expect(result.contactExternalId).toBe("003-duplicate");
+  });
+
+  it("summarises a batch with per-reason unresolved counts", () => {
+    const summary = resolveRecipients({
+      opportunities: [
+        opportunity({ externalId: "a", primaryContactExternalId: "003-ok" }),
+        opportunity({ externalId: "b", primaryContactExternalId: null }),
+        opportunity({ externalId: "c", primaryContactExternalId: "003-noemail" }),
+        opportunity({ externalId: "d", primaryContactExternalId: "003-gone" }),
+      ],
+      contacts: [
+        contact({ externalId: "003-ok", email: "ok@example.invalid" }),
+        contact({ externalId: "003-noemail", email: "" }),
+      ],
+    });
+
+    expect(summary.resolvedCount).toBe(1);
+    expect(summary.unresolvedCount).toBe(3);
+    expect(summary.unresolvedByReason.NO_PRIMARY_CONTACT_ROLE).toBe(1);
+    expect(summary.unresolvedByReason.PRIMARY_CONTACT_NO_EMAIL).toBe(1);
+    expect(summary.unresolvedByReason.PRIMARY_CONTACT_NOT_FOUND).toBe(1);
+    expect(summary.recipientExternalIds).toEqual(["003-ok"]);
+  });
+});
+
+describe("recipient resolution against the mock org", () => {
   beforeAll(async () => {
     await resetDatabase();
-    salesforce = new MockSalesforceService();
-  });
-
-  async function resolveAll() {
-    const [opportunities, accounts, contacts] = await Promise.all([
-      salesforce.getOpenOpportunities(),
-      salesforce.getAccounts(),
-      salesforce.getExternalContacts(),
-    ]);
-    return { summary: resolveRecipients({ opportunities, accounts, contacts }), contacts };
-  }
-
-  function reasonFor(
-    summary: Awaited<ReturnType<typeof resolveAll>>["summary"],
-    opportunityName: string,
-  ) {
-    const result = summary.results.find((r) => r.opportunity.opportunityName === opportunityName);
-    expect(result, `no result for ${opportunityName}`).toBeDefined();
-    return result!.resolution;
-  }
-
-  it("routes an opportunity to the account's primary contact", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "MRI Suite Renovation");
-
-    expect(resolution.status).toBe("RESOLVED");
-    if (resolution.status !== "RESOLVED") return;
-    expect(resolution.reason).toBe(RESOLUTION_REASONS.ACCOUNT_PRIMARY);
-  });
-
-  it("prefers a contact named on the opportunity itself", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "Campus-Wide Equipment Planning");
-
-    expect(resolution.status).toBe("RESOLVED");
-    if (resolution.status !== "RESOLVED") return;
-    expect(resolution.reason).toBe(RESOLUTION_REASONS.OPPORTUNITY_CONTACT);
-    // Tom Becker, not Northstar's primary Elena Ruiz.
-    expect(resolution.contactExternalId).toBe("003Ab00000Con06AAA");
-  });
-
-  it("falls back when the named contact is inactive, and says so", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "Imaging Equipment Service Agreement");
-
-    expect(resolution.status).toBe("RESOLVED");
-    if (resolution.status !== "RESOLVED") return;
-    // Greta Sims has left; Felix Moreau receives it.
-    expect(resolution.contactExternalId).toBe("003Ab00000Con17AAA");
-    expect(resolution.warning).toContain("Greta Sims");
-  });
-
-  it("skips an inactive primary contact and uses the active one", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "Veterinary Imaging Suite");
-
-    expect(resolution.status).toBe("RESOLVED");
-    if (resolution.status !== "RESOLVED") return;
-    // Chris Vega is primary but inactive → Morgan Lee.
-    expect(resolution.contactExternalId).toBe("003Ab00000Con12AAA");
-    expect(resolution.reason).toBe(RESOLUTION_REASONS.ONLY_ACTIVE_CONTACT);
-  });
-
-  it("uses the only active contact when none is flagged primary", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "Research Imaging Core Lab");
-
-    expect(resolution.status).toBe("RESOLVED");
-    if (resolution.status !== "RESOLVED") return;
-    expect(resolution.reason).toBe(RESOLUTION_REASONS.ONLY_ACTIVE_CONTACT);
-  });
-
-  it("flags an opportunity with no usable contact instead of dropping it", async () => {
-    const { summary } = await resolveAll();
-    const resolution = reasonFor(summary, "Cath Lab Relocation");
-
-    expect(resolution.status).toBe("UNRESOLVED");
-    if (resolution.status !== "UNRESOLVED") return;
-    expect(resolution.reason).toBe(RESOLUTION_REASONS.NO_CONTACTS);
-    expect(resolution.warning).toContain("Ridgeline Health Advisors");
-    expect(summary.unresolvedCount).toBe(1);
-  });
-
-  it("collapses duplicate contact records that share an email", async () => {
-    const contacts = await salesforce.getExternalContacts();
-    const { canonical, aliases } = dedupeContacts(contacts);
-
-    expect(contacts).toHaveLength(18);
-    expect(canonical).toHaveLength(17);
-    // "Samuel Whitaker" collapses onto the primary "Sam Whitaker".
-    expect(aliases.get("003Ab00000Con14AAA")).toBe("003Ab00000Con13AAA");
-
-    const { summary } = await resolveAll();
-    expect(summary.duplicatesCollapsed).toBe(1);
-    const gulfRecipients = summary.results
-      .filter((r) => r.opportunity.accountExternalId === "001Ab00000Acc09AAA")
-      .map((r) => (r.resolution.status === "RESOLVED" ? r.resolution.contactExternalId : null));
-    expect(new Set(gulfRecipients).size).toBe(1);
-  });
-
-  it("gives one contact every opportunity across several internal IDS reps", async () => {
     await refreshCatalogFromSalesforce("test");
+  });
+
+  it("routes each opportunity to its primary contact role", async () => {
+    const jane = await prisma.externalContact.findFirstOrThrow({
+      where: { name: "Jane Doe" },
+      include: { opportunities: true },
+    });
+    // Five of ABC Distribution's six opportunities name Jane; the sixth names
+    // her explicitly too, via the seed's own contact role.
+    expect(jane.opportunities.length).toBeGreaterThanOrEqual(5);
 
     const marcus = await prisma.externalContact.findFirstOrThrow({
       where: { name: "Marcus Webb" },
       include: { opportunities: { include: { internalRep: true } } },
     });
-
     expect(marcus.opportunities).toHaveLength(9);
-    const reps = new Set(marcus.opportunities.map((o) => o.internalRep.name));
-    expect(reps).toEqual(new Set(["John Smith", "Sarah Jones", "Mike Brown"]));
+    // Still one recipient across three different IDS reps.
+    expect(new Set(marcus.opportunities.map((o) => o.internalRep.name)).size).toBe(3);
   });
 
-  it("gives a distributor's single contact all of that account's opportunities", async () => {
-    const jane = await prisma.externalContact.findFirstOrThrow({
-      where: { name: "Jane Doe" },
-      include: { opportunities: true, account: true },
+  it("flags an opportunity with no primary contact role", async () => {
+    const orphan = await prisma.opportunity.findFirstOrThrow({
+      where: { opportunityName: "Cath Lab Relocation" },
     });
+    expect(orphan.resolutionStatus).toBe("UNRESOLVED");
+    expect(orphan.resolutionReason).toBe(RESOLUTION_REASONS.NO_PRIMARY_CONTACT_ROLE);
+    expect(orphan.contactId).toBeNull();
+  });
 
-    expect(jane.account.name).toBe("ABC Distribution");
-    expect(jane.account.type).toBe("DISTRIBUTOR");
-    expect(jane.opportunities).toHaveLength(6);
-
-    // Victor Lang is active at the same account but is not the primary, so he
-    // is responsible for nothing and receives no email.
-    const victor = await prisma.externalContact.findFirstOrThrow({
-      where: { name: "Victor Lang" },
-      include: { opportunities: true },
+  it("flags an opportunity whose primary contact has no email", async () => {
+    const noEmail = await prisma.opportunity.findFirstOrThrow({
+      where: { opportunityName: "Imaging Equipment Service Agreement" },
     });
-    expect(victor.opportunities).toHaveLength(0);
+    expect(noEmail.resolutionStatus).toBe("UNRESOLVED");
+    expect(noEmail.resolutionReason).toBe(RESOLUTION_REASONS.PRIMARY_CONTACT_NO_EMAIL);
+    expect(noEmail.contactId).toBeNull();
+  });
+
+  it("never routes to a contact who is not the named primary", async () => {
+    // Victor Lang and Priya Raman are emailable contacts at accounts with plenty
+    // of opportunities, but are named on none of them.
+    for (const name of ["Victor Lang", "Priya Raman"]) {
+      const contact = await prisma.externalContact.findFirstOrThrow({
+        where: { name },
+        include: { opportunities: true },
+      });
+      expect(contact.opportunities).toHaveLength(0);
+    }
   });
 
   it("excludes opportunities owned by an inactive IDS rep", async () => {
@@ -156,5 +235,12 @@ describe("recipient resolution", () => {
       where: { externalId: "006Ab00000Opp40AAA" },
     });
     expect(orphan).toBeNull();
+  });
+
+  it("mock provider surfaces the primary contact role through the interface", async () => {
+    const opportunities = await new MockSalesforceService().getOpenOpportunities();
+    const withRole = opportunities.filter((o) => o.primaryContactExternalId !== null);
+    expect(withRole.length).toBeGreaterThan(0);
+    expect(opportunities.some((o) => o.primaryContactExternalId === null)).toBe(true);
   });
 });

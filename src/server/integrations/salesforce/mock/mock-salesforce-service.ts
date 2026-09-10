@@ -216,7 +216,7 @@ export class MockSalesforceService implements SalesforceService {
       url: `${MOCK_INSTANCE_URL}/lightning/r/Opportunity/${record.externalId}/view`,
       ownerExternalId: record.ownerExternalId,
       accountExternalId: record.accountExternalId,
-      contactExternalId: record.contactExternalId,
+      primaryContactExternalId: record.contactExternalId,
     };
   }
 }

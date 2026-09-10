@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
-import { dedupeContacts, resolveRecipients } from "./recipient-resolution-service";
+import { resolveRecipients } from "./recipient-resolution-service";
 
 export type CatalogRefreshResult = {
   reps: number;
@@ -10,7 +10,6 @@ export type CatalogRefreshResult = {
   opportunities: number;
   resolved: number;
   unresolved: number;
-  duplicateContactsCollapsed: number;
 };
 
 /**
@@ -53,10 +52,11 @@ export async function refreshCatalogFromSalesforce(
     });
   }
 
-  const sfContacts = await salesforce.getExternalContacts();
-  // Only canonical contacts are stored; duplicate Salesforce records collapse
-  // into the one human so nobody is emailed twice.
-  const { canonical } = dedupeContacts(sfContacts);
+  // Every contact is stored, including those without an email: resolution
+  // needs them to tell "primary contact has no email" from "contact not found".
+  // Duplicate records are NOT collapsed — the primary contact role names one
+  // specific record, and substituting another person is never correct.
+  const canonical = await salesforce.getExternalContacts();
 
   const accountIdByExternalId = new Map(
     (await prisma.account.findMany()).map((account) => [account.externalId, account.id]),
@@ -90,11 +90,7 @@ export async function refreshCatalogFromSalesforce(
     ownerExternalIds: activeReps.map((rep) => rep.externalId),
   });
 
-  const resolution = resolveRecipients({
-    opportunities,
-    accounts: sfAccounts,
-    contacts: sfContacts,
-  });
+  const resolution = resolveRecipients({ opportunities, contacts: canonical });
 
   const repIdByExternalId = new Map(
     (await prisma.salesRep.findMany()).map((rep) => [rep.externalId, rep.id]),
@@ -157,7 +153,6 @@ export async function refreshCatalogFromSalesforce(
     opportunities: seenExternalIds.length,
     resolved: resolution.resolvedCount,
     unresolved: resolution.unresolvedCount,
-    duplicateContactsCollapsed: resolution.duplicatesCollapsed,
   };
 
   await recordAudit({
@@ -168,9 +163,6 @@ export async function refreshCatalogFromSalesforce(
     detail: [
       `${result.resolved} routed to a contact`,
       result.unresolved > 0 ? `${result.unresolved} need attention` : null,
-      result.duplicateContactsCollapsed > 0
-        ? `${result.duplicateContactsCollapsed} duplicate contact records collapsed`
-        : null,
     ]
       .filter(Boolean)
       .join(" · "),

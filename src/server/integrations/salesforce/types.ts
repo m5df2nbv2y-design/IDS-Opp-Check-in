@@ -56,14 +56,15 @@ export type SalesforceOpportunity = {
   url: string;
   /** OwnerId — the internal IDS rep. */
   ownerExternalId: string;
-  /** The partner Account whose contact reviews this opportunity. */
+  /** Standard Opportunity.AccountId. IDS has no separate partner account. */
   accountExternalId: string;
   /**
-   * A specific contact named on the opportunity itself (Opportunity Contact
-   * Role or a custom lookup). Null when the org does not name one, in which
-   * case recipient resolution falls back to the account's contacts.
+   * The contact on the opportunity's PRIMARY OpportunityContactRole — the
+   * confirmed check-in recipient. Null when no primary role is set, which
+   * makes the opportunity unresolved; there is deliberately no fallback.
+   * See services/recipient-resolution-service.ts.
    */
-  contactExternalId: string | null;
+  primaryContactExternalId: string | null;
 };
 
 export type OpportunityStatusUpdate = {

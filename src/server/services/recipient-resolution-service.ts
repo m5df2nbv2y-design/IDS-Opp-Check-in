@@ -1,210 +1,106 @@
-import type {
-  SalesforceAccount,
-  SalesforceContact,
-  SalesforceOpportunity,
-} from "@/server/integrations/salesforce";
+import type { SalesforceContact, SalesforceOpportunity } from "@/server/integrations/salesforce";
 
 /**
- * Answers one question, in one place:
+ * THE CANONICAL RECIPIENT-RESOLUTION RULE.
  *
- *   "Who should receive the check-in for this opportunity?"
+ *   Opportunity → Primary Opportunity Contact Role → Contact → Email
  *
- * This is the biggest real-world dependency in the product — Salesforce contact
- * data is never as tidy as the model suggests — so the logic is deliberately
- * pure, exhaustively enumerated, and never duplicated in the UI or the campaign
- * service. Everything here is a pure function of the records passed in, which
- * makes every branch directly testable.
+ * IDS deliberately maintains a primary contact role on each Opportunity, and
+ * that person is who the check-in is for. This service therefore does exactly
+ * one thing and never improvises:
  *
- * See RECIPIENT-RESOLUTION.md for the rules in prose.
+ *   1. `OpportunityContactRole.IsPrimary = true` identifies the recipient.
+ *   2. That contact has an email        → RESOLVED.
+ *   3. That contact has no email        → UNRESOLVED, needs attention.
+ *   4. No primary contact role          → UNRESOLVED, needs attention.
+ *
+ * Explicitly NOT done, by business decision:
+ *   - No fallback to other contacts on the Account.
+ *   - No selection based on Contact_Type__c.
+ *   - No substituting a different person, ever.
+ *   - No collapsing of duplicate contact records — a different record is a
+ *     different person as far as this service is concerned.
+ *
+ * An earlier version cascaded through Account contacts. Measured against the
+ * real org that reached ~80% coverage versus ~78% for the primary role alone,
+ * but the extra 2% was guesswork: it emailed whoever happened to be attached
+ * to the account. Being right matters more than being resolved, so an
+ * opportunity we cannot route confidently is surfaced for a human instead.
+ *
+ * Pure functions — no database, no I/O — so every branch is directly testable.
  */
 
 export const RESOLUTION_REASONS = {
-  /** A contact is named on the opportunity itself (contact role / lookup). */
-  OPPORTUNITY_CONTACT: "OPPORTUNITY_CONTACT",
-  /** The account's flagged primary check-in contact. */
-  ACCOUNT_PRIMARY: "ACCOUNT_PRIMARY",
-  /** The account has exactly one active contact. */
-  ONLY_ACTIVE_CONTACT: "ONLY_ACTIVE_CONTACT",
-  /** Several active contacts, none flagged primary — deterministic pick. */
-  AMBIGUOUS_ACTIVE_CONTACTS: "AMBIGUOUS_ACTIVE_CONTACTS",
-
-  /** The opportunity has no partner account at all. */
-  NO_ACCOUNT: "NO_ACCOUNT",
-  /** The account exists but has no contact records. */
-  NO_CONTACTS: "NO_CONTACTS",
-  /** The account has contacts, but every one of them is inactive. */
-  ALL_CONTACTS_INACTIVE: "ALL_CONTACTS_INACTIVE",
+  /** Resolved: the primary contact role's contact has an email address. */
+  PRIMARY_CONTACT_ROLE: "PRIMARY_CONTACT_ROLE",
+  /** No primary contact role is set on the opportunity. */
+  NO_PRIMARY_CONTACT_ROLE: "NO_PRIMARY_CONTACT_ROLE",
+  /** A primary contact role exists, but that contact has no email address. */
+  PRIMARY_CONTACT_NO_EMAIL: "PRIMARY_CONTACT_NO_EMAIL",
+  /** The role points at a contact that is not in the catalog (deleted, or not visible). */
+  PRIMARY_CONTACT_NOT_FOUND: "PRIMARY_CONTACT_NOT_FOUND",
 } as const;
 
 export type ResolutionReason = (typeof RESOLUTION_REASONS)[keyof typeof RESOLUTION_REASONS];
 
 export const RESOLUTION_REASON_LABELS: Record<ResolutionReason, string> = {
-  OPPORTUNITY_CONTACT: "Named on the opportunity",
-  ACCOUNT_PRIMARY: "Account's primary contact",
-  ONLY_ACTIVE_CONTACT: "Only active contact at the account",
-  AMBIGUOUS_ACTIVE_CONTACTS: "Several active contacts, none marked primary",
-  NO_ACCOUNT: "Opportunity has no partner account",
-  NO_CONTACTS: "Account has no contacts",
-  ALL_CONTACTS_INACTIVE: "Every contact at the account is inactive",
+  PRIMARY_CONTACT_ROLE: "Primary contact role on the opportunity",
+  NO_PRIMARY_CONTACT_ROLE: "No primary contact role set on the opportunity",
+  PRIMARY_CONTACT_NO_EMAIL: "Primary contact has no email address",
+  PRIMARY_CONTACT_NOT_FOUND: "Primary contact record could not be found",
 };
 
 export type Resolution =
   | {
       status: "RESOLVED";
       contactExternalId: string;
-      reason: ResolutionReason;
-      /** Set when resolution succeeded but a human should still glance at it. */
-      warning?: string;
+      reason: typeof RESOLUTION_REASONS.PRIMARY_CONTACT_ROLE;
     }
   | {
       status: "UNRESOLVED";
       reason: ResolutionReason;
-      /** Plain-English explanation shown on the admin "needs attention" list. */
+      /** Plain-English explanation for the admin "needs attention" list. */
       warning: string;
     };
 
-/**
- * Salesforce routinely holds several Contact records for one human. Collapse
- * them per account by normalized email so nobody is emailed twice, preferring
- * the record most likely to be the real one.
- */
-export function dedupeContacts(contacts: SalesforceContact[]): {
-  canonical: SalesforceContact[];
-  /** Every duplicate external id → the canonical external id it maps onto. */
-  aliases: Map<string, string>;
-} {
-  const groups = new Map<string, SalesforceContact[]>();
-  for (const contact of contacts) {
-    const key = `${contact.accountExternalId}::${contact.email.trim().toLowerCase()}`;
-    const group = groups.get(key);
-    if (group) group.push(contact);
-    else groups.set(key, [contact]);
-  }
-
-  const canonical: SalesforceContact[] = [];
-  const aliases = new Map<string, string>();
-
-  for (const group of groups.values()) {
-    const winner = [...group].sort(rankContact)[0];
-    canonical.push(winner);
-    for (const contact of group) {
-      if (contact.externalId !== winner.externalId) aliases.set(contact.externalId, winner.externalId);
-    }
-  }
-
-  return { canonical, aliases };
-}
-
-/** Active beats inactive, primary beats not, then oldest id wins — stable. */
-function rankContact(a: SalesforceContact, b: SalesforceContact): number {
-  if (a.active !== b.active) return a.active ? -1 : 1;
-  if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
-  return a.externalId.localeCompare(b.externalId);
-}
-
-export type ResolutionInput = {
+/** Resolve one opportunity to its intended recipient. */
+export function resolveRecipient(input: {
   opportunity: SalesforceOpportunity;
-  account: SalesforceAccount | undefined;
-  /** Deduped contacts belonging to that account. */
-  accountContacts: SalesforceContact[];
-  /** Duplicate → canonical map from `dedupeContacts`. */
-  aliases: Map<string, string>;
-};
+  /** Contacts keyed by Salesforce Contact Id. Must include contacts with no
+   *  email, so "no email" can be distinguished from "not found". */
+  contactsById: Map<string, SalesforceContact>;
+}): Resolution {
+  const { opportunity, contactsById } = input;
 
-/**
- * Resolve one opportunity to one recipient.
- *
- * Order of preference:
- *   1. The contact named on the opportunity, if active.
- *   2. The account's flagged primary contact, if active.
- *   3. The account's only active contact.
- *   4. Several active contacts and no primary — take the first deterministically
- *      and warn, because guessing beats dropping the opportunity.
- *
- * If none of those yield an active contact the opportunity is UNRESOLVED and
- * goes to the admin "needs attention" list. It is never silently dropped.
- */
-export function resolveRecipient(input: ResolutionInput): Resolution {
-  const { opportunity, account, accountContacts, aliases } = input;
-
-  if (!account || !opportunity.accountExternalId) {
+  if (!opportunity.primaryContactExternalId) {
     return {
       status: "UNRESOLVED",
-      reason: RESOLUTION_REASONS.NO_ACCOUNT,
-      warning: "This opportunity is not linked to a partner organization in Salesforce.",
+      reason: RESOLUTION_REASONS.NO_PRIMARY_CONTACT_ROLE,
+      warning: "This opportunity has no primary contact role in Salesforce, so there is nobody to ask.",
     };
   }
 
-  const active = accountContacts.filter((contact) => contact.active);
-
-  // 1. A contact named on the opportunity wins, after mapping any duplicate
-  //    record onto its canonical one.
-  if (opportunity.contactExternalId) {
-    const namedId = aliases.get(opportunity.contactExternalId) ?? opportunity.contactExternalId;
-    const named = accountContacts.find((contact) => contact.externalId === namedId);
-
-    if (named?.active) {
-      return {
-        status: "RESOLVED",
-        contactExternalId: named.externalId,
-        reason: RESOLUTION_REASONS.OPPORTUNITY_CONTACT,
-      };
-    }
-    // Named but unusable — fall through to the account, and say why.
-    if (named && !named.active) {
-      const fallback = pickFromAccount(active);
-      if (fallback) {
-        return {
-          status: "RESOLVED",
-          contactExternalId: fallback.contact.externalId,
-          reason: fallback.reason,
-          warning: `${named.name} is named on this opportunity but is no longer active; sent to ${fallback.contact.name} instead.`,
-        };
-      }
-    }
+  const contact = contactsById.get(opportunity.primaryContactExternalId);
+  if (!contact) {
+    return {
+      status: "UNRESOLVED",
+      reason: RESOLUTION_REASONS.PRIMARY_CONTACT_NOT_FOUND,
+      warning: `The primary contact role points at contact ${opportunity.primaryContactExternalId}, which could not be read.`,
+    };
   }
 
-  if (active.length === 0) {
-    return accountContacts.length === 0
-      ? {
-          status: "UNRESOLVED",
-          reason: RESOLUTION_REASONS.NO_CONTACTS,
-          warning: `${account.name} has no contact records in Salesforce.`,
-        }
-      : {
-          status: "UNRESOLVED",
-          reason: RESOLUTION_REASONS.ALL_CONTACTS_INACTIVE,
-          warning: `Every contact at ${account.name} is marked inactive.`,
-        };
+  if (!contact.email?.trim()) {
+    return {
+      status: "UNRESOLVED",
+      reason: RESOLUTION_REASONS.PRIMARY_CONTACT_NO_EMAIL,
+      warning: `${contact.name} is the primary contact but has no email address in Salesforce.`,
+    };
   }
 
-  const picked = pickFromAccount(active)!;
   return {
     status: "RESOLVED",
-    contactExternalId: picked.contact.externalId,
-    reason: picked.reason,
-    warning:
-      picked.reason === RESOLUTION_REASONS.AMBIGUOUS_ACTIVE_CONTACTS
-        ? `${account.name} has ${active.length} active contacts and none is marked primary; defaulted to ${picked.contact.name}.`
-        : undefined,
-  };
-}
-
-function pickFromAccount(
-  active: SalesforceContact[],
-): { contact: SalesforceContact; reason: ResolutionReason } | null {
-  if (active.length === 0) return null;
-
-  const primary = active.filter((contact) => contact.isPrimary).sort(rankContact)[0];
-  if (primary) return { contact: primary, reason: RESOLUTION_REASONS.ACCOUNT_PRIMARY };
-
-  if (active.length === 1) {
-    return { contact: active[0], reason: RESOLUTION_REASONS.ONLY_ACTIVE_CONTACT };
-  }
-
-  return {
-    contact: [...active].sort(rankContact)[0],
-    reason: RESOLUTION_REASONS.AMBIGUOUS_ACTIVE_CONTACTS,
+    contactExternalId: contact.externalId,
+    reason: RESOLUTION_REASONS.PRIMARY_CONTACT_ROLE,
   };
 }
 
@@ -217,37 +113,34 @@ export type ResolutionSummary = {
   results: ResolvedOpportunity[];
   resolvedCount: number;
   unresolvedCount: number;
-  /** Canonical contacts that will actually receive an email. */
+  /** Unresolved totals per reason, for reporting. */
+  unresolvedByReason: Record<ResolutionReason, number>;
+  /** Distinct contacts that would receive an email. */
   recipientExternalIds: string[];
-  /** Duplicate contact records collapsed away. */
-  duplicatesCollapsed: number;
 };
 
 /** Resolve a whole campaign's worth of opportunities in one pass. */
 export function resolveRecipients(input: {
   opportunities: SalesforceOpportunity[];
-  accounts: SalesforceAccount[];
   contacts: SalesforceContact[];
 }): ResolutionSummary {
-  const { canonical, aliases } = dedupeContacts(input.contacts);
-
-  const accountsById = new Map(input.accounts.map((account) => [account.externalId, account]));
-  const contactsByAccount = new Map<string, SalesforceContact[]>();
-  for (const contact of canonical) {
-    const list = contactsByAccount.get(contact.accountExternalId);
-    if (list) list.push(contact);
-    else contactsByAccount.set(contact.accountExternalId, [contact]);
-  }
+  const contactsById = new Map(input.contacts.map((contact) => [contact.externalId, contact]));
 
   const results = input.opportunities.map((opportunity) => ({
     opportunity,
-    resolution: resolveRecipient({
-      opportunity,
-      account: accountsById.get(opportunity.accountExternalId),
-      accountContacts: contactsByAccount.get(opportunity.accountExternalId) ?? [],
-      aliases,
-    }),
+    resolution: resolveRecipient({ opportunity, contactsById }),
   }));
+
+  const unresolvedByReason = {
+    PRIMARY_CONTACT_ROLE: 0,
+    NO_PRIMARY_CONTACT_ROLE: 0,
+    PRIMARY_CONTACT_NO_EMAIL: 0,
+    PRIMARY_CONTACT_NOT_FOUND: 0,
+  } as Record<ResolutionReason, number>;
+
+  for (const { resolution } of results) {
+    if (resolution.status === "UNRESOLVED") unresolvedByReason[resolution.reason] += 1;
+  }
 
   const recipientExternalIds = [
     ...new Set(
@@ -261,7 +154,7 @@ export function resolveRecipients(input: {
     results,
     resolvedCount: results.filter((r) => r.resolution.status === "RESOLVED").length,
     unresolvedCount: results.filter((r) => r.resolution.status === "UNRESOLVED").length,
+    unresolvedByReason,
     recipientExternalIds,
-    duplicatesCollapsed: aliases.size,
   };
 }

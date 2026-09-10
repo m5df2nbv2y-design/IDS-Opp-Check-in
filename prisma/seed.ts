@@ -44,9 +44,7 @@ async function main() {
   console.log(
     `  ${catalog.opportunities} opportunities · ${catalog.accounts} accounts · ${catalog.contacts} contacts`,
   );
-  console.log(
-    `  ${catalog.resolved} routed · ${catalog.unresolved} need attention · ${catalog.duplicateContactsCollapsed} duplicate contact records collapsed`,
-  );
+  console.log(`  ${catalog.resolved} routed · ${catalog.unresolved} need attention`);
 
   // ---- Spring 2026: a finished campaign, for history ----------------------
   console.log("Simulating the Spring 2026 campaign (historical)…");

@@ -16,10 +16,40 @@ Everything else speaks only the domain types in `types.ts`.
 
 | Salesforce | IDS Check-In | Role |
 | --- | --- | --- |
-| `Account` | Organization | Agency / distributor / direct client |
+| `Account` | Organization | Standard `Opportunity.AccountId`. **There is no partner-account relationship** — confirmed. |
 | `Contact` | External contact | **Receives the check-in email** |
+| `OpportunityContactRole` | Recipient link | `IsPrimary = true` — **the canonical recipient signal** |
 | `User` | Internal IDS sales rep | Owns the opportunity; internal context only |
 | `Opportunity` | Opportunity | The unit reviewed and synced |
+
+## THE CANONICAL RECIPIENT RULE — CONFIRMED
+
+```
+Opportunity → Primary Opportunity Contact Role → Contact → Email
+```
+
+IDS deliberately maintains a primary contact role on each opportunity, and that
+person is the intended recipient. Implemented in
+`src/server/services/recipient-resolution-service.ts`.
+
+1. `OpportunityContactRole.IsPrimary = true` identifies the recipient.
+2. That contact has an email → **Resolved**.
+3. That contact has no email → **Needs Attention**.
+4. No primary contact role → **Needs Attention**.
+
+**Never** fall back to another contact on the account. **Never** select on
+`Contact_Type__c`. **Never** substitute another person. An opportunity that
+cannot be routed confidently is surfaced for a human.
+
+Measured against the production org (1,144 open opportunities):
+
+| Outcome | Count | |
+| --- | ---: | ---: |
+| Resolved | 888 | 77.6% |
+| Needs attention — no primary contact role | 245 | 21.4% |
+| Needs attention — primary contact has no email | 11 | 1.0% |
+
+326 distinct contact records, 325 distinct email addresses.
 
 ---
 
@@ -67,9 +97,9 @@ edit `salesforceValue` in `account-types.ts`.
 ## 3. Read: external contacts — the recipients
 
 ```sql
-SELECT Id, AccountId, Name, Email, IDS_Primary_CheckIn_Contact__c
+SELECT Id, AccountId, Name, Email
 FROM Contact
-WHERE IsDeleted = false AND Email != null
+WHERE AccountId != null
 ```
 
 | App field (`SalesforceContact`) | Salesforce field | Notes |
@@ -78,29 +108,27 @@ WHERE IsDeleted = false AND Email != null
 | `accountExternalId` | `Contact.AccountId` | Contacts with no account are skipped. |
 | `name` | `Contact.Name` | The greeting: "Hi Jane 👋". |
 | `email` | `Contact.Email` | **Where the check-in is sent.** Also the deduplication key. |
-| `isPrimary` | `IDS_Primary_CheckIn_Contact__c` *(placeholder)* | Which contact receives the check-in when an account has several. |
-| `active` | **no field yet** | See below — this is a required decision. |
+| `isPrimary` | *(not used)* | **Resolved:** no such field exists, and resolution does not need one — the primary role lives on the Opportunity. |
+| `active` | *(not used)* | Salesforce Contacts have no `IsActive`. Not currently filtered. |
 
-**Two decisions needed, both blocking:**
+Contacts **without** an email are deliberately queried, so resolution can tell
+"primary contact has no email" (11 opportunities) apart from "contact not
+found". Filtering them out in SOQL would collapse those into a single
+indistinguishable failure.
 
-1. **The primary-contact flag.** `IDS_Primary_CheckIn_Contact__c` is a
-   placeholder. Either create that checkbox, or point the provider at whatever
-   IDS already uses. Without it, accounts with several contacts fall to the
-   ambiguous branch and the app guesses (deterministically, with a warning).
+`Contact_Type__c` exists (13 values) but is **58.8% blank** and is deliberately
+NOT used for recipient selection — see the canonical rule above.
 
-2. **How is an inactive contact represented?** Salesforce Contacts have no
-   `IsActive` field. **The live provider currently marks every contact active**,
-   which is the one place it is knowingly less strict than the mock provider.
-   IDS must name the field — a status picklist, `Inactive__c`, `HasOptedOutOfEmail`,
-   or similar — and it must be filtered in `getExternalContacts()`. Until then,
-   the app can email someone who has left the organization.
+**Open, non-blocking:** Salesforce has no standard way to mark a contact as
+departed. If IDS adopts one (a status picklist, `Inactive__c`,
+`HasOptedOutOfEmail`), filter it in `getExternalContacts()`.
 
 ## 4. Read: open opportunities
 
 ```sql
 SELECT Id, Name, Amount, StageName, CloseDate, OwnerId,
        AccountId, Account.Name,
-       Partner_Account__c, IDS_CheckIn_Contact__c
+       (SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)
 FROM Opportunity
 WHERE IsClosed = false
 ```
@@ -115,31 +143,17 @@ WHERE IsClosed = false
 | `stage` | `Opportunity.StageName` | Mapped through `src/lib/stages.ts`. **Unmapped stages are skipped.** |
 | `closeDate` | `Opportunity.CloseDate` | Display only in the admin views. |
 | `ownerExternalId` | `Opportunity.OwnerId` | The internal IDS rep. |
-| `accountExternalId` | `Partner_Account__c` → falls back to `AccountId` | **Drives recipient resolution.** |
-| `contactExternalId` | `IDS_CheckIn_Contact__c` | A specific contact named on the opportunity. Highest-priority routing signal. |
+| `accountExternalId` | `AccountId` | Grouping and display only. **Confirmed: no partner-account lookup exists.** |
+| `primaryContactExternalId` | `(SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)` | **The recipient.** |
 | `url` | derived | `{instanceUrl}/lightning/r/Opportunity/{Id}/view` — admin-only. |
 
-**Two more decisions needed:**
+**Resolved:** "open" is `IsClosed = false`. Verified against the org — all 1,144
+open opportunities sit in the four mapped stages, so nothing is skipped for an
+unmapped stage.
 
-1. **What counts as "open"?** Currently `IsClosed = false`, in one constant
-   (`OPEN_OPPORTUNITY_SOQL`). If SFX models this with a custom stage set, a
-   record type, or `Project_Status__c`, that is the only place to change.
-
-2. **Where does the partner organization live?** `Partner_Account__c` is a
-   placeholder. If the end customer and the agency/distributor are the same
-   Account, the fallback to `AccountId` already does the right thing. If IDS
-   uses partner records, a junction object, or an account hierarchy, change
-   `toDomain()`. **If this is wrong, check-ins go to the wrong company.**
-
-Opportunity Contact Roles are the more standard way to name a contact. To use
-them, replace `IDS_CheckIn_Contact__c` with a subquery:
-
-```sql
-(SELECT ContactId, IsPrimary FROM OpportunityContactRoles WHERE IsPrimary = true)
-```
-
-and map it in `toDomain()`. Nothing else changes — resolution consumes
-`contactExternalId` either way.
+The org's only Opportunity custom fields are `shopbuilt_or_sitebuilt__c` (97.1%
+"shopbuilt") and `Project_Type__c` (72.4% "Components"). Neither is used —
+low information value for check-in routing.
 
 ## 5. Stage / picklist mapping
 
@@ -169,19 +183,19 @@ PATCH /services/data/v61.0/sobjects/Opportunity/{Id}
 | App value | Salesforce field | Notes |
 | --- | --- | --- |
 | `updatedStatus` | `Opportunity.StageName` | Only ever one of the four controlled values. |
-| `repComment` | `Opportunity.Description` (`NOTE_FIELD`) | Prefixed with the campaign name so its origin is obvious. |
+| *(planned)* | `Opportunity.CloseDate` | In scope. 87.7% of open opportunities are already past their close date. |
+
+**CONFIRMED WRITE SCOPE: `StageName` and `CloseDate` ONLY.**
+
+**Notes/comments are explicitly descoped.** No `Description` write-back, and no
+custom check-in note field. The `NOTE_FIELD` constant and
+`updateOpportunityComment()` remain in the codebase for the mock provider's demo
+but are **not** part of the confirmed write scope and must not be pointed at the
+production org.
 
 Nothing else is ever written. The app never creates, deletes, reassigns, or
-closes an opportunity, and never writes `Amount`, `CloseDate`, `OwnerId`, or any
-Account or Contact field.
-
-**Decision needed — the most important one here:** `Description` is a shared
-free-text field and the live provider *overwrites* it. Most orgs should write to
-a dedicated `IDS_CheckIn_Note__c` field, a Task, or a Chatter post. Change the
-`NOTE_FIELD` constant (and the `applyUpdate` payload if moving to a Task).
-
-Note that the note now comes from an **external contact**, not an IDS employee.
-Whatever field is chosen should make that obvious to anyone reading the record.
+closes an opportunity, and never writes `Amount`, `OwnerId`, or any Account or
+Contact field.
 
 ### Writes that are deliberately skipped
 

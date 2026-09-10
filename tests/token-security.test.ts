@@ -61,7 +61,8 @@ describe("check-in tokens", () => {
       expect(url).not.toContain("@");
 
       for (const contact of contacts) {
-        expect(url).not.toContain(contact.email);
+        // Skip blank emails — every string "contains" the empty string.
+        if (contact.email.trim()) expect(url).not.toContain(contact.email);
         expect(url).not.toContain(contact.externalId);
       }
       for (const account of accounts) {
