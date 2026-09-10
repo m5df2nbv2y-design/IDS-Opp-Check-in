@@ -115,6 +115,7 @@ model Opportunity {
   checkInItems CheckInOpportunity[]
   auditEvents  AuditEvent[]
   signals      OpportunitySignal[]
+  selections   CampaignSelection[]
 
   @@index([accountId])
   @@index([contactId])
@@ -133,6 +134,7 @@ model Campaign {
 
   recipients  CheckInRecipient[]
   auditEvents AuditEvent[]
+  selections  CampaignSelection[]
 }
 
 /// One external contact's personalized check-in within a campaign.
@@ -260,6 +262,30 @@ model EmailMessage {
   createdAt   DateTime  @default(now())
 
   @@index([createdAt])
+}
+
+/// An admin's explicit, per-opportunity selection within a DRAFT campaign.
+///
+/// Discovery is never authorization to send: an opportunity only becomes
+/// sendable when a human has deliberately selected it, and that decision is
+/// recorded here so it survives a refresh or navigating away. Keyed by
+/// opportunity — never by account — so selecting an account can only ever be
+/// shorthand for the specific opportunities shown at the time.
+///
+/// This is UI workflow state and lives only in this database. Nothing about a
+/// selection is ever written to Salesforce.
+model CampaignSelection {
+  id            String   @id @default(cuid())
+  campaignId    String
+  opportunityId String
+  selectedAt    DateTime @default(now())
+  selectedBy    String?
+
+  campaign    Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, opportunityId])
+  @@index([campaignId])
 }
 
 /// A Smartsheet signal (reminder/task/comment/status change) cross-referenced

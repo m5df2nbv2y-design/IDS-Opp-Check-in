@@ -1,9 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { launchCampaign, sendReminders } from "@/server/services/campaign-service";
+import { sendReminders } from "@/server/services/campaign-service";
+import {
+  clearSelections,
+  getOrCreateDraft,
+  setSelection,
+} from "@/server/services/campaign-draft-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import {
   markSignalReviewed,
@@ -21,20 +25,28 @@ import { retryFailedSyncs } from "@/server/services/sync-service";
  */
 
 /**
- * Step one of "SEND CHECK-IN TO ALL": pull the latest picture from Salesforce
- * and resolve recipients, then show the confirmation screen. Nothing is sent.
+ * Pull the latest picture from Salesforce and re-resolve recipients. Discovery
+ * only — this never sends anything and never selects anything. Opportunities
+ * become sendable only when an admin explicitly selects them.
  */
-export async function prepareCampaignAction() {
+export async function refreshDiscoveryAction() {
   await refreshCatalogFromSalesforce("admin");
   revalidatePath("/admin");
-  redirect("/admin/campaigns/new");
 }
 
-/** Step two: create the campaign, generate tokens, and send the emails. */
-export async function launchCampaignAction() {
-  const result = await launchCampaign({ actor: "admin" });
+/** Select or deselect specific opportunities in the draft. */
+export async function setSelectionAction(opportunityIds: string[], selected: boolean) {
+  const draft = await getOrCreateDraft("admin");
+  await setSelection({ campaignId: draft.id, opportunityIds, selected, actor: "admin" });
   revalidatePath("/admin");
-  redirect(`/admin/campaigns/${result.campaignId}`);
+  revalidatePath("/admin/campaigns/review");
+}
+
+export async function clearSelectionsAction() {
+  const draft = await getOrCreateDraft("admin");
+  await clearSelections(draft.id);
+  revalidatePath("/admin");
+  revalidatePath("/admin/campaigns/review");
 }
 
 export async function sendRemindersAction(campaignId: string) {

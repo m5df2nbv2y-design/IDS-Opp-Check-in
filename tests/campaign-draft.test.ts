@@ -1,0 +1,229 @@
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { prisma } from "@/lib/db";
+import { deriveSendState, isSelectable, isSendable } from "@/lib/send-states";
+import {
+  clearSelections,
+  getDraftSummary,
+  getOrCreateDraft,
+  getReviewRecipients,
+  listDraftAccounts,
+  setSelection,
+} from "@/server/services/campaign-draft-service";
+import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
+import { resetDatabase } from "./fixtures";
+
+/**
+ * The safety property under test: discovery is never authorization to send.
+ * An opportunity can only become sendable through a deliberate human selection,
+ * and a needs-attention opportunity can never become sendable at all.
+ */
+
+describe("send state model", () => {
+  it("requires explicit selection before anything is sendable", () => {
+    expect(deriveSendState({ resolved: true, selected: false })).toBe("ELIGIBLE");
+    expect(isSendable("ELIGIBLE")).toBe(false);
+
+    expect(deriveSendState({ resolved: true, selected: true })).toBe("SELECTED");
+    expect(isSendable("SELECTED")).toBe(true);
+  });
+
+  it("puts an unresolved opportunity beyond reach regardless of selection", () => {
+    expect(deriveSendState({ resolved: false, selected: false })).toBe("NEEDS_ATTENTION");
+    // Even if something tried to mark it selected, it stays unsendable.
+    expect(deriveSendState({ resolved: false, selected: true })).toBe("NEEDS_ATTENTION");
+    expect(isSendable("NEEDS_ATTENTION")).toBe(false);
+    expect(isSelectable("NEEDS_ATTENTION")).toBe(false);
+  });
+
+  it("advances through queued and sent once launched", () => {
+    expect(deriveSendState({ resolved: true, selected: true, queued: true })).toBe("QUEUED");
+    expect(deriveSendState({ resolved: true, selected: true, sent: true })).toBe("SENT");
+    expect(isSendable("QUEUED")).toBe(false);
+    expect(isSendable("SENT")).toBe(false);
+  });
+});
+
+describe("campaign draft selection", () => {
+  let campaignId: string;
+
+  beforeAll(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+    const draft = await getOrCreateDraft("test");
+    campaignId = draft.id;
+  });
+
+  beforeEach(async () => {
+    await clearSelections(campaignId);
+  });
+
+  it("reuses a single draft rather than creating a second one", async () => {
+    const again = await getOrCreateDraft("test");
+    expect(again.id).toBe(campaignId);
+    expect(await prisma.campaign.count({ where: { status: "DRAFT" } })).toBe(1);
+  });
+
+  it("starts with nothing selected — discovery alone authorizes nothing", async () => {
+    const summary = await getDraftSummary(campaignId);
+    expect(summary.selectedOpportunities).toBe(0);
+
+    const accounts = await listDraftAccounts(campaignId);
+    expect(accounts.length).toBeGreaterThan(0);
+    for (const account of accounts) {
+      expect(account.selectedCount).toBe(0);
+      expect(account.checkboxState).toBe("unchecked");
+      for (const row of account.opportunities) {
+        expect(row.selected).toBe(false);
+        expect(row.state === "ELIGIBLE" || row.state === "NEEDS_ATTENTION").toBe(true);
+      }
+    }
+  });
+
+  it("REFUSES to select a needs-attention opportunity", async () => {
+    const unresolved = await prisma.opportunity.findFirstOrThrow({
+      where: { isOpen: true, resolutionStatus: "UNRESOLVED" },
+    });
+
+    await setSelection({ campaignId, opportunityIds: [unresolved.id], selected: true });
+
+    expect(
+      await prisma.campaignSelection.count({ where: { campaignId, opportunityId: unresolved.id } }),
+    ).toBe(0);
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(0);
+  });
+
+  it("selects and deselects individual opportunities", async () => {
+    const resolved = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      take: 3,
+    });
+
+    await setSelection({ campaignId, opportunityIds: resolved.map((o) => o.id), selected: true });
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(3);
+
+    await setSelection({ campaignId, opportunityIds: [resolved[0].id], selected: false });
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(2);
+  });
+
+  it("survives a reload — selections are persisted, not client state", async () => {
+    const resolved = await prisma.opportunity.findFirstOrThrow({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+    });
+    await setSelection({ campaignId, opportunityIds: [resolved.id], selected: true });
+
+    // A completely fresh read, as a page load would do.
+    const accounts = await listDraftAccounts(campaignId);
+    const row = accounts.flatMap((a) => a.opportunities).find((o) => o.id === resolved.id);
+    expect(row?.selected).toBe(true);
+    expect(row?.state).toBe("SELECTED");
+  });
+
+  it("drives the three-state account checkbox from opportunity selections", async () => {
+    const account = (await listDraftAccounts(campaignId)).find((a) => a.selectableCount > 1);
+    expect(account).toBeDefined();
+    if (!account) return;
+
+    const selectable = account.opportunities.filter((o) => o.selectable);
+
+    await setSelection({ campaignId, opportunityIds: [selectable[0].id], selected: true });
+    let refreshed = (await listDraftAccounts(campaignId)).find((a) => a.accountId === account.accountId)!;
+    expect(refreshed.checkboxState).toBe("indeterminate");
+
+    await setSelection({ campaignId, opportunityIds: selectable.map((o) => o.id), selected: true });
+    refreshed = (await listDraftAccounts(campaignId)).find((a) => a.accountId === account.accountId)!;
+    expect(refreshed.checkboxState).toBe("checked");
+    // "Checked" means only the sendable ones — never the needs-attention rows.
+    expect(refreshed.selectedCount).toBe(refreshed.selectableCount);
+  });
+
+  it("selecting an account never includes its needs-attention opportunities", async () => {
+    const account = (await listDraftAccounts(campaignId)).find((a) => a.needsAttentionCount > 0);
+    expect(account).toBeDefined();
+    if (!account) return;
+
+    // Deliberately pass EVERY opportunity id, including the unsendable ones.
+    await setSelection({
+      campaignId,
+      opportunityIds: account.opportunities.map((o) => o.id),
+      selected: true,
+    });
+
+    const refreshed = (await listDraftAccounts(campaignId)).find((a) => a.accountId === account.accountId)!;
+    expect(refreshed.selectedCount).toBe(refreshed.selectableCount);
+    for (const row of refreshed.opportunities) {
+      if (!row.selectable) expect(row.selected).toBe(false);
+    }
+  });
+
+  it("groups the review by recipient, one email per contact", async () => {
+    const marcus = await prisma.externalContact.findFirstOrThrow({
+      where: { name: "Marcus Webb" },
+      include: { opportunities: { where: { isOpen: true, resolutionStatus: "RESOLVED" } } },
+    });
+    await setSelection({
+      campaignId,
+      opportunityIds: marcus.opportunities.map((o) => o.id),
+      selected: true,
+    });
+
+    const recipients = await getReviewRecipients(campaignId);
+    expect(recipients).toHaveLength(1);
+    expect(recipients[0].contactName).toBe("Marcus Webb");
+    expect(recipients[0].opportunities).toHaveLength(marcus.opportunities.length);
+
+    const summary = await getDraftSummary(campaignId);
+    expect(summary.selectedContacts).toBe(1);
+    expect(summary.selectedAccounts).toBe(1);
+  });
+
+  it("filters by search, owner and status without changing what is selected", async () => {
+    const resolved = await prisma.opportunity.findFirstOrThrow({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      include: { account: true },
+    });
+    await setSelection({ campaignId, opportunityIds: [resolved.id], selected: true });
+
+    const byName = await listDraftAccounts(campaignId, { search: resolved.account.name });
+    expect(byName.every((a) => a.accountName.includes(resolved.account.name))).toBe(true);
+
+    const onlySelected = await listDraftAccounts(campaignId, { status: "selected" });
+    expect(onlySelected.flatMap((a) => a.opportunities)).toHaveLength(1);
+
+    const needsAttention = await listDraftAccounts(campaignId, { status: "needs_attention" });
+    expect(needsAttention.flatMap((a) => a.opportunities).every((o) => !o.selectable)).toBe(true);
+
+    // Filtering is a view concern — the selection itself is untouched.
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(1);
+  });
+
+  it("clears every selection on request", async () => {
+    const resolved = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      take: 4,
+    });
+    await setSelection({ campaignId, opportunityIds: resolved.map((o) => o.id), selected: true });
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(4);
+
+    await clearSelections(campaignId);
+    expect((await getDraftSummary(campaignId)).selectedOpportunities).toBe(0);
+  });
+
+  it("never writes selection state to the mock Salesforce org", async () => {
+    const before = await prisma.mockSalesforceOpportunity.findMany({
+      select: { externalId: true, stageName: true, lastModifiedAt: true },
+      orderBy: { externalId: "asc" },
+    });
+
+    const resolved = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      take: 5,
+    });
+    await setSelection({ campaignId, opportunityIds: resolved.map((o) => o.id), selected: true });
+
+    const after = await prisma.mockSalesforceOpportunity.findMany({
+      select: { externalId: true, stageName: true, lastModifiedAt: true },
+      orderBy: { externalId: "asc" },
+    });
+    expect(after).toEqual(before);
+  });
+});

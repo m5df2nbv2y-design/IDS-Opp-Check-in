@@ -19,7 +19,7 @@ import { refreshSmartsheetSignals } from "@/server/services/smartsheet-signal-se
  * by hand, so every seeded state is one the application can actually produce.
  *
  * The seed leaves ONE completed historical campaign (Spring 2026) and a
- * refreshed catalog, so the live demo is: open /admin → SEND CHECK-IN TO ALL.
+ * refreshed catalog, so the live demo is: open /admin → select → review.
  */
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -111,7 +111,7 @@ async function main() {
   console.log(`    ${preview.organizationCount} organizations`);
   console.log(`    ${preview.multiRepOrganizations} organizations spanning multiple IDS reps`);
   console.log(`    ${preview.unresolvedCount} opportunity needing a contact`);
-  console.log("\n  Open /admin and press SEND CHECK-IN TO ALL.\n");
+  console.log("\n  Open /admin, select the opportunities to contact, then review.\n");
 }
 
 /**
