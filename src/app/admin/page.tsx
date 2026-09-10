@@ -13,6 +13,7 @@ import {
   listDraftAccounts,
   listOwnersWithOpenOpportunities,
 } from "@/server/services/campaign-draft-service";
+import { requireAdminActor } from "@/server/auth/require-admin";
 import { listCampaigns } from "@/server/services/campaign-service";
 import {
   listOpenOpportunitiesForAccount,
@@ -39,7 +40,9 @@ export default async function AdminDashboardPage({
     status: typeof params.status === "string" ? params.status : undefined,
   };
 
-  const draft = await getOrCreateDraft();
+  // The layout has already asserted a session; pass the real identity so the
+  // draft-creation audit entry names a person, not a generic "admin".
+  const draft = await getOrCreateDraft(await requireAdminActor());
 
   const [accounts, summary, owners, campaigns, signals] = await Promise.all([
     listDraftAccounts(draft.id, filters),

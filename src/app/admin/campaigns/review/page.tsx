@@ -9,6 +9,7 @@ import {
   getReviewRecipients,
   validateSelection,
 } from "@/server/services/campaign-draft-service";
+import { requireAdminActor } from "@/server/auth/require-admin";
 import { getEmailService } from "@/server/integrations/email";
 import { SendPanel } from "./send-panel";
 
@@ -26,7 +27,9 @@ export const dynamic = "force-dynamic";
  * configured email provider.
  */
 export default async function ReviewPage() {
-  const draft = await getOrCreateDraft();
+  // The layout has already asserted a session; pass the real identity so the
+  // draft-creation audit entry names a person, not a generic "admin".
+  const draft = await getOrCreateDraft(await requireAdminActor());
   const [summary, recipients, validation] = await Promise.all([
     getDraftSummary(draft.id),
     getReviewRecipients(draft.id),

@@ -17,13 +17,19 @@ import {
   saveSignalDraftResponse,
 } from "@/server/services/smartsheet-signal-service";
 import { retryFailedSyncs } from "@/server/services/sync-service";
+import { requireAdminActor } from "@/server/auth/require-admin";
 
 /**
  * Admin actions. Each is a thin wrapper — the workflow lives in
  * src/server/services so a scheduler or job runner can reuse it later.
  *
- * NOTE: when Entra ID SSO is added (see ../admin/layout.tsx), every export here
- * needs its own session assertion. A layout guard does not protect a POST.
+ * EVERY export here begins with `await requireAdminActor()`. Server actions are
+ * individually addressable HTTP endpoints: the /admin layout guard renders
+ * pages, it does not protect a POST. An unauthenticated request to any of these
+ * throws UnauthorizedError before touching data.
+ *
+ * requireAdminActor() also returns the signed-in identity, so the audit trail
+ * attributes each change to a real person rather than a generic "admin".
  */
 
 /**
@@ -32,14 +38,16 @@ import { retryFailedSyncs } from "@/server/services/sync-service";
  * become sendable only when an admin explicitly selects them.
  */
 export async function refreshDiscoveryAction() {
-  await refreshCatalogFromSalesforce("admin");
+  const actor = await requireAdminActor();
+  await refreshCatalogFromSalesforce(actor);
   revalidatePath("/admin");
 }
 
 /** Select or deselect specific opportunities in the draft. */
 export async function setSelectionAction(opportunityIds: string[], selected: boolean) {
-  const draft = await getOrCreateDraft("admin");
-  await setSelection({ campaignId: draft.id, opportunityIds, selected, actor: "admin" });
+  const actor = await requireAdminActor();
+  const draft = await getOrCreateDraft(actor);
+  await setSelection({ campaignId: draft.id, opportunityIds, selected, actor });
   revalidatePath("/admin");
   revalidatePath("/admin/campaigns/review");
 }
@@ -51,34 +59,39 @@ export async function setSelectionAction(opportunityIds: string[], selected: boo
  * No Salesforce record is written here.
  */
 export async function sendDraftAction() {
-  const draft = await getOrCreateDraft("admin");
-  const result = await sendDraft(draft.id, "admin");
+  const actor = await requireAdminActor();
+  const draft = await getOrCreateDraft(actor);
+  const result = await sendDraft(draft.id, actor);
   revalidatePath("/admin");
   revalidatePath("/admin/outbox");
   if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}`);
 }
 
 export async function clearSelectionsAction() {
-  const draft = await getOrCreateDraft("admin");
+  const actor = await requireAdminActor();
+  const draft = await getOrCreateDraft(actor);
   await clearSelections(draft.id);
   revalidatePath("/admin");
   revalidatePath("/admin/campaigns/review");
 }
 
 export async function sendRemindersAction(campaignId: string) {
-  await sendReminders(campaignId, "admin");
+  const actor = await requireAdminActor();
+  await sendReminders(campaignId, actor);
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin/outbox");
 }
 
 export async function retrySyncAction(campaignId: string) {
-  await retryFailedSyncs(campaignId, "admin");
+  const actor = await requireAdminActor();
+  await retryFailedSyncs(campaignId, actor);
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
 }
 
 export async function refreshCatalogAction() {
-  await refreshCatalogFromSalesforce("admin");
+  const actor = await requireAdminActor();
+  await refreshCatalogFromSalesforce(actor);
   revalidatePath("/admin/organizations");
   revalidatePath("/admin");
 }
@@ -88,6 +101,7 @@ export async function refreshCatalogAction() {
  * record so a failed sync can be retried successfully. Mock provider only.
  */
 export async function clearMockValidationBlockAction(externalId: string) {
+  await requireAdminActor();
   await prisma.mockSalesforceOpportunity.update({
     where: { externalId },
     data: { syncBlocked: false },
@@ -101,18 +115,21 @@ export async function clearMockValidationBlockAction(externalId: string) {
  * OpportunitySignal cache — never to Salesforce or back to Smartsheet.
  */
 export async function refreshSmartsheetSignalsAction() {
-  await refreshSmartsheetSignals("admin");
+  const actor = await requireAdminActor();
+  await refreshSmartsheetSignals(actor);
   revalidatePath("/admin");
 }
 
 export async function markSignalReviewedAction(signalId: string) {
-  await markSignalReviewed(signalId, "admin");
+  const actor = await requireAdminActor();
+  await markSignalReviewed(signalId, actor);
   revalidatePath("/admin");
 }
 
 /** Saves a draft reply locally. Nothing is sent anywhere. */
 export async function saveSignalDraftResponseAction(signalId: string, formData: FormData) {
+  const actor = await requireAdminActor();
   const draft = String(formData.get("draftResponse") ?? "");
-  await saveSignalDraftResponse(signalId, draft, "admin");
+  await saveSignalDraftResponse(signalId, draft, actor);
   revalidatePath("/admin");
 }

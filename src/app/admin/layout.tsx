@@ -1,44 +1,28 @@
 import Link from "next/link";
 import { AdminNav } from "@/components/admin/admin-nav";
+import { SignOutButton } from "@/components/admin/sign-out-button";
 import { Wordmark } from "@/components/ui/primitives";
 import { brand } from "@/lib/brand";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { getEmailService } from "@/server/integrations/email";
+import { requireAdminPage } from "@/server/auth/require-admin";
 
 /**
- * ===========================================================================
- *  ADMIN AUTHENTICATION GOES HERE — REQUIRED BEFORE PRODUCTION.
- * ===========================================================================
+ * Every /admin route renders through this layout, and nothing else does, which
+ * makes it the natural place for the page-level guard.
  *
- * Everything under /admin renders through this layout, and nothing else in the
- * app does. That makes this the single choke point for Microsoft Entra ID SSO.
+ * It is NOT the only guard. A layout does not protect a POST, so every server
+ * action in ./actions.ts asserts for itself via requireAdmin(). See
+ * src/server/auth/require-admin.ts.
  *
- * The rep experience (/checkin/[token]) deliberately sits outside this layout
- * and must stay that way — reps authenticate with their emailed token and must
- * never be asked to sign in.
- *
- * To add Entra ID:
- *   1. Register the app in Entra (Azure AD): redirect URI
- *      https://<host>/api/auth/callback/microsoft-entra-id, and grant the
- *      delegated `openid profile email` scopes.
- *   2. Install an OIDC library (NextAuth/Auth.js has a `microsoft-entra-id`
- *      provider) and add its route handler under /app/api/auth.
- *   3. At the top of this component, resolve the session and redirect to the
- *      sign-in route when there is none:
- *
- *        const session = await auth();
- *        if (!session) redirect("/api/auth/signin");
- *
- *   4. Restrict to the Sales Operations group — check the group/role claim from
- *      the token rather than allow-listing individual emails.
- *   5. Belt and braces: add a `proxy.ts` matcher for "/admin/:path*" so a new
- *      admin route can never be added outside this check. The server actions in
- *      ./actions.ts must assert the session too — a layout guard does not
- *      protect a POST.
- *
- * Until that lands, this area is unauthenticated and the banner below says so.
+ * The external check-in experience at /checkin/[token] deliberately renders
+ * outside this layout and has no authentication — recipients authenticate with
+ * the token in their email and must never see a login screen.
  */
-export default function AdminLayout({ children }: LayoutProps<"/admin">) {
+export default async function AdminLayout({ children }: LayoutProps<"/admin">) {
+  // Page-level enforcement. Redirects an unauthenticated visitor to sign-in.
+  const admin = await requireAdminPage();
+
   const salesforce = getSalesforceService();
   const email = getEmailService();
   const demo = salesforce.info.simulated;
@@ -48,7 +32,7 @@ export default function AdminLayout({ children }: LayoutProps<"/admin">) {
       {demo ? (
         <div className="bg-brand px-5 py-2 text-center text-[12px] font-medium text-white/95">
           Demo mode — {salesforce.info.label.toLowerCase()}, emails to the{" "}
-          {email.info.label.toLowerCase()}, admin area unauthenticated. No real records are touched.
+          {email.info.label.toLowerCase()}. No real records are touched.
         </div>
       ) : null}
 
@@ -61,7 +45,10 @@ export default function AdminLayout({ children }: LayoutProps<"/admin">) {
                 {brand.productName}
               </span>
             </Link>
-            <span className="hidden text-[13px] text-muted sm:block">Sales Operations</span>
+            <div className="hidden items-center gap-3 sm:flex">
+              <span className="text-[13px] text-muted">{admin.email ?? admin.name}</span>
+              <SignOutButton />
+            </div>
           </div>
           <AdminNav />
         </div>
