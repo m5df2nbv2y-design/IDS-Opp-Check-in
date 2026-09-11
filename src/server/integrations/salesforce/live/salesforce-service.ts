@@ -38,6 +38,22 @@ import { requestAccessToken } from "./auth";
 const API_VERSION = "v61.0";
 
 /**
+ * Transport policy.
+ *
+ * A hung Salesforce connection must not hold a serverless request open until
+ * the platform kills it, so every call is bounded. Reads are idempotent and
+ * are retried on the two failures that are genuinely transient — 429 and 5xx —
+ * with a short backoff. Writes are NOT retried here: `retryable` is reported
+ * on the error and the decision is left to the sync service, which knows
+ * whether replaying an update is safe.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_READ_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 400;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * The primary contact role subquery is the recipient. Confirmed against the
  * org: 78.6% of open opportunities carry one, and IDS maintains it deliberately.
  * There is no partner-account lookup and no custom check-in contact field —
@@ -228,40 +244,108 @@ export class LiveSalesforceService implements SalesforceService {
     return this.auth;
   }
 
-  private async query<T>(soql: string): Promise<T[]> {
+  /**
+   * One bounded request. A 401 means the cached token is no longer good —
+   * Salesforce can revoke or expire it ahead of our own clock — so the token is
+   * dropped and the call retried once with a fresh one.
+   */
+  private async request(
+    buildUrl: (auth: SalesforceAuth) => string,
+    init: RequestInit = {},
+    { allowReauth = true }: { allowReauth?: boolean } = {},
+  ): Promise<Response> {
     const auth = await this.authenticate();
-    const results: T[] = [];
-    let url: string | null = `${auth.instanceUrl}/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`;
 
-    while (url) {
-      const response: Response = await fetch(url, {
-        headers: { Authorization: `Bearer ${auth.accessToken}` },
+    let response: Response;
+    try {
+      response = await fetch(buildUrl(auth), {
+        ...init,
+        headers: { ...init.headers, Authorization: `Bearer ${auth.accessToken}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (!response.ok) {
-        throw new SalesforceSyncError(await describeError(response), { code: "QUERY_FAILED" });
+    } catch (caught) {
+      // A timeout or a dropped connection — transient by nature.
+      const reason = caught instanceof Error ? caught.name : "unknown error";
+      throw new SalesforceSyncError(
+        `Salesforce did not respond within ${REQUEST_TIMEOUT_MS / 1000}s (${reason}).`,
+        { code: "NETWORK", retryable: true },
+      );
+    }
+
+    if (response.status === 401 && allowReauth) {
+      this.auth = null;
+      return this.request(buildUrl, init, { allowReauth: false });
+    }
+
+    return response;
+  }
+
+  /** Reads are idempotent, so transient failures are retried. */
+  private async readWithRetry(
+    buildUrl: (auth: SalesforceAuth) => string,
+    init: RequestInit = {},
+  ): Promise<Response> {
+    let lastError: SalesforceSyncError | null = null;
+
+    for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.request(buildUrl, init);
+        if (response.ok) return response;
+
+        const transient = response.status === 429 || response.status >= 500;
+        if (!transient || attempt === MAX_READ_ATTEMPTS) {
+          throw new SalesforceSyncError(await describeError(response), {
+            code: "QUERY_FAILED",
+            retryable: transient,
+          });
+        }
+        lastError = new SalesforceSyncError(await describeError(response), {
+          code: "QUERY_FAILED",
+          retryable: true,
+        });
+      } catch (caught) {
+        const error =
+          caught instanceof SalesforceSyncError
+            ? caught
+            : new SalesforceSyncError(String(caught), { code: "NETWORK", retryable: true });
+        if (!error.retryable || attempt === MAX_READ_ATTEMPTS) throw error;
+        lastError = error;
       }
+
+      await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+    }
+
+    throw lastError ?? new SalesforceSyncError("Salesforce read failed.", { code: "QUERY_FAILED" });
+  }
+
+  private async query<T>(soql: string): Promise<T[]> {
+    const results: T[] = [];
+    let path: string | null = `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`;
+
+    while (path) {
+      const nextPath: string = path;
+      const response = await this.readWithRetry((auth) => `${auth.instanceUrl}${nextPath}`);
       const page = (await response.json()) as {
         records: T[];
         done: boolean;
         nextRecordsUrl?: string;
       };
       results.push(...page.records);
-      url = page.done || !page.nextRecordsUrl ? null : `${auth.instanceUrl}${page.nextRecordsUrl}`;
+      path = page.done || !page.nextRecordsUrl ? null : page.nextRecordsUrl;
     }
 
     return results;
   }
 
   private async patchOpportunity(externalId: string, fields: Record<string, unknown>) {
-    const auth = await this.authenticate();
-    const response = await fetch(
-      `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/${externalId}`,
+    // Deliberately NOT routed through readWithRetry: replaying a write is a
+    // decision for the sync service, not the transport.
+    const response = await this.request(
+      (auth) =>
+        `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/${encodeURIComponent(externalId)}`,
       {
         method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${auth.accessToken}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(fields),
       },
     );

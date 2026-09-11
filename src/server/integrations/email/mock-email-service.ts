@@ -33,7 +33,16 @@ export class MockEmailService implements EmailService {
       },
     });
 
-    console.log(`[email:mock] → ${message.to.email} — ${message.subject}`);
+    // The address is in the outbox for anyone authorized to look; it does not
+    // need to be in the platform's log stream as well.
+    console.log(`[email:mock] → ${maskEmail(message.to.email)} — ${message.subject}`);
     return { id: row.id, status: "SENT" };
   }
+}
+
+/** "jane.doe@example.com" → "j***@example.com". Enough to debug, not a leak. */
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return "***";
+  return `${local.slice(0, 1)}***@${domain}`;
 }

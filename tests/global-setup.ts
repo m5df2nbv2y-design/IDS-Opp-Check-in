@@ -10,12 +10,23 @@ const dbPath = fileURLToPath(new URL("../prisma/test.db", import.meta.url));
  * reset anything, and the suite can't touch a real database.
  */
 export default function setup() {
-  rmSync(dbPath, { force: true });
+  removeDatabase();
 
   execFileSync("npx", ["prisma", "db", "push"], {
     env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
     stdio: "ignore",
   });
 
-  return () => rmSync(dbPath, { force: true });
+  return removeDatabase;
+}
+
+/**
+ * SQLite keeps its journal beside the database. Removing only the .db can leave
+ * a -wal/-shm pair behind, which a later run would read as committed state, so
+ * all three go together.
+ */
+function removeDatabase() {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    rmSync(`${dbPath}${suffix}`, { force: true });
+  }
 }

@@ -37,7 +37,34 @@ export function demoSafetyViolations(env: ProviderEnv): string[] {
     }
   }
 
+  // Mock providers say nothing about WHICH database gets wiped. A developer
+  // with mock providers and a production DATABASE_URL would destroy real
+  // campaign history, so the target database is checked too.
+  if (env.NODE_ENV === "production") {
+    violations.push('NODE_ENV is "production" — this script never runs against a production build.');
+  }
+
+  const databaseUrl = env.DATABASE_URL?.trim();
+  if (databaseUrl && !isLocalDatabase(databaseUrl)) {
+    violations.push(
+      "DATABASE_URL points at a remote database. This script deletes every row — " +
+        "it may only target a local SQLite file or a database on localhost.",
+    );
+  }
+
   return violations;
+}
+
+/** Local SQLite, or Postgres on this machine. Anything else is someone's server. */
+function isLocalDatabase(url: string): boolean {
+  if (url.startsWith("file:")) return true;
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    // Unparseable is not provably local.
+    return false;
+  }
 }
 
 export function isDemoEnvironment(env: ProviderEnv = process.env): boolean {

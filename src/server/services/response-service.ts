@@ -85,6 +85,10 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
   };
 }
 
+/** Upper bound on the recipient's free-text note. Generous for a real comment,
+ *  small enough that the public endpoint cannot be used to store bulk data. */
+const MAX_COMMENT_LENGTH = 2000;
+
 /** Accepts only a plain yyyy-mm-dd date, ignoring anything else. */
 function parseCloseDate(value: string | null | undefined): Date | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -148,7 +152,10 @@ export async function saveResponse(input: {
   if (!item) return { ok: false, reason: "NOT_FOUND" };
 
   const revised = item.submittedAt !== null;
-  const comment = input.comment?.trim() ? input.comment.trim() : null;
+  // This endpoint is public — anyone holding a link can post to it — so the
+  // one free-text field is bounded rather than trusted.
+  const trimmed = input.comment?.trim();
+  const comment = trimmed ? trimmed.slice(0, MAX_COMMENT_LENGTH) : null;
 
   // Recorded for the confirmed future write scope. Still never pushed to
   // Salesforce — capturing it is what makes close-date movement measurable.

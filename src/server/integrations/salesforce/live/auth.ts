@@ -64,6 +64,9 @@ export function missingCredentials(flow: SalesforceAuthFlow = getAuthFlow()): st
  * Exchange the configured credentials for an access token.
  * Throws SalesforceSyncError — never leaks a credential value.
  */
+/** Authentication is on the critical path for every Salesforce call. */
+const AUTH_TIMEOUT_MS = 15_000;
+
 export async function requestAccessToken(
   flow: SalesforceAuthFlow = getAuthFlow(),
 ): Promise<SalesforceToken> {
@@ -93,11 +96,22 @@ export async function requestAccessToken(
           password,
         });
 
-  const response = await fetch(`${loginUrl}/services/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  // Bounded: a hung token endpoint must not hold a request open indefinitely.
+  let response: Response;
+  try {
+    response = await fetch(`${loginUrl}/services/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    });
+  } catch (caught) {
+    throw new SalesforceSyncError(
+      `Salesforce authentication did not respond within ${AUTH_TIMEOUT_MS / 1000}s ` +
+        `(${caught instanceof Error ? caught.name : "unknown error"}).`,
+      { code: "AUTH_TIMEOUT", retryable: true },
+    );
+  }
 
   const raw = await response.text();
 
@@ -191,9 +205,15 @@ export async function fetchIdentity(token: SalesforceToken): Promise<{
   displayName: string;
   organizationId: string;
 } | null> {
-  const response = await fetch(`${token.instanceUrl}/services/oauth2/userinfo`, {
-    headers: { Authorization: `Bearer ${token.accessToken}` },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${token.instanceUrl}/services/oauth2/userinfo`, {
+      headers: { Authorization: `Bearer ${token.accessToken}` },
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    });
+  } catch {
+    return null;
+  }
   if (!response.ok) return null;
 
   const json = (await response.json()) as {
