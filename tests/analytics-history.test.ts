@@ -6,6 +6,7 @@ import {
   SNAPSHOT_SOURCES,
 } from "@/server/services/snapshot-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
+import { launchCampaign } from "@/server/services/campaign-service";
 import {
   getOrCreateDraft,
   sendDraft,
@@ -244,16 +245,86 @@ describe("intervention history", () => {
     expect(selection.selectedAt).toBeInstanceOf(Date);
   });
 
+  it("records the selection for a campaign launched programmatically", async () => {
+    // `opportunityIds` IS the selection, whichever entry point supplied it.
+    // Before this was recorded, any campaign launched through launchCampaign
+    // lost "what pipeline did we choose to intervene on?" permanently, because
+    // the Opportunity row is a mutable cache that moves on.
+    const chosen = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+      take: 3,
+      orderBy: { amount: "desc" },
+    });
+
+    const launched = await launchCampaign({
+      opportunityIds: chosen.map((opportunity) => opportunity.id),
+      name: "Programmatic Campaign",
+      period: "Test",
+      actor: "scheduler@ids.example.com",
+    });
+
+    const selections = await prisma.campaignSelection.findMany({
+      where: { campaignId: launched.campaignId },
+    });
+
+    expect(selections).toHaveLength(chosen.length);
+    for (const opportunity of chosen) {
+      const selection = selections.find((row) => row.opportunityId === opportunity.id);
+      expect(selection?.amountAtSelection).toBe(opportunity.amount);
+      expect(selection?.stageAtSelection).toBe(opportunity.currentStage);
+      expect(selection?.selectedBy).toBe("scheduler@ids.example.com");
+    }
+  });
+
+  it("does not overwrite selections a draft already recorded", async () => {
+    const draft = await getOrCreateDraft("test");
+    const opportunity = await tracked("MRI 3T Upgrade");
+
+    await setSelection({
+      campaignId: draft.id,
+      opportunityIds: [opportunity.id],
+      selected: true,
+      actor: "analyst@ids.example.com",
+    });
+    const original = await prisma.campaignSelection.findFirstOrThrow({
+      where: { campaignId: draft.id, opportunityId: opportunity.id },
+    });
+
+    await sendDraft(draft.id, "someone-else@ids.example.com");
+
+    const after = await prisma.campaignSelection.findMany({
+      where: { campaignId: draft.id, opportunityId: opportunity.id },
+    });
+    // One row, still attributed to whoever actually chose it.
+    expect(after).toHaveLength(1);
+    expect(after[0].selectedBy).toBe("analyst@ids.example.com");
+    expect(after[0].selectedAt.getTime()).toBe(original.selectedAt.getTime());
+  });
+
   it("marks the intervention point on the observation timeline", async () => {
     const draft = await getOrCreateDraft("test");
     const opportunity = await tracked("PET/CT Suite Addition");
 
     await setSelection({ campaignId: draft.id, opportunityIds: [opportunity.id], selected: true });
-    await sendDraft(draft.id, "test");
+    const sent = await sendDraft(draft.id, "test");
 
     const history = await getSnapshotHistory(opportunity.externalId);
     const launch = history.find((row) => row.source === SNAPSHOT_SOURCES.CAMPAIGN_LAUNCH);
-    expect(launch).toBeDefined();
+
+    // A CAMPAIGN_LAUNCH snapshot is written unconditionally for every
+    // opportunity that actually goes out, so a missing one means the
+    // opportunity was dropped before the send rather than that the snapshot
+    // logic failed. This test flaked once and could not be reproduced across
+    // many subsequent runs, so the assertion reports the state that would
+    // explain it instead of leaving the next failure to be guessed at.
+    expect(
+      launch,
+      `No CAMPAIGN_LAUNCH snapshot for ${opportunity.externalId}. ` +
+        `send result: ${JSON.stringify(sent)}; ` +
+        `resolution: ${opportunity.resolutionStatus}/${opportunity.resolutionReason ?? "none"}; ` +
+        `contactId: ${opportunity.contactId ?? "null"}; isOpen: ${opportunity.isOpen}; ` +
+        `snapshot sources present: [${history.map((row) => row.source).join(", ")}]`,
+    ).toBeDefined();
     expect(launch?.amount).toBe(opportunity.amount);
     expect(launch?.stage).toBe(opportunity.currentStage);
   });

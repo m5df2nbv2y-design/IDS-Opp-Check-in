@@ -217,6 +217,43 @@ export async function launchCampaign(options: {
         data: { name, period, status: "IN_PROGRESS", startedAt: new Date() },
       });
 
+  // `opportunityIds` IS the selection — it is the explicit, human-chosen set,
+  // which is why it has no fallback. Record it with the values frozen at this
+  // moment, exactly as the draft flow does, so "what pipeline did we choose to
+  // intervene on?" stays answerable no matter which path launched the campaign.
+  // Without this, a campaign launched programmatically loses that figure
+  // permanently — the Opportunity row is a mutable cache and moves on.
+  //
+  // A draft converted by sendDraft has already recorded its selections, and
+  // those carry the original selection time — so existing rows are left alone
+  // rather than overwritten. (skipDuplicates is not available on the SQLite
+  // adapter, so the filter is explicit.)
+  const alreadyRecorded = new Set(
+    (
+      await prisma.campaignSelection.findMany({
+        where: { campaignId: campaign.id },
+        select: { opportunityId: true },
+      })
+    ).map((selection) => selection.opportunityId),
+  );
+
+  const newSelections = opportunities.filter(
+    (opportunity) => !alreadyRecorded.has(opportunity.id),
+  );
+
+  if (newSelections.length > 0) {
+    await prisma.campaignSelection.createMany({
+      data: newSelections.map((opportunity) => ({
+        campaignId: campaign.id,
+        opportunityId: opportunity.id,
+        selectedBy: actor,
+        amountAtSelection: opportunity.amount,
+        stageAtSelection: opportunity.currentStage,
+        closeDateAtSelection: opportunity.closeDate,
+      })),
+    });
+  }
+
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let emailsSent = 0;
   let emailsFailed = 0;

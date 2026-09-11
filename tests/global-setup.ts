@@ -2,13 +2,16 @@ import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const dbPath = fileURLToPath(new URL("../prisma/test.db", import.meta.url));
-
 /**
  * Builds a throwaway SQLite database with the current schema.
- * The file is deleted first, so `db push` only ever creates — it never has to
- * reset anything, and the suite can't touch a real database.
+ *
+ * The path comes from vitest.config.ts, which keys it to this process — so two
+ * concurrent runs never share a file, and this setup's delete-then-create can
+ * never pull the database out from under another run.
  */
+const dbPath =
+  process.env.VITEST_DB_PATH ?? fileURLToPath(new URL("../prisma/test.db", import.meta.url));
+
 export default function setup() {
   removeDatabase();
 

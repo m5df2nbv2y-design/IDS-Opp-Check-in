@@ -47,6 +47,7 @@ next-env.d.ts
 /dev.db
 /dev.db-journal
 /prisma/test.db
+/prisma/test-*.db
 
 # Recipient preview output — contains contact email addresses, never commit.
 /salesforce-recipient-preview.csv
