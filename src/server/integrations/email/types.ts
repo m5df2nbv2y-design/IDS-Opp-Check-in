@@ -8,8 +8,12 @@ export type OutboundEmail = {
   subject: string;
   html: string;
   text: string;
-  /** INVITE | REMINDER — recorded on the outbox row for filtering. */
-  kind: "INVITE" | "REMINDER";
+  /**
+   * INVITE | REMINDER | TEST — recorded on the outbox row for filtering. TEST
+   * marks a demo send to the configured demo address; it is deliberately a
+   * distinct kind so a demo email can never be mistaken for outreach.
+   */
+  kind: "INVITE" | "REMINDER" | "TEST";
   /** The check-in link inside the body, stored so the demo outbox can open it. */
   linkUrl?: string;
   campaignId?: string;

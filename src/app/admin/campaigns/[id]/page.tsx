@@ -2,11 +2,13 @@ import { notFound } from "next/navigation";
 import { retrySyncAction, sendRemindersAction } from "../../actions";
 import { ActionButton } from "@/components/admin/action-button";
 import { RecipientTable } from "@/components/admin/recipient-table";
+import { TestEmailPanel } from "@/components/admin/test-email-panel";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/components/ui/primitives";
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import { getCampaignSummary, listResponses } from "@/server/services/campaign-service";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +18,14 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
   if (!summary) notFound();
 
   const failed = responses.filter((response) => response.syncStatus === "FAILED");
+
+  // The demo control appears only when a demo address is configured on the
+  // server, and only for a recipient whose invitation has actually gone out —
+  // there is no check-in link to demonstrate before that.
+  const demoAddress = env.demoTestEmail.trim();
+  const testRecipient = demoAddress
+    ? summary.recipients.find((recipient) => recipient.sentAt !== null)
+    : undefined;
 
   return (
     <div className="space-y-8">
@@ -82,6 +92,14 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
       <section className="space-y-3">
         <h2 className="text-[17px] font-semibold tracking-tight text-ink">Recipients</h2>
         <RecipientTable recipients={summary.recipients} />
+        {testRecipient ? (
+          <TestEmailPanel
+            recipientId={testRecipient.recipientId}
+            contactName={testRecipient.contactName}
+            organizationName={testRecipient.accountName}
+            demoAddress={demoAddress}
+          />
+        ) : null}
       </section>
 
       <section className="space-y-3">

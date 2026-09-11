@@ -12,6 +12,25 @@ After:   SFX → discover → select → review → send → contact updates →
 Salesforce/SFX stays the system of record. This is a workflow, UX, and
 synchronization layer — not a second CRM.
 
+## Running the MVP demo
+
+```bash
+npm run demo
+```
+
+Starts the app and opens the dashboard at **http://localhost:3000/admin** once
+the server is actually listening. `./demo` does the same thing.
+
+- Uses the local `.env` as-is — no separate demo configuration.
+- Mock email stays enabled: invitations land in the in-app outbox, nothing is
+  delivered.
+- Salesforce stays read-only; write-back is off unless deliberately enabled.
+- Sign-in behaves exactly as configured (local demo sign-in, or Entra ID).
+- Press **Ctrl+C** to stop.
+
+If port 3000 is already in use, the command stops and tells you what is holding
+it. It never kills anything for you.
+
 ## What it does
 
 **Sales Operations** opens `/admin` and sees every open opportunity discovered

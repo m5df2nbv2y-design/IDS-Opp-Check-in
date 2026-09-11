@@ -17,6 +17,7 @@ import {
   saveSignalDraftResponse,
 } from "@/server/services/smartsheet-signal-service";
 import { retryFailedSyncs } from "@/server/services/sync-service";
+import { sendDemoTestEmail, type TestEmailResult } from "@/server/services/test-email-service";
 import { requireAdminActor } from "@/server/auth/require-admin";
 
 /**
@@ -80,6 +81,21 @@ export async function sendRemindersAction(campaignId: string) {
   await sendReminders(campaignId, actor);
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin/outbox");
+}
+
+/**
+ * Send ONE real demo email to the server-configured DEMO_TEST_EMAIL address.
+ *
+ * Takes a recipient RECORD ID, never an address: the destination is decided
+ * entirely on the server, so no browser input can redirect this send. The
+ * configured email provider is untouched and stays mock for every other path.
+ */
+export async function sendTestEmailAction(recipientId: string): Promise<TestEmailResult> {
+  const actor = await requireAdminActor();
+  const result = await sendDemoTestEmail(recipientId, actor);
+  revalidatePath("/admin/outbox");
+  revalidatePath("/admin/audit");
+  return result;
 }
 
 export async function retrySyncAction(campaignId: string) {

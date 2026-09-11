@@ -63,6 +63,14 @@ export const env = {
 
   resendApiKey: process.env.RESEND_API_KEY ?? "",
 
+  /**
+   * The ONE address the "Send test email" demo action may send to. Read only
+   * on the server and never echoed to the browser. Empty disables the action
+   * entirely — it fails closed rather than falling back to a contact's real
+   * address.
+   */
+  demoTestEmail: process.env.DEMO_TEST_EMAIL ?? "",
+
   smartsheet: {
     baseUrl: str("SMARTSHEET_BASE_URL", "https://api.smartsheet.com/2.0"),
     apiKey: process.env.SMARTSHEET_API_KEY ?? "",

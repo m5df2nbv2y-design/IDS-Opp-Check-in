@@ -1,0 +1,4 @@
+#!/bin/sh
+# Convenience wrapper so the demo can be started with ./demo from this folder.
+# Self-contained: it only runs the project's own npm script.
+cd "$(dirname "$0")" && exec npm run demo
