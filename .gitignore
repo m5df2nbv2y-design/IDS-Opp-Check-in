@@ -51,3 +51,6 @@ next-env.d.ts
 
 # Recipient preview output — contains contact email addresses, never commit.
 /salesforce-recipient-preview.csv
+
+# Pre-PostgreSQL SQLite database, kept locally for reference only.
+/dev.db.sqlite-backup

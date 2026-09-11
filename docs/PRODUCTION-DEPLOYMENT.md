@@ -134,7 +134,10 @@ Recommended: restrict the user's login IP ranges to the host's egress addresses.
 
 ## 6. Production database setup
 
-1. Provision PostgreSQL 14+ with TLS (`?sslmode=require`).
+1. Provision PostgreSQL 16 with TLS (`?sslmode=require`). The Prisma schema
+   targets PostgreSQL and the migration history is PostgreSQL-native, so
+   `migrate deploy` applies cleanly — local development runs the same engine
+   via `npm run db:up`.
 2. Set `DATABASE_URL` in the host's environment. It is never committed and never
    reaches the browser.
 3. Apply migrations from a machine that can reach the database:

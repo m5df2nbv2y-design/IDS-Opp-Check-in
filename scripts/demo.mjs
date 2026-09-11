@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ensureDatabase, explainFailure } from "./db-up.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = 3000;
@@ -135,6 +136,7 @@ function banner(config, browserOpened) {
     "",
     "  Status:",
     `      ${green("✓")} Next.js running on port ${PORT}`,
+    `      ${green("✓")} PostgreSQL on localhost:5432`,
   ];
 
   lines.push(
@@ -181,6 +183,30 @@ function banner(config, browserOpened) {
 
 async function main() {
   const config = readSafeConfig();
+
+  // The app runs on PostgreSQL everywhere, so the database is a hard
+  // prerequisite. Checked before the port and before Next starts, because a
+  // missing database otherwise surfaces as a confusing runtime error on the
+  // first page load rather than a clear message here.
+  console.log(dim("\n  Checking PostgreSQL..."));
+  const database = ensureDatabase({ quiet: true });
+  if (!database.ok) {
+    console.error(
+      [
+        "",
+        red("  The demo needs PostgreSQL and it is not available."),
+        "",
+        explainFailure(database),
+        "",
+        dim("  Once Docker is running:  npm run db:up"),
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+  console.log(
+    dim(`  PostgreSQL ready${database.started ? " (started just now)" : " (already running)"}.`),
+  );
 
   if (!(await portIsFree())) {
     const holder = await describePortHolder();

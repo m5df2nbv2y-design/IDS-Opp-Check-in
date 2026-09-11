@@ -19,7 +19,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 /// An external organization: agency, distributor, direct client.

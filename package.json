@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "demo": "node scripts/demo.mjs",
+    "db:up": "node scripts/db-up.mjs",
+    "db:down": "docker stop ids-checkin-postgres",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

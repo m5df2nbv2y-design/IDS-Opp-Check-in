@@ -18,9 +18,13 @@ synchronization layer — not a second CRM.
 npm run demo
 ```
 
-Starts the app and opens the dashboard at **http://localhost:3000/admin** once
-the server is actually listening. `./demo` does the same thing.
+Starts PostgreSQL, then the app, and opens the dashboard at
+**http://localhost:3000/admin** once the server is actually listening.
+`./demo` does the same thing.
 
+- Needs Docker running — the app uses PostgreSQL everywhere, local included.
+  If Docker is down the command says so and stops. `npm run db:up` starts just
+  the database.
 - Uses the local `.env` as-is — no separate demo configuration.
 - Mock email stays enabled: invitations land in the in-app outbox, nothing is
   delivered.

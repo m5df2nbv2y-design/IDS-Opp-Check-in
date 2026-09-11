@@ -107,9 +107,11 @@ describe("seed script refuses to run against live providers", () => {
       const result = runSeed({
         SALESFORCE_PROVIDER: "salesforce",
         EMAIL_PROVIDER: "mock",
-        // Point at a path that does not exist: if the guard ever failed to fire,
-        // the run would blow up on the database rather than quietly succeeding.
-        DATABASE_URL: "file:/nonexistent/should-never-be-touched.db",
+        // Point at an unreachable database: if the guard ever failed to fire,
+        // the run would blow up on the connection rather than quietly
+        // succeeding. Still a postgres:// URL, because a non-Postgres one is
+        // now rejected by src/lib/db.ts before the guard is reached.
+        DATABASE_URL: "postgresql://nobody:nobody@127.0.0.1:1/should_never_be_touched",
       });
 
       expect(result.code).not.toBe(0);
@@ -127,7 +129,7 @@ describe("seed script refuses to run against live providers", () => {
       const result = runSeed({
         SALESFORCE_PROVIDER: "mock",
         EMAIL_PROVIDER: "resend",
-        DATABASE_URL: "file:/nonexistent/should-never-be-touched.db",
+        DATABASE_URL: "postgresql://nobody:nobody@127.0.0.1:1/should_never_be_touched",
       });
 
       expect(result.code).not.toBe(0);
