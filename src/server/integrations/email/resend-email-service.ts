@@ -46,7 +46,7 @@ export class ResendEmailService implements EmailService {
       }
     } catch (caught) {
       status = "FAILED";
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = redactKey(caught instanceof Error ? caught.message : String(caught));
     }
 
     const row = await prisma.emailMessage.create({
@@ -68,4 +68,24 @@ export class ResendEmailService implements EmailService {
 
     return { id: row.id, status, error };
   }
+}
+
+/**
+ * Provider errors are shown in the admin UI and stored on the outbox row, so
+ * they must never carry the API key.
+ *
+ * A malformed key is the case that matters: fetch rejects the Authorization
+ * header and puts its ENTIRE value — the key — into the exception message,
+ * which would otherwise be rendered on screen and written to the database.
+ */
+function redactKey(message: string): string {
+  const key = env.resendApiKey;
+  let safe = key ? message.split(key).join("[redacted]") : message;
+  // Belt and braces: drop any bearer credential the provider echoes back,
+  // whatever its shape.
+  safe = safe.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
+  // A rejected header can embed the whole value in quotes rather than after
+  // "Bearer", so an over-long single-line message is truncated rather than
+  // surfaced verbatim.
+  return safe.length > 300 ? `${safe.slice(0, 300)}…` : safe;
 }

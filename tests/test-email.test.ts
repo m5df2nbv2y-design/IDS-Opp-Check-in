@@ -186,6 +186,43 @@ describe("the demo test email", () => {
   });
 });
 
+describe("a provider failure never leaks the API key", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("redacts the key from the error shown in the UI and stored in the outbox", async () => {
+    // A malformed key is the case that matters: fetch rejects the
+    // Authorization header and puts its ENTIRE value into the exception
+    // message, which is then rendered on screen and written to the database.
+    const secret = "re_a_very_secret_key_value_12345";
+    vi.stubEnv("DEMO_TEST_EMAIL", DEMO_ADDRESS);
+    vi.stubEnv("RESEND_API_KEY", secret);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error(`Headers.append: "Bearer ${secret}" is an invalid header value.`);
+      }),
+    );
+
+    const { recipient } = await launchCampaign();
+    const { sendDemoTestEmail } = await loadService();
+    const result = await sendDemoTestEmail(recipient.id, "admin@ids.invalid");
+
+    expect(result.ok).toBe(false);
+    const message = result.ok ? "" : result.message;
+    expect(message).not.toContain(secret);
+    expect(message).toContain("[redacted]");
+
+    // And it must not reach the database either.
+    const row = await prisma.emailMessage.findFirstOrThrow({ where: { kind: "TEST" } });
+    expect(row.error ?? "").not.toContain(secret);
+  });
+});
+
 describe("the test-email path cannot be aimed by the browser", () => {
   it("takes a recipient id, never an address", () => {
     const service = read("src/server/services/test-email-service.ts");
