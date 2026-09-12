@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { formatAmount, firstName, formatShortDate, pluralize } from "@/lib/format";
-import { OPPORTUNITY_STAGES, stageLabel, type OpportunityStage } from "@/lib/stages";
+import { OPPORTUNITY_STAGES, isClosedStage, stageLabel, type OpportunityStage } from "@/lib/stages";
 import type { CheckInSessionItem } from "@/server/services/response-service";
 
 type Props = {
@@ -49,7 +49,12 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   const answer = answers[index];
   const isLast = index === items.length - 1;
   const resuming = firstUnanswered > 0;
-  const showNote = noteOpen || answer.comment.length > 0;
+  // Closing a project is the one answer that must come with an explanation.
+  // The note opens automatically, is labelled as required, and gates the
+  // button - so the requirement is visible before the tap, not after it.
+  const closing = isClosedStage(answer.stage);
+  const reasonMissing = closing && answer.comment.trim().length === 0;
+  const showNote = noteOpen || closing || answer.comment.length > 0;
 
   function update(patch: Partial<Answer>) {
     setAnswers((current) =>
@@ -86,7 +91,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   }
 
   async function handleNext() {
-    if (!answer.stage) return;
+    if (!answer.stage || reasonMissing) return;
 
     saves.current[index] = save(index, answer);
 
@@ -274,7 +279,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
           {showNote ? (
             <div className="mt-4">
               <label htmlFor="note" className="text-[14px] font-semibold text-ink">
-                Anything we should know?
+                {closing ? "Why did this project end?" : "Anything we should know?"}
               </label>
               <textarea
                 id="note"
@@ -283,7 +288,11 @@ export function CheckInFlow({ token, contactName, items }: Props) {
                 onChange={(event) => update({ comment: event.target.value })}
                 rows={3}
                 maxLength={1000}
-                placeholder="Optional — waiting on the construction schedule…"
+                placeholder={
+                  closing
+                    ? "Budget cut, lost to another vendor, project cancelled…"
+                    : "Optional — waiting on the construction schedule…"
+                }
                 className="mt-1.5 w-full resize-none rounded-2xl border border-line bg-surface px-4 py-3 text-[16px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none"
               />
             </div>
@@ -309,7 +318,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
               {error}
             </p>
           ) : null}
-          <Button size="lg" onClick={handleNext} disabled={!answer.stage || busy}>
+          <Button size="lg" onClick={handleNext} disabled={!answer.stage || reasonMissing || busy}>
             {busy ? "Submitting…" : isLast ? "SUBMIT" : "NEXT →"}
           </Button>
         </div>

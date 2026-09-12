@@ -1,10 +1,22 @@
 /**
  * Controlled opportunity stage values for the MVP.
  *
- * These are the only values the rep can choose and the only values we will push
- * back to Salesforce. `salesforceValue` is the picklist API value written to
- * Opportunity.StageName — keep this map in sync with the org's picklist rather
- * than scattering string literals through the app.
+ * These are the only values a recipient can choose and the only values we will
+ * push back to Salesforce. `salesforceValue` is the picklist API value written
+ * to Opportunity.StageName — keep this map in sync with the org's picklist
+ * rather than scattering string literals through the app.
+ *
+ * ---------------------------------------------------------------------------
+ * Why Closed Lost is here and Closed Won is not
+ * ---------------------------------------------------------------------------
+ * The org's picklist also contains "Closed Won". It is deliberately absent from
+ * this list, which is what makes it unselectable: a customer may tell us a
+ * project is dead, but must never be able to book revenue on it. The asymmetry
+ * is the point, not an oversight.
+ *
+ * Closed Lost is offered because a customer retiring a dead project is better
+ * data than that project sitting open for another six months. Because it is a
+ * heavier claim than nudging a stage, saveResponse() requires a reason with it.
  */
 
 export const OPPORTUNITY_STAGES = [
@@ -28,7 +40,32 @@ export const OPPORTUNITY_STAGES = [
     label: "Negotiation",
     salesforceValue: "Negotiation",
   },
+  {
+    value: "CLOSED_LOST",
+    label: "Closed Lost",
+    salesforceValue: "Closed Lost",
+    /** Terminal: the project is over. Excluded from open-pipeline reporting. */
+    closed: true,
+  },
 ] as const;
+
+/**
+ * The stages that describe OPEN pipeline.
+ *
+ * Pipeline-by-stage reporting is a picture of what is still live, so a
+ * terminal stage in that table would be a category error. Derived rather than
+ * hand-listed, so adding a stage above cannot leave the two out of step.
+ */
+export const OPEN_PIPELINE_STAGES = OPPORTUNITY_STAGES.filter(
+  (stage) => !("closed" in stage && stage.closed),
+);
+
+/** Whether a controlled stage means the opportunity is over. */
+export function isClosedStage(value: string | null | undefined): boolean {
+  return OPPORTUNITY_STAGES.some(
+    (stage) => stage.value === value && "closed" in stage && stage.closed,
+  );
+}
 
 export type OpportunityStage = (typeof OPPORTUNITY_STAGES)[number]["value"];
 

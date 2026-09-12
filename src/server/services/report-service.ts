@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { OPPORTUNITY_STAGES, stageLabel } from "@/lib/stages";
+import { OPEN_PIPELINE_STAGES, stageLabel } from "@/lib/stages";
 import { RESOLUTION_REASONS, type ResolutionReason } from "./recipient-resolution-service";
 import { getCampaignAnalytics, getSnapshotEvidence } from "./analytics-service";
 import { listCampaigns } from "./campaign-service";
@@ -110,8 +110,11 @@ const SHORT_REASONS: Record<ResolutionReason, string> = {
   [RESOLUTION_REASONS.PRIMARY_CONTACT_NOT_FOUND]: "Contact not found",
 };
 
-/** Sales progression, not alphabetical. Taken from the controlled stage list. */
-const STAGE_ORDER = OPPORTUNITY_STAGES.map((stage) => stage.value);
+/**
+ * Sales progression, not alphabetical. Open stages only — this orders a table
+ * of live pipeline, so a terminal stage has no place in it.
+ */
+const STAGE_ORDER = OPEN_PIPELINE_STAGES.map((stage) => stage.value);
 
 export async function buildPipelineReport(): Promise<PipelineReport> {
   const campaigns = await listCampaigns();

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
-import { isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
+import { isClosedStage, isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
 import { syncCampaignResponses } from "./sync-service";
 
@@ -122,7 +122,10 @@ export async function markCheckInOpened(recipientId: string): Promise<void> {
 
 export type SaveResponseResult =
   | { ok: true; revised: boolean }
-  | { ok: false; reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" };
+  | {
+      ok: false;
+      reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" | "REASON_REQUIRED";
+    };
 
 /**
  * Save one opportunity answer. Called as the recipient advances, so a
@@ -141,6 +144,16 @@ export async function saveResponse(input: {
 }): Promise<SaveResponseResult> {
   if (!isOpportunityStage(input.stage)) return { ok: false, reason: "INVALID_STAGE" };
 
+  // Closing a project is a heavier claim than nudging a stage, so it is the one
+  // answer that must come with an explanation. Checked BEFORE anything is
+  // written, so a refused answer never half-saves. The text is also what a
+  // future write-back will have for Salesforce's Loss Reason, which the
+  // opportunity form marks as required.
+  const reason = input.comment?.trim();
+  if (isClosedStage(input.stage) && !reason) {
+    return { ok: false, reason: "REASON_REQUIRED" };
+  }
+
   const resolved = await resolveCheckInToken(input.token);
   if (!resolved.ok) return { ok: false, reason: "NOT_FOUND" };
   if (resolved.session.completedAt) return { ok: false, reason: "ALREADY_COMPLETED" };
@@ -154,8 +167,7 @@ export async function saveResponse(input: {
   const revised = item.submittedAt !== null;
   // This endpoint is public — anyone holding a link can post to it — so the
   // one free-text field is bounded rather than trusted.
-  const trimmed = input.comment?.trim();
-  const comment = trimmed ? trimmed.slice(0, MAX_COMMENT_LENGTH) : null;
+  const comment = reason ? reason.slice(0, MAX_COMMENT_LENGTH) : null;
 
   // Recorded for the confirmed future write scope. Still never pushed to
   // Salesforce — capturing it is what makes close-date movement measurable.

@@ -30,6 +30,11 @@ export async function POST(
     return NextResponse.json({ ok: true, revised: result.revised });
   }
 
-  const status = { NOT_FOUND: 404, ALREADY_COMPLETED: 409, INVALID_STAGE: 400 }[result.reason];
+  const status = {
+    NOT_FOUND: 404,
+    ALREADY_COMPLETED: 409,
+    INVALID_STAGE: 400,
+    REASON_REQUIRED: 400,
+  }[result.reason];
   return NextResponse.json({ ok: false, reason: result.reason }, { status });
 }
