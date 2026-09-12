@@ -5,8 +5,14 @@ import { createHash, randomBytes } from "node:crypto";
  *   /checkin/<token>
  *
  * No Salesforce ids, customer names, opportunity data, or email addresses ever
- * appear in the URL. Only the SHA-256 hash of the token is persisted, so a
- * database leak does not hand out working links.
+ * appear in the URL.
+ *
+ * The token is a bearer credential, so only its SHA-256 hash is persisted on
+ * the recipient. That alone is not enough: the outbox also stores the message
+ * that was sent, and the link appears in its body. For a real provider those
+ * copies are redacted before the row is written
+ * (src/server/integrations/email/outbox.ts), so a database leak does not hand
+ * out working links. The simulated provider is the one deliberate exception.
  */
 
 export type IssuedToken = {

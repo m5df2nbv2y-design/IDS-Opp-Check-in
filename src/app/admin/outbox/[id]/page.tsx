@@ -16,7 +16,10 @@ export default async function OutboxMessagePage({ params }: PageProps<"/admin/ou
   const email = await prisma.emailMessage.findUnique({ where: { id } });
   if (!email) notFound();
 
-  const path = email.linkUrl ? new URL(email.linkUrl).pathname : null;
+  // A real provider stores the link with the bearer token redacted, so there is
+  // a path but nothing to open. Showing it as a button would offer a dead link.
+  const storedPath = email.linkUrl ? new URL(email.linkUrl).pathname : null;
+  const path = storedPath && !storedPath.includes("[redacted]") ? storedPath : null;
 
   return (
     <div className="space-y-6">

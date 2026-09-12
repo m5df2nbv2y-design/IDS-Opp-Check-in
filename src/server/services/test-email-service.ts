@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { formatShortDate } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
+import { REDACTED_TOKEN } from "@/server/integrations/email/outbox";
 import { ResendEmailService } from "@/server/integrations/email/resend-email-service";
 import { buildTestCheckInEmail } from "@/server/integrations/email/templates/test-check-in-email";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
@@ -68,9 +69,11 @@ export async function sendDemoTestEmail(
     };
   }
 
-  // The raw token is never stored — only its hash — so the live link is
+  // The raw token is never stored on the recipient, so the live link is
   // recovered from the invitation that was already sent, rather than minted
-  // again. Re-minting would invalidate the real recipient's link.
+  // again — re-minting would invalidate the real recipient's link. That
+  // recovery only works for a SIMULATED send; a real provider redacts the
+  // stored link, and this action correctly has nothing to reuse.
   const invite = await prisma.emailMessage.findFirst({
     where: {
       campaignId: recipient.campaignId,
@@ -85,6 +88,19 @@ export async function sendDemoTestEmail(
       ok: false,
       reason: "NO_CHECKIN_LINK",
       message: "No check-in link exists for this recipient yet. Send the campaign first.",
+    };
+  }
+
+  // A redacted link would produce a test email whose button goes nowhere,
+  // which is worse than refusing: it looks like it worked. Only a simulated
+  // send keeps a live link, so that is the only source this can reuse.
+  if (invite.linkUrl.includes(REDACTED_TOKEN)) {
+    return {
+      ok: false,
+      reason: "NO_CHECKIN_LINK",
+      message:
+        "This campaign was sent through a real email provider, so the check-in link is not " +
+        "stored. The demo test email can only reuse a link from a simulated send.",
     };
   }
 

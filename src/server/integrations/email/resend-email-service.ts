@@ -1,5 +1,5 @@
-import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
+import { recordOutboundEmail } from "./outbox";
 import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } from "./types";
 
 /**
@@ -49,21 +49,14 @@ export class ResendEmailService implements EmailService {
       error = redactKey(caught instanceof Error ? caught.message : String(caught));
     }
 
-    const row = await prisma.emailMessage.create({
-      data: {
-        provider: this.info.id,
-        kind: message.kind,
-        toEmail: message.to.email,
-        toName: message.to.name,
-        subject: message.subject,
-        html: message.html,
-        text: message.text,
-        linkUrl: message.linkUrl ?? null,
-        campaignId: message.campaignId ?? null,
-        contactId: message.contactId ?? null,
-        status,
-        error: error ?? null,
-      },
+    // Real provider: recordOutboundEmail strips every copy of the bearer
+    // token before the row is written. The recipient already has the live link
+    // in the message that just went out; nothing needs it on disk.
+    const row = await recordOutboundEmail({
+      message,
+      info: this.info,
+      status,
+      error,
     });
 
     return { id: row.id, status, error };

@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/db";
+import { recordOutboundEmail } from "./outbox";
 import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } from "./types";
 
 /**
@@ -17,20 +17,12 @@ export class MockEmailService implements EmailService {
   };
 
   async send(message: OutboundEmail): Promise<EmailSendResult> {
-    const row = await prisma.emailMessage.create({
-      data: {
-        provider: this.info.id,
-        kind: message.kind,
-        toEmail: message.to.email,
-        toName: message.to.name,
-        subject: message.subject,
-        html: message.html,
-        text: message.text,
-        linkUrl: message.linkUrl ?? null,
-        campaignId: message.campaignId ?? null,
-        contactId: message.contactId ?? null,
-        status: "SENT",
-      },
+    // Simulated: recordOutboundEmail keeps the working link, which is what
+    // makes /admin/outbox a real demonstration of the recipient experience.
+    const row = await recordOutboundEmail({
+      message,
+      info: this.info,
+      status: "SENT",
     });
 
     // The address is in the outbox for anyone authorized to look; it does not

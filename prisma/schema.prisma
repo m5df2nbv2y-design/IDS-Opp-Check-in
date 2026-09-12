@@ -158,7 +158,8 @@ model CheckInRecipient {
   id          String    @id @default(cuid())
   campaignId  String
   contactId   String
-  /// SHA-256 of the token. The raw token exists only in the emailed URL.
+  /// SHA-256 of the token. The raw token is never stored here, and for a real
+  /// email provider it is not stored anywhere — see EmailMessage.linkUrl.
   tokenHash   String    @unique
   /// Short non-secret suffix for admin display and support lookups.
   tokenHint   String
@@ -273,6 +274,14 @@ model EmailMessage {
   subject     String
   html        String
   text        String
+  /// The check-in URL as it appears in the message body.
+  ///
+  /// For a SIMULATED provider this keeps the live token, so /admin/outbox can
+  /// render a working button for the demo — nothing it holds was ever
+  /// delivered anywhere. For a REAL provider the token is redacted out of this
+  /// field AND out of html/text before the row is written, because the token is
+  /// a bearer credential and a database leak must not hand out working links.
+  /// See src/server/integrations/email/outbox.ts.
   linkUrl     String?
   campaignId  String?
   contactId   String?
