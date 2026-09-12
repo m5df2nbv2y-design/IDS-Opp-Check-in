@@ -1,4 +1,5 @@
 import { accountTypeFromSalesforce } from "@/lib/account-types";
+import { assertLiveIntegrationAllowed } from "@/lib/deployment-environment";
 import { env } from "@/lib/env";
 import { stageFromSalesforce, stageToSalesforce, type OpportunityStage } from "@/lib/stages";
 import {
@@ -91,6 +92,18 @@ export class LiveSalesforceService implements SalesforceService {
   };
 
   private auth: SalesforceAuth | null = null;
+
+  /**
+   * Environment isolation, enforced at construction.
+   *
+   * Two scripts build this class directly rather than going through
+   * getSalesforceService(), so the guard lives here: every path that can reach
+   * the real org has to pass through this constructor. A Vercel Preview — or
+   * any deployment that cannot prove it is Production — is refused.
+   */
+  constructor() {
+    assertLiveIntegrationAllowed();
+  }
 
   async getSalesReps(): Promise<SalesforceRep[]> {
     const rows = await this.query<{ Id: string; Name: string; Email: string; IsActive: boolean }>(

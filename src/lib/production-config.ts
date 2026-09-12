@@ -13,6 +13,8 @@
  * Pure and env-injectable so it can be tested without touching process.env.
  */
 
+import { liveEmailRefusal, liveIntegrationRefusal } from "./deployment-environment";
+
 export class ProductionConfigError extends Error {
   readonly violations: string[];
 
@@ -121,6 +123,17 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
   } else if (!isSet(env.SF_CLIENT_ID) || !isSet(env.SF_CLIENT_SECRET)) {
     violations.push("SF_CLIENT_ID / SF_CLIENT_SECRET are required for the live Salesforce provider.");
   }
+
+  // --- Deployment isolation ---------------------------------------------
+  // A Vercel Preview runs with NODE_ENV=production, so it reaches this code
+  // too. Anything that cannot prove it is Production must not hold live
+  // integrations, and saying so at boot beats discovering it on the first
+  // Salesforce call.
+  const salesforceRefusal = liveIntegrationRefusal(env);
+  if (salesforceRefusal) violations.push(salesforceRefusal.split("\n")[0]);
+
+  const emailRefusal = liveEmailRefusal(env);
+  if (emailRefusal) violations.push(emailRefusal);
 
   return violations;
 }

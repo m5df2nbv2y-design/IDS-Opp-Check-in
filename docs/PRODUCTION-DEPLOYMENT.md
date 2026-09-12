@@ -203,6 +203,51 @@ add-on.
 
 ---
 
+## 8a. Environment scoping — Production vs Preview vs Development
+
+A Vercel **Preview** deployment runs with `NODE_ENV=production`, identical to
+the real thing. It is built from unreviewed code on a shareable URL. If a
+production secret is scoped to "All Environments", every pull-request preview
+receives it.
+
+The application now refuses to start with a live Salesforce org — or a real
+email provider — unless `VERCEL_ENV=production`. That is a backstop, not a
+substitute for scoping the variables correctly.
+
+### Scope every secret to Production ONLY
+
+| Variable | Production | Preview | Development | Classification |
+|---|---|---|---|---|
+| `DATABASE_URL` | production Postgres | **separate** DB or unset | local Docker | production-only secret |
+| `SF_CLIENT_ID` | ✅ | **omit** | local `.env` | production-only secret |
+| `SF_CLIENT_SECRET` | ✅ | **omit** | local `.env` | production-only secret |
+| `SF_LOGIN_URL` | ✅ | **omit** | local `.env` | production-only (non-secret, but pairs with the above) |
+| `SALESFORCE_PROVIDER` | `salesforce` | `mock` | `mock` | non-secret configuration |
+| `SALESFORCE_WRITE_ENABLED` | `false` | `false` | `false` | non-secret configuration |
+| `AUTH_SECRET` | production value | **separate** value | local `.env` | production-only secret |
+| `AUTH_MICROSOFT_ENTRA_ID_ID` | ✅ | separate app registration, or omit | omit | production-only secret |
+| `AUTH_MICROSOFT_ENTRA_ID_SECRET` | ✅ | separate, or omit | omit | production-only secret |
+| `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | ✅ | separate, or omit | omit | non-secret configuration |
+| `AUTH_REQUIRED_APP_ROLE` | `SalesOps.Admin` | same | omit | non-secret configuration |
+| `RESEND_API_KEY` | only when email is commissioned | **omit** | local `.env` | production-only secret |
+| `EMAIL_PROVIDER` | `mock` for launch | `mock` | `mock` | non-secret configuration |
+| `EMAIL_FROM_ADDRESS` | verified domain | anything | local | non-secret configuration |
+| `APP_BASE_URL` | production URL | preview URL, or unset | `http://localhost:3000` | non-secret configuration |
+| `AUTH_DEV_BYPASS` | **must be absent** | absent | `true` | development-only |
+| `DEMO_TEST_EMAIL` | **must be absent** | absent | local only | development-only |
+
+`VERCEL_ENV` is set by Vercel automatically. Do not set it yourself.
+
+**Note on the database.** Deciding "is this the production database?" from a
+connection string is not reliable, so the code does not try. Preview isolation
+for the database is a scoping decision you make in Vercel: give Preview its own
+database, or give it none.
+
+**Consequence to expect.** Because the guard is fail-closed, a Preview
+deployment configured with production Salesforce credentials will build and then
+refuse to start, returning 500 with a clear reason in the logs. That is the
+protection working.
+
 ## 9. Production callback URL
 
 ```

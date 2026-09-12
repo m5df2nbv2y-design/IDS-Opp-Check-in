@@ -21,9 +21,16 @@ import { demoSafetyViolations } from "@/lib/demo-guard";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (relative: string) => readFileSync(`${root}${relative}`, "utf8");
 
-/** A complete, valid production environment. */
+/**
+ * A complete, valid production environment.
+ *
+ * VERCEL_ENV is part of it: Vercel sets it on every deployment, and without it
+ * the deployment cannot prove it is Production, so live integrations are
+ * refused. See src/lib/deployment-environment.ts.
+ */
 const VALID = {
   NODE_ENV: "production",
+  VERCEL_ENV: "production",
   DATABASE_URL: "postgresql://user:pw@db.example.com:5432/ids?sslmode=require",
   AUTH_SECRET: "a-real-secret",
   AUTH_MICROSOFT_ENTRA_ID_ID: "entra-client-id",
@@ -78,6 +85,39 @@ describe("production configuration", () => {
   it("refuses to serve the mock Salesforce org as real pipeline", () => {
     const violations = productionConfigViolations({ ...VALID, SALESFORCE_PROVIDER: "mock" });
     expect(violations.join(" ")).toContain("mock org would present demo data as real");
+  });
+
+  it("REFUSES the live Salesforce org when the deployment is not provably Production", () => {
+    // A Vercel Preview runs with NODE_ENV=production. Dropping VERCEL_ENV is
+    // exactly the ambiguous case, and it must not be read as production.
+    const violations = productionConfigViolations({ ...VALID, VERCEL_ENV: undefined });
+    expect(violations.join(" ")).toContain("Refusing to use the live Salesforce org");
+  });
+
+  it("REFUSES the live Salesforce org on a Preview deployment", () => {
+    const violations = productionConfigViolations({ ...VALID, VERCEL_ENV: "preview" });
+    expect(violations.join(" ")).toContain("Vercel Preview");
+  });
+
+  it("REFUSES a real email provider outside Production", () => {
+    const violations = productionConfigViolations({
+      ...VALID,
+      VERCEL_ENV: "preview",
+      EMAIL_PROVIDER: "resend",
+    });
+    expect(violations.join(" ")).toContain("email provider");
+  });
+
+  it("accepts a Preview deployment running entirely on mock providers", () => {
+    const violations = productionConfigViolations({
+      ...VALID,
+      VERCEL_ENV: "preview",
+      SALESFORCE_PROVIDER: "mock",
+      EMAIL_PROVIDER: "mock",
+    });
+    // The only complaint left is the intended one: production wants the real org.
+    expect(violations.join(" ")).toContain("mock org would present demo data as real");
+    expect(violations.join(" ")).not.toContain("Refusing to use the live Salesforce org");
   });
 
   it("refuses a deployment where nobody could be authorized", () => {
