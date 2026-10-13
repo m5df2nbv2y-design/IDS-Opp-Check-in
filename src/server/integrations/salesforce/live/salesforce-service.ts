@@ -32,8 +32,9 @@ import { requestAccessToken } from "./auth";
  *
  * The field questions are now settled against the real org (see
  * ../FIELD-MAPPING.md): "open" is IsClosed = false, the account is standard
- * AccountId, and the recipient is the primary OpportunityContactRole. Write-back
- * scope is StageName and CloseDate only; notes are never written.
+ * AccountId, and the recipient is the primary OpportunityContactRole. The
+ * APPROVED write scope is StageName and CloseDate; what this file actually
+ * writes is StageName alone — see applyUpdate. Notes are never written.
  */
 
 const API_VERSION = "v61.0";
@@ -216,8 +217,9 @@ export class LiveSalesforceService implements SalesforceService {
           externalId: row.Id,
           isClosed: row.IsClosed,
           isWon: row.IsWon,
-          // Raw StageName — "Closed Won"/"Closed Lost" are outside the four
-          // controlled stages and must not be mapped away.
+          // Raw StageName, deliberately unmapped. An outcome records what
+          // the org says — including "Closed Won", which has no controlled
+          // equivalent — rather than forcing it into our vocabulary.
           stageName: row.StageName,
           amount: row.Amount ?? 0,
           closeDate: row.CloseDate ? new Date(row.CloseDate) : null,

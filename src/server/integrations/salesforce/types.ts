@@ -76,8 +76,8 @@ export type SalesforceOpportunity = {
  * The terminal state of an opportunity that has left the open set.
  *
  * Deliberately NOT a `SalesforceOpportunity`: `stageName` is the raw org value
- * ("Closed Won", "Closed Lost"), which is outside our four controlled stages
- * and would be dropped by the normal mapping. Outcomes must be recorded as
+ * ("Closed Won", "Closed Lost"). "Closed Won" has no controlled equivalent and
+ * would be dropped by the normal mapping. Outcomes must be recorded as
  * Salesforce reports them, not forced into the check-in vocabulary.
  */
 export type SalesforceOpportunityOutcome = {

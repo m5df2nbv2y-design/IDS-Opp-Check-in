@@ -18,6 +18,11 @@ const MOCK_INSTANCE_URL = "https://ids-demo.my.salesforce.com";
 
 const CLOSED_STAGE_NAMES = new Set(["closed won", "closed lost"]);
 
+/** Salesforce's own rule: the stage decides whether a record is closed. */
+function isClosedStageName(stageName: string): boolean {
+  return CLOSED_STAGE_NAMES.has(stageName.toLowerCase());
+}
+
 /**
  * Mock Salesforce/SFX provider.
  *
@@ -54,7 +59,7 @@ export class MockSalesforceService implements SalesforceService {
         amount: opp.amount,
         stageName: opp.stageName,
         closeDate: new Date(`${opp.closeDate}T00:00:00.000Z`),
-        isClosed: CLOSED_STAGE_NAMES.has(opp.stageName.toLowerCase()),
+        isClosed: isClosedStageName(opp.stageName),
         contactExternalId: opp.contactExternalId ?? null,
         syncBlocked: opp.syncBlocked ?? false,
       })),
@@ -152,9 +157,19 @@ export class MockSalesforceService implements SalesforceService {
     const record = await this.requireRecord(externalId);
     this.assertWritable(record);
 
+    const stageName = stageToSalesforce(stage);
+
     await prisma.mockSalesforceOpportunity.update({
       where: { externalId },
-      data: { stageName: stageToSalesforce(stage), lastModifiedAt: new Date() },
+      data: {
+        stageName,
+        // Salesforce derives IsClosed from the stage; so must the mock, or a
+        // terminal stage would be written while the record stayed open and
+        // came back out of getOpenOpportunities as live pipeline. Uses the
+        // same derivation as resetOrg so the two cannot drift.
+        isClosed: isClosedStageName(stageName),
+        lastModifiedAt: new Date(),
+      },
     });
   }
 

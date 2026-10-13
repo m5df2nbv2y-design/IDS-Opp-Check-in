@@ -7,8 +7,10 @@ import {
   stageToSalesforce,
 } from "@/lib/stages";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
-import { saveResponse } from "@/server/services/response-service";
+import { completeCheckIn, saveResponse } from "@/server/services/response-service";
 import { buildPipelineReport } from "@/server/services/report-service";
+import { getSnapshotEvidence } from "@/server/services/analytics-service";
+import { MockSalesforceService } from "@/server/integrations/salesforce/mock/mock-salesforce-service";
 import { itemsForContact, launchCampaignAndCollectTokens } from "./fixtures";
 import { resetDatabase } from "./fixtures";
 
@@ -177,5 +179,176 @@ describe("reporting treats the terminal stage correctly", () => {
     const report = await buildPipelineReport();
     const stages = report.byStage.map((row) => row.stage);
     expect(stages).not.toContain("CLOSED_LOST");
+  });
+});
+
+/**
+ * REGRESSION — a reported closure must actually leave the open pipeline.
+ *
+ * The block above only proves a clean org has no closed stage in it, which it
+ * never would. These tests drive the whole path a real answer takes:
+ *
+ *   recipient answers CLOSED_LOST  →  completeCheckIn  →  sync writes to the
+ *   mock org  →  catalogue refresh re-reads the org  →  reporting
+ *
+ * The original defect lived at the write: the mock set stageName and left
+ * isClosed alone, so the next refresh read the record back as OPEN while it
+ * carried a terminal stage. It then reached pipeline-by-stage, because
+ * report-service sorts an unrecognised stage LAST rather than hiding it — so a
+ * "Closed Lost" row could appear in the Executive Pipeline Brief's open
+ * pipeline. Every assertion below fails against that defect.
+ *
+ * completeCheckIn only syncs once every one of a recipient's items is
+ * answered, so the rest of Jane Doe's opportunities are confirmed at their
+ * existing stage. They double as the control group: one closure must not
+ * disturb them.
+ */
+describe("a reported closure leaves the open pipeline", () => {
+  const CLOSED_EXTERNAL_ID = "006Ab00000Opp05AAA"; // "Surgical Imaging Upgrade", Negotiation
+
+  let opportunityId: string;
+  let survivingOpportunityIds: string[];
+
+  beforeEach(async () => {
+    await resetDatabase();
+
+    const { campaignId, tokens } = await launchCampaignAndCollectTokens("Closure Round Trip");
+    const token = tokens.get("Jane Doe")!;
+    const items = await itemsForContact(campaignId, "Jane Doe");
+
+    // Jane holds several opportunities, and completeCheckIn only syncs once
+    // EVERY item is answered — so the others are confirmed at their current
+    // stage. That also keeps them in play as the control group: exactly one
+    // opportunity is being closed here.
+    const withOpportunity = await prisma.checkInOpportunity.findMany({
+      where: { id: { in: items.map((item) => item.id) } },
+      include: { opportunity: { select: { id: true, externalId: true, currentStage: true } } },
+    });
+
+    const closing = withOpportunity.find(
+      (item) => item.opportunity.externalId === CLOSED_EXTERNAL_ID,
+    );
+    expect(closing, `${CLOSED_EXTERNAL_ID} must be one of Jane Doe's opportunities`).toBeDefined();
+    opportunityId = closing!.opportunity.id;
+    survivingOpportunityIds = withOpportunity
+      .filter((item) => item.opportunity.externalId !== CLOSED_EXTERNAL_ID)
+      .map((item) => item.opportunity.id);
+    expect(survivingOpportunityIds.length).toBeGreaterThan(0);
+
+    for (const item of withOpportunity) {
+      const isClosing = item.opportunity.externalId === CLOSED_EXTERNAL_ID;
+      const saved = await saveResponse({
+        token,
+        itemId: item.id,
+        stage: isClosing ? "CLOSED_LOST" : item.opportunity.currentStage,
+        comment: isClosing ? "Capital project cancelled; the wing is not being built." : null,
+      });
+      expect(saved.ok, `answering ${item.opportunity.externalId}`).toBe(true);
+    }
+
+    // Pushes the answers into the mock org, which is where the defect was.
+    const completed = await completeCheckIn(token);
+    expect(completed.ok).toBe(true);
+
+    await refreshCatalogFromSalesforce("test");
+  });
+
+  it("marks the record closed IN THE MOCK ORG, not merely restaged", async () => {
+    const record = await prisma.mockSalesforceOpportunity.findUniqueOrThrow({
+      where: { externalId: CLOSED_EXTERNAL_ID },
+    });
+
+    expect(record.stageName).toBe("Closed Lost");
+    // The defect: stageName moved and this did not.
+    expect(record.isClosed).toBe(true);
+  });
+
+  it("drops the opportunity from open discovery", async () => {
+    const open = await new MockSalesforceService().getOpenOpportunities();
+    expect(open.map((o) => o.externalId)).not.toContain(CLOSED_EXTERNAL_ID);
+  });
+
+  it("records the outcome locally instead of leaving it open", async () => {
+    const stored = await prisma.opportunity.findUniqueOrThrow({ where: { id: opportunityId } });
+
+    expect(stored.isOpen).toBe(false);
+    expect(stored.isWon).toBe(false);
+    expect(stored.finalStage).toBe("Closed Lost");
+    expect(stored.outcomeObservedAt).toBeInstanceOf(Date);
+  });
+
+  it("NEVER lets the terminal stage into open pipeline-by-stage", async () => {
+    const evidence = await getSnapshotEvidence();
+    const report = await buildPipelineReport();
+
+    // The analytics grouping is the origin of the row...
+    expect(evidence.pipelineByStage.map((row) => row.stage)).not.toContain("CLOSED_LOST");
+    // ...and the Executive Pipeline Brief reads from it.
+    expect(report.byStage.map((row) => row.stage)).not.toContain("CLOSED_LOST");
+
+    // Every surviving row must be a genuinely open stage, so this cannot pass
+    // by accident if another terminal stage is added later.
+    const openValues = OPEN_PIPELINE_STAGES.map((stage) => stage.value);
+    for (const row of report.byStage) {
+      expect(openValues, `${row.stage} is not an open stage`).toContain(row.stage);
+    }
+  });
+
+  it("excludes the closed value from open pipeline totals", async () => {
+    const report = await buildPipelineReport();
+    const closedAmount = 218500; // Jane Doe's opportunity
+
+    const byStageTotal = report.byStage.reduce((sum, row) => sum + row.value, 0);
+    expect(byStageTotal).toBeGreaterThan(0);
+
+    // A lost project must not still be counted as live pipeline value.
+    const stillCounted = report.byStage.some((row) => row.value === closedAmount);
+    expect(stillCounted).toBe(false);
+  });
+
+  it("leaves every other open opportunity untouched", async () => {
+    const open = await prisma.opportunity.findMany({ where: { isOpen: true } });
+    const openIds = new Set(open.map((opportunity) => opportunity.id));
+
+    // The sample org is not emptied by one closure.
+    expect(open.length).toBeGreaterThan(10);
+    expect(open.map((o) => o.externalId)).not.toContain(CLOSED_EXTERNAL_ID);
+
+    // Jane's OTHER opportunities answered in the same check-in stay open.
+    for (const id of survivingOpportunityIds) {
+      expect(openIds.has(id), `${id} must still be open`).toBe(true);
+    }
+
+    for (const opportunity of open) {
+      expect(opportunity.currentStage).not.toBe("CLOSED_LOST");
+    }
+  });
+
+  it("keeps the recipient's reason, which write-back will need", async () => {
+    const item = await prisma.checkInOpportunity.findFirstOrThrow({
+      where: { opportunityId },
+    });
+
+    expect(item.updatedStatus).toBe("CLOSED_LOST");
+    expect(item.repComment).toContain("Capital project cancelled");
+  });
+});
+
+describe("the mock org refuses to re-close an already closed record", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+  });
+
+  it("rejects a write to a closed opportunity, as Salesforce would", async () => {
+    const salesforce = new MockSalesforceService();
+    const externalId = "006Ab00000Opp05AAA";
+
+    await salesforce.updateOpportunityStatus(externalId, "CLOSED_LOST");
+
+    // The existing guard only engages once isClosed is actually set, which is
+    // the other half of what the fix restores.
+    await expect(salesforce.updateOpportunityStatus(externalId, "PROPOSAL")).rejects.toThrow(
+      /closed and can no longer be edited/i,
+    );
   });
 });

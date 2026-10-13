@@ -182,10 +182,14 @@ PATCH /services/data/v61.0/sobjects/Opportunity/{Id}
 
 | App value | Salesforce field | Notes |
 | --- | --- | --- |
-| `updatedStatus` | `Opportunity.StageName` | Only ever one of the four controlled values. |
+| `updatedStatus` | `Opportunity.StageName` | Only ever one of the five controlled values — the four open stages plus `Closed Lost`. |
 | *(planned)* | `Opportunity.CloseDate` | In scope. 87.7% of open opportunities are already past their close date. |
 
 **CONFIRMED WRITE SCOPE: `StageName` and `CloseDate` ONLY.**
+
+That is the *approved* scope. The implementation currently writes `StageName`
+alone — `applyUpdate` never sends `CloseDate`, so an approved new close date is
+captured locally and not pushed. Narrower than approved, deliberately.
 
 **Notes/comments are explicitly descoped.** No `Description` write-back, and no
 custom check-in note field. The `NOTE_FIELD` constant and
@@ -244,7 +248,7 @@ shows the full error-to-retry-to-clear path.
 
 | Situation | Behaviour | Why |
 | --- | --- | --- |
-| `StageName` outside the four controlled values | Opportunity skipped | Better to omit than guess and write a wrong stage |
+| `StageName` outside the controlled values | Opportunity skipped | Better to omit than guess and write a wrong stage |
 | Owner is inactive or not in the rep set | Opportunity skipped | No internal owner to act on the answer |
 | `IsClosed = true` | Never included | Not an open opportunity |
 | No usable external contact | **Kept and flagged for admin attention** | Never silently dropped — see RECIPIENT-RESOLUTION.md |
