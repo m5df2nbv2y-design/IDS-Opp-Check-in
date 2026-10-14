@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { DraftEmailConflictError, readEmailCopy } from "@/lib/check-in-copy";
 import { deriveSendState, type SendState } from "@/lib/send-states";
 import { launchCampaign } from "./campaign-service";
 import { currentPeriod } from "./campaign-service";
@@ -425,7 +426,7 @@ export type SendDraftResult = {
  * than sent. With EMAIL_PROVIDER=mock the messages land in the in-app outbox.
  * Salesforce is not touched — no stage or close date is written here.
  */
-export async function sendDraft(campaignId: string, actor = "admin"): Promise<SendDraftResult> {
+export async function sendDraft(campaignId: string, actor = "admin", expectedEmailRevision?: number): Promise<SendDraftResult> {
   const { sendableOpportunityIds, drifted } = await validateSelection(campaignId);
 
   if (sendableOpportunityIds.length === 0) {
@@ -433,12 +434,17 @@ export async function sendDraft(campaignId: string, actor = "admin"): Promise<Se
   }
 
   const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+  if (expectedEmailRevision !== undefined && campaign.emailRevision !== expectedEmailRevision) {
+    throw new DraftEmailConflictError("The email draft changed. Reload and review the latest message before sending.");
+  }
   const result = await launchCampaign({
     campaignId,
     name: campaign.name,
     period: campaign.period,
     actor,
     opportunityIds: sendableOpportunityIds,
+    emailCopy: readEmailCopy(campaign),
+    expectedEmailRevision,
   });
 
   if (drifted.length > 0) {

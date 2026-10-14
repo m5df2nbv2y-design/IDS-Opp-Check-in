@@ -5,11 +5,14 @@ import { Button } from "@/components/ui/button";
 import { formatAmount, firstName, formatShortDate, pluralize } from "@/lib/format";
 import { OPPORTUNITY_STAGES, isClosedStage, stageLabel, type OpportunityStage } from "@/lib/stages";
 import type { CheckInSessionItem } from "@/server/services/response-service";
+import { completeCheckIn, postCheckInResponse } from "@/lib/check-in-transport";
 
 type Props = {
   token: string;
   contactName: string;
   items: CheckInSessionItem[];
+  /** Fictional admin demonstration only; never calls response endpoints. */
+  preview?: boolean;
 };
 
 type Answer = { stage: OpportunityStage | null; comment: string; closeDate: string };
@@ -26,7 +29,7 @@ type Answer = { stage: OpportunityStage | null; comment: string; closeDate: stri
  *     waits on the network until the final submit, which settles every save
  *     first and reports honestly if any of them failed.
  */
-export function CheckInFlow({ token, contactName, items }: Props) {
+export function CheckInFlow({ token, contactName, items, preview = false }: Props) {
   const [answers, setAnswers] = useState<Answer[]>(() =>
     items.map((item) => ({
       stage: item.selectedStage,
@@ -64,10 +67,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   }
 
   function save(position: number, value: Answer): Promise<boolean> {
-    return fetch(`/api/checkin/${token}/responses`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    return postCheckInResponse(token, {
         itemId: items[position].id,
         stage: value.stage,
         comment: value.comment.trim() || null,
@@ -77,10 +77,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
           value.closeDate && value.closeDate !== items[position].currentCloseDate
             ? value.closeDate
             : null,
-      }),
-    })
-      .then((response) => response.ok)
-      .catch(() => false);
+      }, preview);
   }
 
   function goTo(next: number) {
@@ -117,24 +114,24 @@ export function CheckInFlow({ token, contactName, items }: Props) {
       return;
     }
 
-    const completion = await fetch(`/api/checkin/${token}/complete`, { method: "POST" });
-    if (!completion.ok) {
-      setError("We saved your answers but couldn't submit. Please tap submit again.");
-      return;
-    }
+      if (!(await completeCheckIn(token, preview))) {
+        setError("We saved your answers but couldn't submit. Please tap submit again.");
+        return;
+      }
 
     setDone(true);
     window.scrollTo({ top: 0 });
   }
 
   if (done) {
-    return <Complete contactName={contactName} items={items} answers={answers} />;
+    return <Complete contactName={contactName} items={items} answers={answers} preview={preview} />;
   }
 
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 border-b border-line bg-surface/95 backdrop-blur">
         <div className="mx-auto w-full max-w-lg px-5 py-2.5">
+          {preview ? <p className="mb-2 text-xs font-semibold text-warning">Recipient preview · fictional projects · nothing is saved</p> : null}
           <div className="flex items-center justify-between text-[13px] font-medium text-muted">
             <button
               type="button"
@@ -331,10 +328,12 @@ function Complete({
   contactName,
   items,
   answers,
+  preview,
 }: {
   contactName: string;
   items: CheckInSessionItem[];
   answers: Answer[];
+  preview: boolean;
 }) {
   const [dismissed, setDismissed] = useState(false);
   const changed = items.filter(
@@ -355,14 +354,14 @@ function Complete({
         You&apos;re done <span aria-hidden>🎉</span>
       </h1>
       <p className="mt-3 text-[17px] text-body">
-        Thanks, {firstName(contactName)}. Your {items.length} opportunity{" "}
-        {pluralize(items.length, "update")} {items.length === 1 ? "has" : "have"} been recorded.
+        {preview ? "Preview only — nothing was saved. " : ""}Thanks, {firstName(contactName)}. Your {items.length} opportunity{" "}
+        {pluralize(items.length, "update")} {preview ? "would be recorded after submitting a real check-in." : `${items.length === 1 ? "has" : "have"} been recorded.`}
       </p>
 
       {changed.length > 0 ? (
         <div className="mt-7">
           <p className="text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">
-            {changed.length} {pluralize(changed.length, "update")} recorded
+            {changed.length} {pluralize(changed.length, "update")} {preview ? "previewed" : "recorded"}
           </p>
           <ul className="mt-2.5 divide-y divide-line rounded-card border border-line bg-surface">
             {changed.map((item) => {
@@ -394,7 +393,7 @@ function Complete({
       <div className="mt-9">
         {dismissed ? (
           <p className="text-[15px] font-medium text-success">
-            Submitted — you can close this tab.
+            {preview ? "Preview finished — no answers were saved." : "Submitted — you can close this tab."}
           </p>
         ) : (
           <Button
@@ -402,7 +401,7 @@ function Complete({
             onClick={() => {
               // A tab the page did not open cannot close itself on mobile, so
               // fall back to an explicit acknowledgement instead of doing nothing.
-              window.close();
+              if (!preview) window.close();
               setDismissed(true);
             }}
           >

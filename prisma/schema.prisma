@@ -147,6 +147,11 @@ model Campaign {
   startedAt   DateTime?
   completedAt DateTime?
 
+  // Null subject/body select the standard invitation. Custom copy is plain text.
+  emailSubject  String?
+  emailBody     String?
+  emailRevision Int @default(0)
+
   recipients  CheckInRecipient[]
   auditEvents AuditEvent[]
   selections  CampaignSelection[]
