@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 
 type Owner = { id: string; name: string; count: number };
 
@@ -23,9 +23,18 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
   const [, startTransition] = useTransition();
 
   const [search, setSearch] = useState(params.get("q") ?? "");
+  const clearingFilters = useRef(false);
 
   // Debounced, so typing doesn't fire a query per keystroke.
   useEffect(() => {
+    // A slower navigation must not let the debounce restore old owner/status
+    // values while the reset is waiting for the unfiltered server response.
+    if (clearingFilters.current) {
+      if (!params.get("q") && !params.get("owner") && !params.get("status")) {
+        clearingFilters.current = false;
+      }
+      return;
+    }
     const current = params.get("q") ?? "";
     if (search === current) return;
 
@@ -92,6 +101,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         <button
           type="button"
           onClick={() => {
+            clearingFilters.current = true;
             setSearch("");
             startTransition(() => router.replace(pathname));
           }}
