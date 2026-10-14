@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
-import { Card } from "@/components/ui/primitives";
-import { brand } from "@/lib/brand";
+import Image from "next/image";
 import { signIn } from "@/server/auth/config";
 import { DEV_BYPASS_ENABLED, ENTRA_CONFIGURED } from "@/server/auth/config";
 import { getAdminUser } from "@/server/auth/require-admin";
@@ -22,18 +21,35 @@ export default async function SignInPage({ searchParams }: PageProps<"/signin">)
   if (await getAdminUser()) redirect(from);
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-6 py-14">
-      <p className="text-[13px] font-bold uppercase tracking-[0.16em] text-brand">
-        {brand.companyName}
-      </p>
-      <h1 className="mt-3 text-[26px] font-semibold leading-tight tracking-tight text-ink">
-        Opportunity Check-In
-      </h1>
-      <p className="mt-2 text-[15px] text-muted">
-        Sales Operations console. Sign in with your IDS account to continue.
-      </p>
+    <main className="relative isolate flex min-h-dvh w-full items-center justify-center overflow-hidden px-5 py-10 sm:px-10 lg:justify-end lg:px-[10vw]">
+      <Image
+        src="/brand/ids-login-background.jpg"
+        alt=""
+        fill
+        priority
+        sizes="100vw"
+        className="-z-20 object-cover object-[42%_center]"
+      />
+      <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-r from-slate-950/10 via-slate-950/10 to-slate-950/35" />
 
-      <Card className="mt-7 px-6 py-6">
+      <section aria-labelledby="signin-title" className="w-full max-w-[420px] rounded-3xl border border-white/80 bg-white/95 px-7 py-9 shadow-[0_24px_80px_rgba(15,23,42,0.25)] backdrop-blur-sm sm:px-10 sm:py-11">
+        <Image
+          src="/brand/ids-orange-logo.png"
+          alt="ID Sculpture"
+          width={219}
+          height={128}
+          priority
+          className="mx-auto h-auto w-[190px]"
+        />
+        <div className="mb-7 mt-6 border-t border-slate-200 pt-7">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Sales Operations</p>
+          <h1 id="signin-title" className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-ink">
+            Opportunity Check-In
+          </h1>
+          <p className="mt-3 text-[15px] leading-6 text-body">
+            Sign in with your IDS Microsoft account to continue.
+          </p>
+        </div>
         {ENTRA_CONFIGURED ? (
           <form
             action={async () => {
@@ -43,7 +59,7 @@ export default async function SignInPage({ searchParams }: PageProps<"/signin">)
           >
             <button
               type="submit"
-              className="inline-flex h-12 w-full items-center justify-center rounded-xl border border-transparent bg-brand px-5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-dark"
+              className="inline-flex min-h-12 w-full items-center justify-center rounded-xl border border-transparent bg-[#c44218] px-5 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#a93610] focus-visible:outline-[#c44218]"
             >
               Sign in with Microsoft
             </button>
@@ -87,7 +103,8 @@ export default async function SignInPage({ searchParams }: PageProps<"/signin">)
             </p>
           </div>
         ) : null}
-      </Card>
+        <p className="mt-7 text-center text-xs leading-5 text-slate-500">IDS Sculpture · Opportunity Check-In</p>
+      </section>
     </main>
   );
 }
