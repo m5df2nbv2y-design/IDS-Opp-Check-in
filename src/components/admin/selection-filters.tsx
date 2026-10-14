@@ -60,7 +60,8 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
   const hasFilters = Boolean(params.get("q") || params.get("status") || params.get("owner"));
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="ids-filters flex flex-wrap items-center gap-3">
+      <label className="min-w-0 basis-full flex-1 text-xs font-semibold text-muted sm:basis-auto">Search
       <input
         type="search"
         value={search}
@@ -68,9 +69,9 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         placeholder="Search account, opportunity, contact or email…"
         aria-label="Search accounts, opportunities and contacts"
         className="h-10 min-w-0 basis-full flex-1 rounded-xl border border-line bg-surface px-3.5 text-[14px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none sm:min-w-[19rem] sm:basis-auto"
-      />
+      /></label>
 
-      <select
+      <label className="text-xs font-semibold text-muted">Owner<select
         value={owner}
         onChange={(event) => update("owner", event.target.value)}
         aria-label="Filter by opportunity owner"
@@ -82,9 +83,9 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
             {entry.name} ({entry.count})
           </option>
         ))}
-      </select>
+      </select></label>
 
-      <select
+      <label className="text-xs font-semibold text-muted">Status<select
         value={status}
         onChange={(event) => update("status", event.target.value)}
         aria-label="Filter by resolution status"
@@ -95,7 +96,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
             {option.label}
           </option>
         ))}
-      </select>
+      </select></label>
 
       {hasFilters ? (
         <button

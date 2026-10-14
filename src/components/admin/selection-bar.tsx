@@ -17,8 +17,8 @@ export function SelectionBar({ summary }: { summary: DraftSummary }) {
   const nothingSelected = selectedOpportunities === 0;
 
   return (
-    <div className="sticky bottom-0 z-20 border-t border-line bg-surface/95 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
+    <div className="ids-selection-bar border-t border-line bg-surface/95 backdrop-blur">
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8">
         <div className="text-[14px]">
           {nothingSelected ? (
             <span className="text-muted">
@@ -41,13 +41,13 @@ export function SelectionBar({ summary }: { summary: DraftSummary }) {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {!nothingSelected ? (
             <button
               type="button"
               disabled={pending}
               onClick={() => startTransition(async () => void (await clearSelectionsAction()))}
-              className="h-10 rounded-xl px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink disabled:opacity-50"
+              className="h-10 rounded-full px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink disabled:opacity-50"
             >
               {pending ? "Clearing…" : "Clear selection"}
             </button>
@@ -55,7 +55,7 @@ export function SelectionBar({ summary }: { summary: DraftSummary }) {
 
           {nothingSelected ? (
             <span
-              className="inline-flex h-11 cursor-not-allowed items-center rounded-xl border border-line bg-canvas px-5 text-sm font-semibold text-muted"
+              className="inline-flex h-11 cursor-not-allowed items-center rounded-full border border-line bg-canvas px-5 text-sm font-semibold text-muted"
               aria-disabled
             >
               Review selection
@@ -63,7 +63,7 @@ export function SelectionBar({ summary }: { summary: DraftSummary }) {
           ) : (
             <Link
               href="/admin/campaigns/review"
-              className="inline-flex h-11 items-center rounded-xl border border-transparent bg-brand px-5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-dark"
+              className="inline-flex h-11 items-center rounded-full border border-transparent bg-brand px-5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-dark"
             >
               Review {selectedOpportunities} {pluralize(selectedOpportunities, "check-in")} →
             </Link>

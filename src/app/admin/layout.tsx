@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AdminNav } from "@/components/admin/admin-nav";
 import { SignOutButton } from "@/components/admin/sign-out-button";
-import { Wordmark } from "@/components/ui/primitives";
+import Image from "next/image";
 import { brand } from "@/lib/brand";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { getEmailService } from "@/server/integrations/email";
@@ -28,44 +28,24 @@ export default async function AdminLayout({ children }: LayoutProps<"/admin">) {
   const demo = salesforce.info.simulated;
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      {demo ? (
-        <div className="bg-brand px-5 py-2 text-center text-[12px] font-medium text-white/95">
-          Demo mode — {salesforce.info.label.toLowerCase()}, emails to the{" "}
-          {email.info.label.toLowerCase()}. No real records are touched.
-        </div>
-      ) : null}
-
-      <header className="border-b border-line bg-surface">
-        <div className="mx-auto w-full max-w-6xl px-5">
-          <div className="flex h-16 items-center justify-between gap-4">
-            <Link href="/admin" className="flex items-baseline gap-2.5">
-              <Wordmark />
-              <span className="text-[15px] font-semibold tracking-tight text-ink">
-                {brand.productName}
-              </span>
-            </Link>
-            <div className="hidden items-center gap-3 sm:flex">
-              <span className="text-[13px] text-muted">{admin.email ?? admin.name}</span>
-              <SignOutButton />
-            </div>
+    <div className="ids-admin min-h-dvh bg-canvas">
+      <aside className="ids-sidebar">
+        <Link href="/admin" aria-label="IDS dashboard" className="mx-6 mt-6 flex justify-center rounded-xl bg-white p-3"><Image src="/brand/ids-orange-logo.png" alt="IDS" width={219} height={128} className="h-auto w-36" /></Link>
+        <p className="px-6 pb-6 pt-4 text-sm font-semibold text-white">{brand.productName}</p>
+        <AdminNav />
+        <p className="mt-auto px-6 py-8 text-xs leading-relaxed text-white/65">Designed to inspire.<br />Built to last.</p>
+      </aside>
+      <div className="ids-admin-body">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-line bg-white px-4 py-5 sm:px-8">
+          <Link href="/admin" className="text-sm font-semibold text-ink">IDS / Opportunity Check-In</Link>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            <span className="rounded-full bg-brand-soft px-3 py-2 font-medium text-brand">{demo ? "Salesforce simulated" : "Salesforce catalog"} · {email.info.simulated ? "Email simulated" : "Email live"}</span>
+            <span className="break-all text-muted">{admin.email ?? admin.name}</span><SignOutButton />
           </div>
-          <AdminNav />
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8">{children}</main>
-
-      <footer className="border-t border-line bg-surface px-5 py-5">
-        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 text-[12px] text-muted">
-          <span>
-            Salesforce provider: <span className="font-medium text-body">{salesforce.info.id}</span>
-          </span>
-          <span>
-            Email provider: <span className="font-medium text-body">{email.info.id}</span>
-          </span>
-        </div>
-      </footer>
+        </header>
+        <div className="ids-mobile-nav"><AdminNav /></div>
+        <main id="admin-content" className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-8">{children}</main>
+      </div>
     </div>
   );
 }

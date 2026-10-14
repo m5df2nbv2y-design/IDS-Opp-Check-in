@@ -51,7 +51,7 @@ function AccountGroup({ account }: { account: DraftAccountGroup }) {
   }
 
   return (
-    <Card className={account.selectedCount > 0 ? "border-brand/40" : undefined}>
+    <Card className={account.selectedCount > 0 ? "ids-account border-brand/40" : "ids-account"}>
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
         <input
           ref={checkboxRef}
@@ -66,7 +66,7 @@ function AccountGroup({ account }: { account: DraftAccountGroup }) {
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-left"
           aria-expanded={open}
         >
           <span className="text-[15px] font-semibold text-ink">{account.accountName}</span>
@@ -76,7 +76,7 @@ function AccountGroup({ account }: { account: DraftAccountGroup }) {
           </span>
         </button>
 
-        <div className="flex items-center gap-3 text-[13px]">
+        <div className="flex flex-wrap items-center gap-3 text-[13px]">
           {account.selectedCount > 0 ? (
             <span className="rounded-full bg-brand-soft px-2.5 py-1 text-[12px] font-semibold text-brand">
               {account.selectedCount} selected
@@ -132,7 +132,7 @@ function OpportunityRow({ row }: { row: DraftOpportunityRow }) {
         </span>
       )}
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 break-words">
         <div className="text-[14px] font-medium text-ink">{row.opportunityName}</div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted">
           <span className="rounded-full border border-line bg-surface px-2 py-0.5 font-medium">

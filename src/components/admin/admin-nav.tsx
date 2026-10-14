@@ -16,17 +16,18 @@ export function AdminNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="-mb-px flex gap-1 overflow-x-auto">
+    <nav aria-label="Admin navigation" className="ids-nav">
       {LINKS.map((link) => {
         const active = link.exact ? pathname === link.href : pathname.startsWith(link.href);
         return (
           <Link
             key={link.href}
             href={link.href}
-            className={`whitespace-nowrap border-b-2 px-3 py-3 text-[14px] font-medium transition-colors ${
+            aria-current={active ? "page" : undefined}
+            className={`ids-nav-link ${
               active
-                ? "border-brand text-ink"
-                : "border-transparent text-muted hover:text-ink"
+                ? "ids-nav-active"
+                : ""
             }`}
           >
             {link.label}

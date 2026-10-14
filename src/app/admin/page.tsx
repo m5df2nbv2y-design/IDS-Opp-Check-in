@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { refreshDiscoveryAction } from "./actions";
 import { AccountSelectionList } from "@/components/admin/account-selection-list";
 import { ActionButton } from "@/components/admin/action-button";
@@ -86,13 +87,24 @@ export default async function AdminDashboardPage({
     })),
   );
 
+  function statusHref(status: string) {
+    const query = new URLSearchParams();
+    if (filters.search) query.set("q", filters.search);
+    if (filters.ownerId) query.set("owner", filters.ownerId);
+    if (status) query.set("status", status);
+    return `/admin?${query.toString()}`;
+  }
+
   return (
-    <div className="space-y-6 pb-4">
+    <div className="space-y-6 pb-40">
+      <section className="ids-hero">
+        <Image src="/brand/ids-login-background.jpg" alt="" fill sizes="(min-width: 1024px) 80vw, 100vw" className="object-cover" priority />
+        <div className="p-6 text-white sm:p-8"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/80">IDS Opportunity Check-In</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Keep good projects moving.</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-white/90">Choose the opportunities you want to check in on, review the recipients, then confirm when you’re ready.</p></div>
+      </section>
+      <ol aria-label="Check-in workflow" className="ids-workflow"><li><span>1</span> Choose opportunities</li><li><span>2</span> Review recipients</li><li><span>3</span> Confirm sending</li></ol>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-[26px] font-semibold tracking-tight text-ink">
-            Opportunity Check-In
-          </h1>
+          <h2 className="text-[24px] font-semibold tracking-tight text-ink">Your opportunity queue</h2>
           <p className="mt-1 max-w-2xl text-[15px] text-muted">
             Review the opportunities discovered in Salesforce and choose which ones to
             contact. Nothing is sent until you select it and confirm.
@@ -104,27 +116,27 @@ export default async function AdminDashboardPage({
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile
+        <Link href={statusHref("")} className="rounded-card"><StatTile
           label={filtered ? "Shown (filtered)" : "Open opportunities"}
           value={shownOpportunities}
           hint={`${accounts.length} ${pluralize(accounts.length, "account")}`}
-        />
-        <StatTile label="Ready to select" value={shownSendable} />
-        <StatTile
+        /></Link>
+        <Link href={statusHref("eligible")} className="rounded-card"><StatTile label="Ready to select" value={shownSendable} /></Link>
+        <Link href={statusHref("needs_attention")} className="rounded-card"><StatTile
           label="Needs attention"
           value={shownNeedsAttention}
           tone={shownNeedsAttention > 0 ? "danger" : "default"}
           hint="no recipient — not sendable"
-        />
-        <StatTile
+        /></Link>
+        <Link href={statusHref("selected")} className="rounded-card"><StatTile
           label="Selected"
           value={summary.selectedOpportunities}
           tone={summary.selectedOpportunities > 0 ? "success" : "default"}
           hint={`${summary.selectedContacts} ${pluralize(summary.selectedContacts, "contact")}`}
-        />
+        /></Link>
       </div>
 
-      <SelectionFilters owners={owners} />
+      <section aria-label="Find opportunities" className="rounded-card border border-line bg-surface p-4"><SelectionFilters owners={owners} /></section>
 
       {accounts.length === 0 ? (
         <EmptyState
