@@ -58,7 +58,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         onChange={(event) => setSearch(event.target.value)}
         placeholder="Search account, opportunity, contact or email…"
         aria-label="Search accounts, opportunities and contacts"
-        className="h-10 min-w-[19rem] flex-1 rounded-xl border border-line bg-surface px-3.5 text-[14px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none"
+        className="h-10 min-w-0 basis-full flex-1 rounded-xl border border-line bg-surface px-3.5 text-[14px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none sm:min-w-[19rem] sm:basis-auto"
       />
 
       <select
@@ -91,7 +91,10 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
       {hasFilters ? (
         <button
           type="button"
-          onClick={() => startTransition(() => router.replace(pathname))}
+          onClick={() => {
+            setSearch("");
+            startTransition(() => router.replace(pathname));
+          }}
           className="h-10 rounded-xl px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink"
         >
           Clear filters
