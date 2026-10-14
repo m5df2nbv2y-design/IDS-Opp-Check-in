@@ -1,5 +1,6 @@
 import { brand } from "@/lib/brand";
 import { firstName, pluralize } from "@/lib/format";
+import { STANDARD_CHECK_IN_BODY, STANDARD_CHECK_IN_SUBJECT, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
 import type { OutboundEmail } from "../types";
 
 type CheckInEmailInput = {
@@ -10,6 +11,7 @@ type CheckInEmailInput = {
   checkInUrl: string;
   campaignId: string;
   contactId: string;
+  copy?: EmailCopy;
 };
 
 /**
@@ -20,10 +22,12 @@ type CheckInEmailInput = {
 export function buildInviteEmail(input: CheckInEmailInput): OutboundEmail {
   const name = firstName(input.contactName);
   const opportunities = `${input.opportunityCount} open ${pluralize(input.opportunityCount, "opportunity", "opportunities")}`;
+  const copy = validateEmailCopy(input.copy ?? { mode: "standard" });
+  const body = copy.mode === "custom" ? copy.body : STANDARD_CHECK_IN_BODY;
 
   return {
     to: { name: input.contactName, email: input.contactEmail },
-    subject: `${brand.companyName} Bi-Annual Opportunity Check-In`,
+    subject: copy.mode === "custom" ? copy.subject : STANDARD_CHECK_IN_SUBJECT,
     kind: "INVITE",
     linkUrl: input.checkInUrl,
     campaignId: input.campaignId,
@@ -31,9 +35,7 @@ export function buildInviteEmail(input: CheckInEmailInput): OutboundEmail {
     text: [
       `Hi ${name},`,
       "",
-      "It's time for our bi-annual opportunity check-in.",
-      "",
-      "We've pulled the currently open opportunities associated with your organization.",
+      body,
       "",
       `Please take a quick moment to update their current status — ${opportunities}, about 60 seconds.`,
       "",
@@ -44,10 +46,9 @@ export function buildInviteEmail(input: CheckInEmailInput): OutboundEmail {
     ].join("\n"),
     html: renderEmail({
       preheader: `${opportunities} to review — about 60 seconds.`,
-      heading: `Hi ${name},`,
+      heading: `Hi ${escapeHtml(name)},`,
       paragraphs: [
-        "It's time for our bi-annual opportunity check-in.",
-        "We've pulled the currently open opportunities associated with your organization.",
+        ...body.split(/\n\s*\n/).map((paragraph) => escapeHtml(paragraph).replace(/\n/g, "<br />")),
         `Please take a quick moment to update their current status — <strong>${opportunities}</strong>. It should take about 60 seconds.`,
       ],
       buttonLabel: "UPDATE MY OPPORTUNITIES",

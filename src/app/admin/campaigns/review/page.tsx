@@ -13,6 +13,8 @@ import { requireAdminActor } from "@/server/auth/require-admin";
 import { getEmailService } from "@/server/integrations/email";
 import { SendPanel } from "./send-panel";
 import { ReviewOpportunityCheckbox, ReviewSelectionProvider } from "./review-selection-controls";
+import { readEmailCopy } from "@/lib/check-in-copy";
+import { EmailPreview } from "@/components/admin/email-composer";
 
 export const dynamic = "force-dynamic";
 
@@ -158,8 +160,14 @@ export default async function ReviewPage() {
         </section>
       ) : null}
 
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold text-ink">{readEmailCopy(draft).mode === "custom" ? "Custom email" : "Standard check-in email"}</h2><ButtonLink href="/admin/outbox" variant="ghost" size="sm">Edit email in Outbox</ButtonLink></div>
+        <EmailPreview copy={readEmailCopy(draft)} />
+      </section>
       <SendPanel
-        key={recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}
+        key={`${draft.id}:${draft.emailRevision}:${recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}`}
+        campaignId={draft.id}
+        emailRevision={draft.emailRevision}
         summary={summary}
         emailProviderLabel={email.info.label}
         simulated={email.info.simulated}
