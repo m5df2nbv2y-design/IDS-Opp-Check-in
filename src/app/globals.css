@@ -89,3 +89,12 @@ body {
     transition-duration: 0.001ms !important;
   }
 }
+
+.ids-account-header { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; }
+.ids-filters label { max-width:100%; }
+.ids-admin .grid.grid-cols-2 > a > div { height:100%; }
+@media(max-width:639px) {
+ .ids-account-header { grid-template-columns:20px minmax(0,1fr); }
+ .ids-account-header > div:last-child { grid-column:2; }
+ .ids-filters input { width:100%; min-width:0; }
+}

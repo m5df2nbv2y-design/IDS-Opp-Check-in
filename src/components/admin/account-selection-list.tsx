@@ -52,7 +52,7 @@ function AccountGroup({ account }: { account: DraftAccountGroup }) {
 
   return (
     <Card className={account.selectedCount > 0 ? "ids-account border-brand/40" : "ids-account"}>
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <div className="ids-account-header gap-3 px-4 py-3">
         <input
           ref={checkboxRef}
           type="checkbox"
