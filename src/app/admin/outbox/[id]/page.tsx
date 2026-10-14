@@ -3,6 +3,7 @@ import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/primitives";
 import { prisma } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
+import { emailDeliveryLabel } from "@/lib/email-delivery";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,9 @@ export default async function OutboxMessagePage({ params }: PageProps<"/admin/ou
           {email.provider}
         </p>
       </div>
+
+      <p className="rounded-xl border border-line bg-surface p-4 text-sm font-semibold text-ink">{emailDeliveryLabel(email)}</p>
+      {email.campaignId ? <ButtonLink href={`/admin/campaigns/${email.campaignId}/receipt`} variant="secondary" size="sm">Sending results</ButtonLink> : null}
 
       {path ? (
         <Card className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">

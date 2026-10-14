@@ -82,7 +82,7 @@ export function SendPanel({
         >
           {pending
             ? "Sending…"
-            : `Send ${summary.selectedOpportunities} ${pluralize(summary.selectedOpportunities, "check-in")} to ${summary.selectedContacts} ${pluralize(summary.selectedContacts, "contact")}`}
+            : `Confirm & send ${summary.selectedOpportunities} ${pluralize(summary.selectedOpportunities, "check-in")} to ${summary.selectedContacts} ${pluralize(summary.selectedContacts, "contact")}`}
         </Button>
       </div>
 

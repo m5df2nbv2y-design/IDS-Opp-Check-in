@@ -82,7 +82,8 @@ export async function sendDraftAction(campaignId: string, emailRevision: number)
   }
   revalidatePath("/admin");
   revalidatePath("/admin/outbox");
-  if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}`);
+  if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}/receipt`);
+  return { error: "No selected opportunities can be sent. Return to selection and review the current recipients." };
 }
 
 export async function clearSelectionsAction() {
