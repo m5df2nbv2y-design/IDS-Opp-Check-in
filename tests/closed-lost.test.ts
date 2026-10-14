@@ -196,7 +196,11 @@ describe("reporting treats the terminal stage correctly", () => {
  * carried a terminal stage. It then reached pipeline-by-stage, because
  * report-service sorts an unrecognised stage LAST rather than hiding it — so a
  * "Closed Lost" row could appear in the Executive Pipeline Brief's open
- * pipeline. Every assertion below fails against that defect.
+ * pipeline. Of the nine tests added here, SEVEN fail against that defect. The
+ * other two pass either way by design and are labelled as such: one preserves
+ * the recipient's reason, which the defect never touched but write-back will
+ * need, and one guards the opposite direction — that the value drop comes from
+ * the closure rather than from quietly losing its neighbours.
  *
  * completeCheckIn only syncs once every one of a recipient's items is
  * answered, so the rest of Jane Doe's opportunities are confirmed at their
@@ -208,6 +212,10 @@ describe("a reported closure leaves the open pipeline", () => {
 
   let opportunityId: string;
   let survivingOpportunityIds: string[];
+  /** Open pipeline value BEFORE the closure — the baseline to subtract from. */
+  let baselineTotal: number;
+  /** The closed opportunity's amount, read from the record rather than hardcoded. */
+  let closedAmount: number;
 
   beforeEach(async () => {
     await resetDatabase();
@@ -234,6 +242,20 @@ describe("a reported closure leaves the open pipeline", () => {
       .filter((item) => item.opportunity.externalId !== CLOSED_EXTERNAL_ID)
       .map((item) => item.opportunity.id);
     expect(survivingOpportunityIds.length).toBeGreaterThan(0);
+
+    // Measured BEFORE anything is answered. Proving the closed amount left the
+    // open pipeline needs a before-and-after comparison; asserting that no
+    // bucket happens to equal the amount only catches accidental equality.
+    const baseline = await buildPipelineReport();
+    baselineTotal = baseline.byStage.reduce((sum, row) => sum + row.value, 0);
+    closedAmount = (
+      await prisma.opportunity.findUniqueOrThrow({
+        where: { id: opportunityId },
+        select: { amount: true },
+      })
+    ).amount;
+    expect(closedAmount).toBeGreaterThan(0);
+    expect(baselineTotal).toBeGreaterThan(closedAmount);
 
     for (const item of withOpportunity) {
       const isClosing = item.opportunity.externalId === CLOSED_EXTERNAL_ID;
@@ -294,16 +316,35 @@ describe("a reported closure leaves the open pipeline", () => {
     }
   });
 
-  it("excludes the closed value from open pipeline totals", async () => {
+  it("subtracts EXACTLY the closed amount from open pipeline value", async () => {
     const report = await buildPipelineReport();
-    const closedAmount = 218500; // Jane Doe's opportunity
+    const total = report.byStage.reduce((sum, row) => sum + row.value, 0);
 
-    const byStageTotal = report.byStage.reduce((sum, row) => sum + row.value, 0);
-    expect(byStageTotal).toBeGreaterThan(0);
+    // The only record that changed is the one that closed: the other answers
+    // confirm an unchanged stage, which syncs as SKIPPED and writes nothing.
+    // So the open pipeline must have fallen by precisely that one amount —
+    // not merely "not contain a bucket equal to it", which a wrong total can
+    // satisfy whenever the amount is pooled with other records.
+    expect(total).toBe(baselineTotal - closedAmount);
 
-    // A lost project must not still be counted as live pipeline value.
-    const stillCounted = report.byStage.some((row) => row.value === closedAmount);
-    expect(stillCounted).toBe(false);
+    // And the drop must be real, not the whole table emptying.
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThan(baselineTotal);
+  });
+
+  it("keeps the surviving opportunities' value intact", async () => {
+    // Guards the other direction: the subtraction above must come from the
+    // closure, not from quietly losing the opportunities answered alongside it.
+    const surviving = await prisma.opportunity.findMany({
+      where: { id: { in: survivingOpportunityIds } },
+      select: { amount: true, isOpen: true },
+    });
+
+    expect(surviving).toHaveLength(survivingOpportunityIds.length);
+    for (const opportunity of surviving) {
+      expect(opportunity.isOpen).toBe(true);
+      expect(opportunity.amount).toBeGreaterThan(0);
+    }
   });
 
   it("leaves every other open opportunity untouched", async () => {
