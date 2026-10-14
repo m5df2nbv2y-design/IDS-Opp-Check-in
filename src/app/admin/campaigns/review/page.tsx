@@ -12,6 +12,7 @@ import {
 import { requireAdminActor } from "@/server/auth/require-admin";
 import { getEmailService } from "@/server/integrations/email";
 import { SendPanel } from "./send-panel";
+import { ReviewOpportunityCheckbox, ReviewSelectionProvider } from "./review-selection-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,7 @@ export default async function ReviewPage() {
   }
 
   return (
+    <ReviewSelectionProvider>
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
         <ButtonLink href="/admin" variant="ghost" size="sm" className="-ml-3 mb-1">
@@ -87,6 +89,10 @@ export default async function ReviewPage() {
         <h2 className="text-[15px] font-semibold tracking-tight text-ink">
           Every recipient and exactly what they will be asked about
         </h2>
+        <p className="text-[14px] text-muted">
+          Uncheck an opportunity to remove it from this send. Totals update after saving.
+          To add opportunities, use Back to selection and open an account to choose individual projects.
+        </p>
 
         <Card className="divide-y divide-line">
           {recipients.map((recipient) => (
@@ -109,7 +115,7 @@ export default async function ReviewPage() {
                     key={opportunity.id}
                     className="flex flex-wrap items-center gap-x-3 text-[13px] text-body"
                   >
-                    <span className="text-muted">•</span>
+                    <ReviewOpportunityCheckbox id={opportunity.id} name={opportunity.name} />
                     <span>{opportunity.name}</span>
                     <span className="rounded-full border border-line bg-canvas px-2 py-0.5 text-[11px] font-medium text-muted">
                       {stageLabel(opportunity.stage)}
@@ -153,10 +159,12 @@ export default async function ReviewPage() {
       ) : null}
 
       <SendPanel
+        key={recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}
         summary={summary}
         emailProviderLabel={email.info.label}
         simulated={email.info.simulated}
       />
     </div>
+    </ReviewSelectionProvider>
   );
 }

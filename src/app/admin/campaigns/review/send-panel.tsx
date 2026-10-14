@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/primitives";
 import { pluralize } from "@/lib/format";
 import type { DraftSummary } from "@/server/services/campaign-draft-service";
+import { useReviewSelectionState } from "./review-selection-controls";
 
 /**
  * The send boundary.
@@ -27,7 +28,9 @@ export function SendPanel({
   emailProviderLabel: string;
   simulated: boolean;
 }) {
-  const [confirmed, setConfirmed] = useState(false);
+  const { pending: selectionPending, revision, setSending } = useReviewSelectionState();
+  const [confirmedRevision, setConfirmedRevision] = useState<number | null>(null);
+  const confirmed = confirmedRevision === revision;
   const [pending, startTransition] = useTransition();
 
   return (
@@ -46,8 +49,8 @@ export function SendPanel({
         <input
           type="checkbox"
           checked={confirmed}
-          disabled={pending}
-          onChange={(event) => setConfirmed(event.target.checked)}
+          disabled={pending || selectionPending}
+          onChange={(event) => setConfirmedRevision(event.target.checked ? revision : null)}
           className="mt-0.5 size-4 shrink-0 accent-[var(--color-brand)]"
         />
         <span>
@@ -60,8 +63,15 @@ export function SendPanel({
       <div className="mt-4">
         <Button
           variant="primary"
-          disabled={!confirmed || pending}
-          onClick={() => startTransition(async () => void (await sendDraftAction()))}
+          disabled={!confirmed || pending || selectionPending}
+          onClick={() => startTransition(async () => {
+            setSending(true);
+            try {
+              await sendDraftAction();
+            } finally {
+              setSending(false);
+            }
+          })}
         >
           {pending
             ? "Sending…"
