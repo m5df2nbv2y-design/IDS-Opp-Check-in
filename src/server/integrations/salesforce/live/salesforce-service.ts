@@ -141,7 +141,7 @@ export class LiveSalesforceService implements SalesforceService {
       Id: string;
       AccountId: string | null;
       Name: string;
-      Email: string;
+      Email: string | null;
     }>(soql);
 
     return rows
@@ -150,7 +150,7 @@ export class LiveSalesforceService implements SalesforceService {
         externalId: row.Id,
         accountExternalId: row.AccountId!,
         name: row.Name,
-        email: row.Email,
+        email: row.Email ?? "",
         // No primary-contact flag exists on Contact in this org, and
         // resolution does not use one — the primary role on the Opportunity is
         // the sole recipient signal.
