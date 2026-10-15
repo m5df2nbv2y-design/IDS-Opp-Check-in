@@ -19,6 +19,16 @@ import {
 import { retryFailedSyncs } from "@/server/services/sync-service";
 import { sendDemoTestEmail, type TestEmailResult } from "@/server/services/test-email-service";
 import { requireAdminActor } from "@/server/auth/require-admin";
+import { saveCampaignEmail } from "@/server/services/campaign-email-service";
+import { DraftEmailConflictError, requireEmailRevision } from "@/lib/check-in-copy";
+
+export async function saveCampaignEmailAction(campaignId: string, revision: number, input: unknown) {
+  const actor = await requireAdminActor();
+  const saved = await saveCampaignEmail(campaignId, revision, input, actor);
+  revalidatePath("/admin/outbox");
+  revalidatePath("/admin/campaigns/review");
+  return saved;
+}
 
 /**
  * Admin actions. Each is a thin wrapper — the workflow lives in
@@ -59,13 +69,21 @@ export async function setSelectionAction(opportunityIds: string[], selected: boo
  * anything that drifted. With EMAIL_PROVIDER=mock nothing leaves the building.
  * No Salesforce record is written here.
  */
-export async function sendDraftAction() {
+export async function sendDraftAction(campaignId: string, emailRevision: number) {
   const actor = await requireAdminActor();
-  const draft = await getOrCreateDraft(actor);
-  const result = await sendDraft(draft.id, actor);
+  const revision = requireEmailRevision(emailRevision);
+  const draft = await prisma.campaign.findUnique({ where: { id: campaignId } });
+  if (!draft || draft.status !== "DRAFT") return { error: "This draft changed. Reload before sending." };
+  let result;
+  try { result = await sendDraft(draft.id, actor, revision); }
+  catch (e) {
+    if (e instanceof DraftEmailConflictError) return { error: e.message };
+    throw e;
+  }
   revalidatePath("/admin");
   revalidatePath("/admin/outbox");
-  if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}`);
+  if (result.sent > 0) redirect(`/admin/campaigns/${result.campaignId}/receipt`);
+  return { error: "No selected opportunities can be sent. Return to selection and review the current recipients." };
 }
 
 export async function clearSelectionsAction() {

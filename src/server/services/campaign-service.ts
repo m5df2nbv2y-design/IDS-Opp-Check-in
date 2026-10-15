@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
+import { DraftEmailConflictError, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
 import { checkInUrl, issueToken } from "@/lib/tokens";
 import { getEmailService } from "@/server/integrations/email";
 import {
@@ -175,6 +176,8 @@ export async function launchCampaign(options: {
   sendEmails?: boolean;
   /** Convert this existing DRAFT campaign rather than creating a new one. */
   campaignId?: string;
+  emailCopy?: EmailCopy;
+  expectedEmailRevision?: number;
 }): Promise<LaunchResult> {
   // Runtime half of the type-level guarantee: a JavaScript caller, a bad cast,
   // or a deserialized payload cannot slip past the compiler into a full send.
@@ -189,6 +192,8 @@ export async function launchCampaign(options: {
   const period = options.period ?? currentPeriod();
   const name = options.name ?? `${period} Check-In`;
   const sendEmails = options.sendEmails ?? true;
+  // Reject invalid copy before creating campaigns, tokens or recipients.
+  const emailCopy = options.emailCopy ? validateEmailCopy(options.emailCopy) : undefined;
 
   const opportunities = await prisma.opportunity.findMany({
     where: {
@@ -208,8 +213,18 @@ export async function launchCampaign(options: {
     else byContact.set(opportunity.contactId!, [opportunity]);
   }
 
+  if (options.campaignId && options.expectedEmailRevision !== undefined) {
+    const claimed = await prisma.campaign.updateMany({
+      where: { id: options.campaignId, status: "DRAFT", emailRevision: options.expectedEmailRevision },
+      data: { name, status: "IN_PROGRESS", startedAt: new Date() },
+    });
+    if (claimed.count !== 1) throw new DraftEmailConflictError("The email draft changed or was already sent. Reload and review it again.");
+  }
+
   const campaign = options.campaignId
-    ? await prisma.campaign.update({
+    ? options.expectedEmailRevision !== undefined
+      ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } })
+      : await prisma.campaign.update({
         where: { id: options.campaignId },
         data: { name, status: "IN_PROGRESS", startedAt: new Date() },
       })
@@ -321,6 +336,7 @@ export async function launchCampaign(options: {
         checkInUrl: checkInUrl(env.appBaseUrl, token.token),
         campaignId: campaign.id,
         contactId,
+        copy: emailCopy,
       }),
     );
 
