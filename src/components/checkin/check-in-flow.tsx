@@ -4,12 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { formatAmount, firstName, formatShortDate, pluralize } from "@/lib/format";
 import { OPPORTUNITY_STAGES, isClosedStage, stageLabel, type OpportunityStage } from "@/lib/stages";
-import {
-  classifyResponse,
-  failedOutcome,
-  isUnsaved,
-  type RequestOutcome,
-} from "@/lib/throttle";
+import { SubmissionController } from "@/lib/checkin-submission";
+import { classifyResponse, failedOutcome, type RequestOutcome } from "@/lib/throttle";
 import type { CheckInSessionItem } from "@/server/services/response-service";
 
 type Props = {
@@ -59,17 +55,31 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   const [waitUntil, setWaitUntil] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
 
-  /**
-   * Per item: the chain of save requests, the sequence of the newest one, and
-   * the latest outcome. Chaining per item means two saves for the SAME answer
-   * can never be in flight at once, so a slow earlier write cannot land after a
-   * newer edit. The sequence makes a superseded response get discarded rather
-   * than recorded.
-   */
-  const saveChain = useRef<Promise<void>[]>([]);
-  const saveSeq = useRef<number[]>([]);
-  const saveOutcome = useRef<(RequestOutcome | null)[]>([]);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Latest answers, readable from the transport.
+   *
+   * A retry must send the answer as it stands NOW, not the value captured when
+   * the first attempt was queued — otherwise a recipient who edits while
+   * throttled has their correction silently dropped.
+   */
+  const controllerRef = useRef<SubmissionController | null>(null);
+  const answersRef = useRef(answers);
+  // Written in an effect, not during render: the transport only reads it from
+  // an event handler, which always runs after the effect for that render.
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  /**
+   * The save / wait / retry / complete state machine.
+   *
+   * Lives in @/lib/checkin-submission so it can be driven directly by tests.
+   * Keeping it inline here is what allowed a retry-coordination defect to ship:
+   * an earlier throttled answer was never re-sent, so the check-in could never
+   * finish and no string assertion over this file could have noticed.
+   */
 
   // Ticks the visible countdown and releases the button when it expires. The
   // recipient never has to reload to recover.
@@ -130,42 +140,33 @@ export function CheckInFlow({ token, contactName, items }: Props) {
       .catch(failedOutcome);
   }
 
+  // Declared as plain functions so the ref is read when a request is actually
+  // sent, never during render.
+  function sendAnswerAt(position: number): Promise<RequestOutcome> {
+    return postAnswer(position, answersRef.current[position]);
+  }
+  function sendCompletion(): Promise<RequestOutcome> {
+    return fetch(`/api/checkin/${token}/complete`, { method: "POST" })
+      .then((response) => classifyResponse(response))
+      .catch(failedOutcome);
+  }
+
   /**
-   * Queue a save for one item, behind any save already in flight for it.
-   *
-   * Returns a promise that settles when THIS save has been accounted for, so
-   * submit can wait on every outstanding write before deciding anything.
+   * Built on first use from an event handler, never during render — the
+   * controller is not needed to render anything, and constructing it in render
+   * would mean reading a ref there.
    */
-  function save(position: number, value: Answer): Promise<void> {
-    const seq = (saveSeq.current[position] ?? 0) + 1;
-    saveSeq.current[position] = seq;
-    saveOutcome.current[position] = null;
-
-    const chained = (saveChain.current[position] ?? Promise.resolve())
-      .catch(() => undefined)
-      .then(() => postAnswer(position, value))
-      .then((outcome) => {
-        // A newer edit has already been queued for this item; its answer is the
-        // authoritative one, so this result is discarded rather than recorded.
-        if (saveSeq.current[position] !== seq) return;
-        saveOutcome.current[position] = outcome;
+  function getController(): SubmissionController {
+    if (controllerRef.current === null) {
+      controllerRef.current = new SubmissionController(items.length, {
+        now: () => Date.now(),
+        sendAnswer: sendAnswerAt,
+        sendCompletion,
       });
-
-    saveChain.current[position] = chained;
-    return chained;
+    }
+    return controllerRef.current;
   }
 
-  /** The longest wait any outcome asked for, or null if none did. */
-  function throttleFrom(outcomes: (RequestOutcome | null)[]): number | null {
-    const seconds = outcomes
-      .filter((o): o is Extract<RequestOutcome, { kind: "throttled" }> => o?.kind === "throttled")
-      .map((o) => o.retryAfterSeconds);
-    return seconds.length > 0 ? Math.max(...seconds) : null;
-  }
-
-  function holdFor(seconds: number) {
-    setWaitUntil(Date.now() + seconds * 1000);
-  }
 
   function goTo(next: number) {
     setIndex(next);
@@ -177,7 +178,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   async function handleNext() {
     if (!answer.stage || reasonMissing || waiting) return;
 
-    save(index, answer);
+    void getController().queueSave(index);
 
     if (!isLast) {
       goTo(index + 1);
@@ -196,55 +197,32 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   }
 
   async function submit() {
-    // Every answer must be stored on the SERVER before the check-in can close.
-    await Promise.all(saveChain.current.map((pending) => pending ?? Promise.resolve()));
+    const result = await getController().submit();
 
-    const outcomes = items.map((_, position) => saveOutcome.current[position] ?? null);
-    const unsaved = outcomes
-      .map((outcome, position) => ({ outcome, position }))
-      .filter(({ outcome }) => outcome === null || isUnsaved(outcome));
-
-    if (unsaved.length > 0) {
-      const held = throttleFrom(outcomes);
-      if (held !== null) {
-        holdFor(held);
-        // Deliberately explicit that these answers are NOT stored yet and live
-        // only in this page — React state does not survive a reload.
-        setError(
-          "Too many requests just now. Please wait, then tap submit again — and keep this page open so you don't lose your unsaved answers.",
-        );
-      } else {
-        setError("We couldn't save every answer. Check your connection and tap submit again.");
-      }
-
-      // Re-queue the failed items with their CURRENT answers. Not retried
-      // automatically: an automatic retry during a throttle is what produces a
-      // flood, and the recipient's tap is the backoff.
-      if (held === null) {
-        for (const { position } of unsaved) save(position, answers[position]);
-      }
+    if (result.kind === "done") {
+      setDone(true);
+      window.scrollTo({ top: 0 });
       return;
     }
 
-    const completion = await fetch(`/api/checkin/${token}/complete`, { method: "POST" })
-      .then((response) => classifyResponse(response))
-      .catch(failedOutcome);
-
-    if (completion.kind === "throttled") {
-      holdFor(completion.retryAfterSeconds);
-      // Different copy on purpose: here the answers ARE confirmed stored, so
-      // telling them to keep the page open would be needlessly alarming.
-      setError("Your answers are saved. Too many requests just now — please wait, then tap submit again.");
+    if (result.kind === "waiting") {
+      setWaitUntil(result.until);
+      // Two messages on purpose. While answers are still pending this page is
+      // the only copy of them, and saying so is the honest thing. Once they are
+      // stored, warning about losing them would be needlessly alarming.
+      setError(
+        result.pendingAnswers
+          ? "Too many requests just now. Please wait, then tap submit again — and keep this page open so you don't lose your unsaved answers."
+          : "Your answers are saved. Too many requests just now — please wait, then tap submit again.",
+      );
       return;
     }
 
-    if (completion.kind !== "ok") {
-      setError("We saved your answers but couldn't submit. Please tap submit again.");
-      return;
-    }
-
-    setDone(true);
-    window.scrollTo({ top: 0 });
+    setError(
+      result.pendingAnswers
+        ? "We couldn't save every answer. Check your connection and tap submit again."
+        : "We saved your answers but couldn't submit. Please tap submit again.",
+    );
   }
 
   if (done) {

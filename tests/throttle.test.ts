@@ -215,10 +215,15 @@ describe("the recipient flow keeps its throttle guarantees", () => {
     expect(flow).toMatch(/disabled=\{[\s\S]*?waiting[\s\S]*?\}/);
   });
 
-  it("does not retry automatically while throttled", () => {
-    // The recipient's tap IS the backoff. An automatic retry during a throttle
-    // is precisely how a client produces a flood.
-    expect(flow).toMatch(/if \(held === null\)/);
+  it("delegates save/retry/completion to the testable controller", () => {
+    // This assertion replaces one that checked for `if (held === null)` — which
+    // was the BUGGY LINE ITSELF. A string assertion happily pinned the defect
+    // in place, which is exactly why retry behaviour is now covered by
+    // executable tests in checkin-submission.test.ts instead of by matching
+    // source text here.
+    expect(flow).toContain("SubmissionController");
+    expect(flow).toContain("getController().submit()");
+    expect(flow).toContain("getController().queueSave(index)");
   });
 
   it("tells the truth about unsaved answers only when they are unsaved", () => {
