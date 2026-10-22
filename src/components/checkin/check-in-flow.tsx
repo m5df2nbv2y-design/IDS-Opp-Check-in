@@ -1,415 +1,150 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { formatAmount, firstName, formatShortDate, pluralize } from "@/lib/format";
-import { OPPORTUNITY_STAGES, isClosedStage, stageLabel, type OpportunityStage } from "@/lib/stages";
-import type { CheckInSessionItem } from "@/server/services/response-service";
+import { firstName, formatShortDate } from "@/lib/format";
+import { WIN_PROBABILITIES, validResponseDate, type LossReasonOption, type RecipientOpportunity } from "@/lib/client-response";
+import type { OpportunityStage } from "@/lib/stages";
 
 type Props = {
   token: string;
   contactName: string;
-  items: CheckInSessionItem[];
+  items: RecipientOpportunity[];
+  lossReasons: LossReasonOption[];
+  /** Only supplied by the guarded, fictional local preview page. */
+  preview?: boolean;
 };
+type Answer = {
+  status: "OPEN" | "CLOSED_LOST" | null;
+  stage: OpportunityStage | null;
+  closeDate: string;
+  dateConfirmed: boolean;
+  lossReason: string;
+  comment: string;
+};
+const choiceStyle = (selected: boolean) => `min-h-14 rounded-2xl border-2 px-5 py-3 text-left text-[17px] font-semibold transition-colors ${selected ? "border-brand bg-brand-soft text-brand" : "border-line bg-surface text-ink hover:border-line-strong"}`;
 
-type Answer = { stage: OpportunityStage | null; comment: string; closeDate: string };
-
-/**
- * The external contact's entire experience: land on opportunity 1, tap a
- * status, tap next. No login, no account, no admin chrome, and nothing about
- * how IDS divides these opportunities between its own reps.
- *
- * Two choices keep it at ~60 seconds:
- *   - No welcome screen. The greeting rides along with the first opportunity,
- *     so the emailed link opens straight into the work.
- *   - Answers save in the background while the recipient moves on. Nothing
- *     waits on the network until the final submit, which settles every save
- *     first and reports honestly if any of them failed.
- */
-export function CheckInFlow({ token, contactName, items }: Props) {
-  const [answers, setAnswers] = useState<Answer[]>(() =>
-    items.map((item) => ({
-      stage: item.selectedStage,
-      comment: item.comment,
-      closeDate: item.selectedCloseDate ?? item.currentCloseDate ?? "",
-    })),
-  );
-
-  const firstUnanswered = answers.findIndex((answer) => answer.stage === null);
-  const [index, setIndex] = useState(firstUnanswered === -1 ? items.length - 1 : firstUnanswered);
-  const [noteOpen, setNoteOpen] = useState(false);
+export function CheckInFlow({ token, contactName, items, lossReasons, preview = false }: Props) {
+  const [answers, setAnswers] = useState<Answer[]>(() => items.map((item) => ({
+    status: item.selectedStage ? item.selectedStage === "CLOSED_LOST" ? "CLOSED_LOST" : "OPEN" : null,
+    stage: item.selectedStage,
+    closeDate: item.selectedCloseDate ?? item.currentCloseDate ?? "",
+    dateConfirmed: !!item.selectedStage && item.selectedStage !== "CLOSED_LOST",
+    lossReason: item.selectedLossReason ?? "",
+    comment: item.comment,
+  })));
+  const [index, setIndex] = useState(() => Math.max(0, items.findIndex((item) => !item.selectedStage)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-
-  const saves = useRef<Promise<boolean>[]>([]);
-  const noteRef = useRef<HTMLTextAreaElement>(null);
-
   const item = items[index];
   const answer = answers[index];
-  const isLast = index === items.length - 1;
-  const resuming = firstUnanswered > 0;
-  // Closing a project is the one answer that must come with an explanation.
-  // The note opens automatically, is labelled as required, and gates the
-  // button - so the requirement is visible before the tap, not after it.
-  const closing = isClosedStage(answer.stage);
-  const reasonMissing = closing && answer.comment.trim().length === 0;
-  const showNote = noteOpen || closing || answer.comment.length > 0;
+  const closing = answer.status === "CLOSED_LOST";
+  const ready = closing
+    ? lossReasons.some((reason) => reason.value === answer.lossReason)
+    : answer.status === "OPEN" && validResponseDate(answer.closeDate) && answer.dateConfirmed && !!answer.stage;
 
   function update(patch: Partial<Answer>) {
-    setAnswers((current) =>
-      current.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)),
-    );
+    setAnswers((current) => current.map((entry, position) => position === index ? { ...entry, ...patch } : entry));
     setError(null);
   }
-
-  function save(position: number, value: Answer): Promise<boolean> {
-    return fetch(`/api/checkin/${token}/responses`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        itemId: items[position].id,
-        stage: value.stage,
-        comment: value.comment.trim() || null,
-        // Only send a revised date when it actually differs from the one we
-        // showed them, so "unchanged" stays distinguishable from "confirmed".
-        closeDate:
-          value.closeDate && value.closeDate !== items[position].currentCloseDate
-            ? value.closeDate
-            : null,
-      }),
-    })
-      .then((response) => response.ok)
-      .catch(() => false);
-  }
-
-  function goTo(next: number) {
-    setIndex(next);
-    setNoteOpen(false);
+  function goTo(position: number) {
+    setIndex(position);
     setError(null);
     window.scrollTo({ top: 0 });
   }
-
   async function handleNext() {
-    if (!answer.stage || reasonMissing) return;
-
-    saves.current[index] = save(index, answer);
-
-    if (!isLast) {
-      goTo(index + 1);
-      return;
-    }
-
+    if (!ready || busy) return;
     setBusy(true);
     setError(null);
-    await submit();
-    setBusy(false);
+    try {
+      if (!preview) {
+        const reasonLabel = lossReasons.find((reason) => reason.value === answer.lossReason)?.label;
+        const response = await fetch(`/api/checkin/${token}/responses`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            flowVersion: 2, itemId: item.id,
+            stage: closing ? "CLOSED_LOST" : answer.stage,
+            lossReason: closing ? answer.lossReason : null,
+            comment: closing ? reasonLabel : answer.comment.trim() || null,
+            closeDate: closing ? null : answer.closeDate,
+          }),
+        });
+        if (!response.ok) throw new Error("We couldn’t save this answer. Please try again. If you selected Closed Lost, reload to refresh the available reasons.");
+      }
+      if (index < items.length - 1) { goTo(index + 1); return; }
+      if (!preview) {
+        const completion = await fetch(`/api/checkin/${token}/complete`, { method: "POST" });
+        if (!completion.ok) throw new Error("Your answer was saved, but we couldn’t submit the check-in. Please try again.");
+      }
+      setDone(true);
+      window.scrollTo({ top: 0 });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Please check your connection and try again.");
+    } finally { setBusy(false); }
   }
 
-  async function submit() {
-    // Every answer must be safely stored before the check-in can close.
-    const results = await Promise.all(saves.current.map((pending) => pending ?? true));
-    if (results.includes(false)) {
-      setError("We couldn't save every answer. Check your connection and tap submit again.");
-      results.forEach((succeeded, position) => {
-        if (!succeeded) saves.current[position] = save(position, answers[position]);
-      });
-      return;
-    }
-
-    const completion = await fetch(`/api/checkin/${token}/complete`, { method: "POST" });
-    if (!completion.ok) {
-      setError("We saved your answers but couldn't submit. Please tap submit again.");
-      return;
-    }
-
-    setDone(true);
-    window.scrollTo({ top: 0 });
-  }
-
-  if (done) {
-    return <Complete contactName={contactName} items={items} answers={answers} />;
-  }
-
-  return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-10 border-b border-line bg-surface/95 backdrop-blur">
-        <div className="mx-auto w-full max-w-lg px-5 py-2.5">
-          <div className="flex items-center justify-between text-[13px] font-medium text-muted">
-            <button
-              type="button"
-              onClick={() => goTo(Math.max(0, index - 1))}
-              disabled={index === 0 || busy}
-              className="-ml-1 rounded-lg px-1 py-0.5 transition-colors hover:text-ink disabled:invisible"
-            >
-              ← Back
-            </button>
-            <span className="tabular-nums">
-              {index + 1} of {items.length}
-            </span>
-          </div>
-          <div
-            className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-line"
-            role="progressbar"
-            aria-valuenow={index + 1}
-            aria-valuemin={1}
-            aria-valuemax={items.length}
-            aria-label="Check-in progress"
-          >
-            <div
-              className="h-full rounded-full bg-brand transition-[width] duration-300"
-              style={{ width: `${((index + 1) / items.length) * 100}%` }}
-            />
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-3">
-        {index === 0 ? (
-          <div className="mb-2.5 border-b border-line pb-2.5">
-            <p className="text-[18px] font-semibold tracking-tight text-ink">
-              Hi {firstName(contactName)} <span aria-hidden>👋</span>
-            </p>
-            <p className="mt-0.5 text-[14px] text-muted">
-              {resuming
-                ? `Picking up where you left off — ${items.length - firstUnanswered} left.`
-                : `We found ${items.length} open ${pluralize(items.length, "opportunity", "opportunities")} associated with your organization. About 60 seconds.`}
-            </p>
-          </div>
-        ) : null}
-
-        <article key={item.id}>
-          <h1 className="text-[23px] font-semibold leading-tight tracking-tight text-ink">
-            {item.customerName}
-          </h1>
-          <p className="mt-0.5 text-[16px] text-body">{item.projectName}</p>
-
-          <dl className="mt-2.5 flex gap-2.5">
-            <div className="flex-1 rounded-xl border border-line bg-surface px-3.5 py-2">
-              <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted">
-                Opportunity
-              </dt>
-              <dd className="mt-0.5 text-[17px] font-semibold tabular-nums text-ink">
-                {formatAmount(item.amount)}
-              </dd>
-            </div>
-            <div className="flex-1 rounded-xl border border-line bg-surface px-3.5 py-2">
-              <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted">
-                Current status
-              </dt>
-              <dd className="mt-0.5 text-[17px] font-semibold text-ink">
-                {stageLabel(item.currentStage)}
-              </dd>
-            </div>
-          </dl>
-
-          {item.currentCloseDate ? (
-            <div className="mt-2.5 rounded-xl border border-line bg-surface px-3.5 py-2.5">
-              <label
-                htmlFor={`close-${item.id}`}
-                className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted"
-              >
-                Expected completion
-              </label>
-              <input
-                id={`close-${item.id}`}
-                type="date"
-                value={answer.closeDate}
-                onChange={(event) => update({ closeDate: event.target.value })}
-                className="mt-1 w-full bg-transparent text-[17px] font-semibold text-ink focus:outline-none"
-              />
-              {answer.closeDate !== item.currentCloseDate ? (
-                <p className="mt-1 text-[12px] font-medium text-brand">
-                  Updated from {formatShortDate(item.currentCloseDate)}
-                </p>
-              ) : (
-                <p className="mt-1 text-[12px] text-muted">Change it if this has moved.</p>
-              )}
-            </div>
-          ) : null}
-
-          <h2 className="mt-3 text-[16px] font-semibold tracking-tight text-ink">
-            What&apos;s the current status?
-          </h2>
-
-          <div className="mt-2.5 grid gap-2">
-            {OPPORTUNITY_STAGES.map((stage) => {
-              const selected = answer.stage === stage.value;
-              const isCurrent = item.currentStage === stage.value;
-              return (
-                <button
-                  key={stage.value}
-                  type="button"
-                  onClick={() => update({ stage: stage.value })}
-                  aria-pressed={selected}
-                  className={`flex min-h-[54px] w-full items-center justify-between gap-3 rounded-2xl border-2 px-5 text-left transition-colors ${
-                    selected
-                      ? "border-brand bg-brand-soft"
-                      : "border-line bg-surface hover:border-line-strong"
-                  }`}
-                >
-                  <span
-                    className={`text-[17px] font-semibold ${selected ? "text-brand" : "text-ink"}`}
-                  >
-                    {stage.label}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    {isCurrent ? (
-                      <span className="rounded-full border border-line-strong bg-canvas px-2 py-0.5 text-[11px] font-semibold text-muted">
-                        Current
-                      </span>
-                    ) : null}
-                    <span
-                      className={`flex size-6 items-center justify-center rounded-full border-2 ${
-                        selected ? "border-brand bg-brand" : "border-line-strong"
-                      }`}
-                    >
-                      {selected ? (
-                        <svg viewBox="0 0 20 20" className="size-3.5 fill-white" aria-hidden>
-                          <path d="M7.6 13.3 4.3 10l-1.1 1.1 4.4 4.4 9-9-1.1-1.1z" />
-                        </svg>
-                      ) : null}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {showNote ? (
-            <div className="mt-4">
-              <label htmlFor="note" className="text-[14px] font-semibold text-ink">
-                {closing ? "Why did this project end?" : "Anything we should know?"}
-              </label>
-              <textarea
-                id="note"
-                ref={noteRef}
-                value={answer.comment}
-                onChange={(event) => update({ comment: event.target.value })}
-                rows={3}
-                maxLength={1000}
-                placeholder={
-                  closing
-                    ? "Budget cut, lost to another vendor, project cancelled…"
-                    : "Optional — waiting on the construction schedule…"
-                }
-                className="mt-1.5 w-full resize-none rounded-2xl border border-line bg-surface px-4 py-3 text-[16px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none"
-              />
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setNoteOpen(true);
-                requestAnimationFrame(() => noteRef.current?.focus());
-              }}
-              className="mt-4 text-[14px] font-semibold text-brand"
-            >
-              + Add a note
-            </button>
-          )}
-        </article>
-      </main>
-
-      <div className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
-        <div className="mx-auto w-full max-w-lg px-5 pb-[max(0.875rem,env(safe-area-inset-bottom))] pt-3">
-          {error ? (
-            <p className="mb-2.5 rounded-xl bg-danger-soft px-4 py-2.5 text-[13px] font-medium text-danger">
-              {error}
-            </p>
-          ) : null}
-          <Button size="lg" onClick={handleNext} disabled={!answer.stage || reasonMissing || busy}>
-            {busy ? "Submitting…" : isLast ? "SUBMIT" : "NEXT →"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Complete({
-  contactName,
-  items,
-  answers,
-}: {
-  contactName: string;
-  items: CheckInSessionItem[];
-  answers: Answer[];
-}) {
-  const [dismissed, setDismissed] = useState(false);
-  const changed = items.filter(
-    (item, i) =>
-      answers[i].stage !== item.currentStage ||
-      (answers[i].closeDate && answers[i].closeDate !== item.currentCloseDate),
-  );
-
-  return (
-    <main className="mx-auto w-full max-w-lg px-6 py-12">
-      <div className="flex size-14 items-center justify-center rounded-full bg-success-soft">
-        <svg viewBox="0 0 20 20" className="size-7 fill-success" aria-hidden>
-          <path d="M7.6 13.3 4.3 10l-1.1 1.1 4.4 4.4 9-9-1.1-1.1z" />
-        </svg>
-      </div>
-
-      <h1 className="mt-5 text-[28px] font-semibold leading-tight tracking-tight text-ink">
-        You&apos;re done <span aria-hidden>🎉</span>
-      </h1>
-      <p className="mt-3 text-[17px] text-body">
-        Thanks, {firstName(contactName)}. Your {items.length} opportunity{" "}
-        {pluralize(items.length, "update")} {items.length === 1 ? "has" : "have"} been recorded.
-      </p>
-
-      {changed.length > 0 ? (
-        <div className="mt-7">
-          <p className="text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">
-            {changed.length} {pluralize(changed.length, "update")} recorded
-          </p>
-          <ul className="mt-2.5 divide-y divide-line rounded-card border border-line bg-surface">
-            {changed.map((item) => {
-              const i = items.indexOf(item);
-              return (
-                <li key={item.id} className="px-4 py-3">
-                  <div className="text-[15px] font-medium text-ink">{item.customerName}</div>
-                  {answers[i].stage !== item.currentStage ? (
-                    <div className="mt-0.5 text-[13px] text-muted">
-                      {stageLabel(item.currentStage)} <span aria-hidden>→</span>{" "}
-                      <span className="font-semibold text-body">{stageLabel(answers[i].stage)}</span>
-                    </div>
-                  ) : null}
-                  {answers[i].closeDate && answers[i].closeDate !== item.currentCloseDate ? (
-                    <div className="mt-0.5 text-[13px] text-muted">
-                      Completion {formatShortDate(item.currentCloseDate)} <span aria-hidden>→</span>{" "}
-                      <span className="font-semibold text-body">
-                        {formatShortDate(answers[i].closeDate)}
-                      </span>
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ) : null}
-
-      <div className="mt-9">
-        {dismissed ? (
-          <p className="text-[15px] font-medium text-success">
-            Submitted — you can close this tab.
-          </p>
-        ) : (
-          <Button
-            size="lg"
-            onClick={() => {
-              // A tab the page did not open cannot close itself on mobile, so
-              // fall back to an explicit acknowledgement instead of doing nothing.
-              window.close();
-              setDismissed(true);
-            }}
-          >
-            DONE
-          </Button>
-        )}
-      </div>
+  if (done) return (
+    <main className="mx-auto max-w-lg px-5 py-16">
+      <p className="text-sm font-semibold text-brand">CHECK-IN COMPLETE</p>
+      <h1 className="mt-3 text-3xl font-semibold text-ink">Thank you, {firstName(contactName)}.</h1>
+      <p className="mt-3 text-body">{preview ? "Preview complete. No answers were sent or saved." : "Your updates have been recorded. You can close this tab."}</p>
+      <ul className="mt-7 divide-y divide-line rounded-2xl border border-line bg-surface">
+        {items.map((entry, position) => <li key={entry.id} className="px-5 py-4">
+          <p className="font-semibold text-ink">{entry.projectName}</p>
+          <p className="mt-1 text-sm text-muted">{answers[position].status === "CLOSED_LOST"
+            ? `Closed Lost · ${lossReasons.find((reason) => reason.value === answers[position].lossReason)?.label ?? ""}`
+            : `Open · ${formatShortDate(answers[position].closeDate)} · ${WIN_PROBABILITIES.find((probability) => probability.stage === answers[position].stage)?.label ?? ""}`}</p>
+        </li>)}
+      </ul>
     </main>
   );
+
+  return <div className="flex min-h-dvh flex-col">
+    <header className="border-b border-line bg-surface">
+      <div className="mx-auto flex max-w-lg items-center justify-between px-5 py-4 text-sm text-muted">
+        <button type="button" disabled={!index || busy} onClick={() => goTo(index - 1)} className="font-semibold disabled:invisible">← Back</button>
+        <span>Project {index + 1} of {items.length}</span>
+      </div>
+    </header>
+    <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-7">
+      {preview ? <p className="mb-5 rounded-xl bg-brand-soft px-4 py-3 text-sm text-brand">Fictional preview · nothing is saved · sample loss reasons</p> : null}
+      <article key={item.id}>
+        <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-ink">{item.projectName}</h1>
+        <p className="mt-2 text-sm text-muted">Opportunity created {item.createdDate ? formatShortDate(item.createdDate) : "— date unavailable"}</p>
+        <fieldset disabled={busy} className="mt-8">
+          <legend className="text-lg font-semibold text-ink">What is the current status?</legend>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            {(["OPEN", "CLOSED_LOST"] as const).map((status) => <button key={status} type="button" aria-pressed={answer.status === status} className={choiceStyle(answer.status === status)} onClick={() => update({ status, stage: null, lossReason: "", comment: "", dateConfirmed: false })}>{status === "OPEN" ? "Open" : "Closed Lost"}</button>)}
+          </div>
+        </fieldset>
+        {closing ? <div className="mt-7">
+          <label htmlFor="loss-reason" className="text-lg font-semibold text-ink">What is the loss reason?</label>
+          <select id="loss-reason" value={answer.lossReason} disabled={busy || !lossReasons.length} onChange={(event) => update({ lossReason: event.target.value, stage: "CLOSED_LOST" })} className="mt-3 min-h-14 w-full rounded-xl border border-line bg-surface px-4 text-ink">
+            <option value="">Select a loss reason</option>
+            {lossReasons.map((reason) => <option key={reason.value} value={reason.value}>{reason.label}</option>)}
+          </select>
+          {!lossReasons.length ? <p role="status" className="mt-3 text-sm text-danger">The loss reasons are currently unavailable. Please try again later or contact the sender of your invitation.</p> : null}
+        </div> : null}
+        {answer.status === "OPEN" ? <div className="mt-7">
+          <label htmlFor="close-date" className="text-lg font-semibold text-ink">When do you expect this opportunity to close?</label>
+          <input id="close-date" type="date" required value={answer.closeDate} disabled={busy} onChange={(event) => update({ closeDate: event.target.value, dateConfirmed: false, stage: null })} className="mt-3 min-h-14 w-full rounded-xl border border-line bg-surface px-4 text-ink" />
+          {!answer.dateConfirmed ? <button type="button" disabled={busy || !validResponseDate(answer.closeDate)} onClick={() => update({ dateConfirmed: true })} className="mt-3 font-semibold text-brand disabled:opacity-40">Confirm date →</button> : null}
+          {answer.dateConfirmed && validResponseDate(answer.closeDate) ? <fieldset disabled={busy} className="mt-7">
+            <legend className="text-lg font-semibold text-ink">How likely is it that you win the project?</legend>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              {WIN_PROBABILITIES.map((probability) => <button key={probability.stage} type="button" aria-pressed={answer.stage === probability.stage} className={choiceStyle(answer.stage === probability.stage)} onClick={() => update({ stage: probability.stage })}>{probability.label}</button>)}
+            </div>
+          </fieldset> : null}
+        </div> : null}
+      </article>
+    </main>
+    <footer className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
+      <div className="mx-auto max-w-lg px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+        {error ? <p role="alert" className="mb-3 text-sm text-danger">{error}</p> : null}
+        <Button size="lg" disabled={!ready || busy} onClick={handleNext}>{busy ? "Saving…" : index === items.length - 1 ? "Submit updates" : "Next project →"}</Button>
+      </div>
+    </footer>
+  </div>;
 }

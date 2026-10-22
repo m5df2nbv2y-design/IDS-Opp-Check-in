@@ -1,3 +1,4 @@
+import { getSalesforceService } from "@/server/integrations/salesforce";
 import type { Metadata } from "next";
 import { CheckInFlow } from "@/components/checkin/check-in-flow";
 import { brand } from "@/lib/brand";
@@ -50,7 +51,15 @@ export default async function CheckInPage({ params }: PageProps<"/checkin/[token
     );
   }
 
-  return <CheckInFlow token={token} contactName={session.contactName} items={session.items} />;
+  const lossReasons = await getSalesforceService().getLossReasonOptions?.().catch(() => []) ?? [];
+  // Explicit allowlist: current stage and opportunity value never reach client props.
+  const items = session.items.map((item) => ({
+    id: item.id, projectName: item.projectName, createdDate: item.createdDate ?? null,
+    selectedStage: item.selectedStage, selectedCloseDate: item.selectedCloseDate,
+    currentCloseDate: item.currentCloseDate, selectedLossReason: item.selectedLossReason ?? null,
+    comment: item.comment,
+  }));
+  return <CheckInFlow token={token} contactName={session.contactName} items={items} lossReasons={lossReasons} />;
 }
 
 const REJECTIONS: Record<InviteRejection, { title: string; body: string }> = {

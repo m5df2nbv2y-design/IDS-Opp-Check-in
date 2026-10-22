@@ -1,3 +1,4 @@
+import { lossReasonOptionsFromDescribe } from "@/lib/client-response";
 import { accountTypeFromSalesforce } from "@/lib/account-types";
 import { assertLiveIntegrationAllowed } from "@/lib/deployment-environment";
 import { env } from "@/lib/env";
@@ -62,7 +63,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * standard AccountId and OpportunityContactRole are the real model.
  */
 const OPEN_OPPORTUNITY_SOQL = `
-  SELECT Id, Name, Amount, StageName, CloseDate, OwnerId,
+  SELECT Id, Name, Amount, StageName, CloseDate, CreatedDate, OwnerId,
          AccountId, Account.Name,
          (SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)
   FROM Opportunity
@@ -352,6 +353,19 @@ export class LiveSalesforceService implements SalesforceService {
     return results;
   }
 
+  private lossReasonCache: { expires: number; options: { value: string; label: string }[] } | null = null;
+
+  async getLossReasonOptions(): Promise<{ value: string; label: string }[]> {
+    if (this.lossReasonCache && this.lossReasonCache.expires > Date.now()) return this.lossReasonCache.options;
+    const response = await this.readWithRetry(
+      (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
+    );
+    const metadata = await response.json();
+    const options = lossReasonOptionsFromDescribe(metadata);
+    this.lossReasonCache = { expires: Date.now() + 5 * 60_000, options };
+    return options;
+  }
+
   private async patchOpportunity(externalId: string, fields: Record<string, unknown>) {
     // Deliberately NOT routed through readWithRetry: replaying a write is a
     // decision for the sync service, not the transport.
@@ -386,6 +400,7 @@ export class LiveSalesforceService implements SalesforceService {
       amount: row.Amount ?? 0,
       stage,
       closeDate: row.CloseDate ? new Date(row.CloseDate) : null,
+      createdDate: row.CreatedDate ? new Date(row.CreatedDate) : null,
       url: `${instanceUrl}/lightning/r/Opportunity/${row.Id}/view`,
       ownerExternalId: row.OwnerId,
       // The partner account drives recipient resolution. Orgs that sell direct
@@ -403,6 +418,7 @@ type SalesforceOpportunityRow = {
   Amount: number | null;
   StageName: string;
   CloseDate: string | null;
+  CreatedDate?: string;
   OwnerId: string;
   AccountId: string | null;
   Account: { Name: string } | null;

@@ -39,6 +39,15 @@ export class MockSalesforceService implements SalesforceService {
       "Demo data served through the same interface as the real integration. No external credentials required.",
   };
 
+  async getLossReasonOptions() {
+    // Fictional demo options; never used by the live provider.
+    return [
+      { value: "DEMO_BUDGET", label: "Budget unavailable" },
+      { value: "DEMO_CANCELLED", label: "Project cancelled" },
+      { value: "DEMO_COMPETITOR", label: "Selected another supplier" },
+    ];
+  }
+
   /** Load the sample org. Called by the seed script. */
   async resetOrg(): Promise<void> {
     await prisma.mockSalesforceOpportunity.deleteMany();
