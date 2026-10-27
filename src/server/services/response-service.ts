@@ -1,3 +1,5 @@
+import { getSalesforceService } from "@/server/integrations/salesforce";
+import { validResponseDate } from "@/lib/client-response";
 import { prisma } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
 import { isClosedStage, isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
@@ -21,6 +23,8 @@ export type CheckInSessionItem = {
   selectedCloseDate: string | null;
   comment: string;
   submitted: boolean;
+  createdDate?: string | null;
+  selectedLossReason?: string | null;
 };
 
 export type CheckInSession = {
@@ -51,7 +55,7 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
     include: {
       contact: { include: { account: true } },
       campaign: true,
-      items: { orderBy: { position: "asc" } },
+      items: { orderBy: { position: "asc" }, include: { opportunity: { select: { salesforceCreatedAt: true } } } },
     },
   });
 
@@ -71,6 +75,8 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
       completedAt: recipient.completedAt,
       items: recipient.items.map((item) => ({
         id: item.id,
+        createdDate: item.opportunity.salesforceCreatedAt?.toISOString().slice(0, 10) ?? null,
+        selectedLossReason: item.lossReason,
         customerName: item.customerName,
         projectName: item.projectName ?? item.opportunityName,
         amount: item.amount,
@@ -124,7 +130,7 @@ export type SaveResponseResult =
   | { ok: true; revised: boolean }
   | {
       ok: false;
-      reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" | "REASON_REQUIRED";
+      reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" | "REASON_REQUIRED" | "INVALID_CLOSE_DATE" | "INVALID_LOSS_REASON";
     };
 
 /**
@@ -141,6 +147,8 @@ export async function saveResponse(input: {
   comment?: string | null;
   /** Revised close date as ISO yyyy-mm-dd, or null to leave it unchanged. */
   closeDate?: string | null;
+  lossReason?: string | null;
+  flowVersion?: number;
 }): Promise<SaveResponseResult> {
   if (!isOpportunityStage(input.stage)) return { ok: false, reason: "INVALID_STAGE" };
 
@@ -149,7 +157,7 @@ export async function saveResponse(input: {
   // written, so a refused answer never half-saves. The text is also what a
   // future write-back will have for Salesforce's Loss Reason, which the
   // opportunity form marks as required.
-  const reason = input.comment?.trim();
+  let reason = input.comment?.trim() || input.lossReason?.trim();
   if (isClosedStage(input.stage) && !reason) {
     return { ok: false, reason: "REASON_REQUIRED" };
   }
@@ -164,6 +172,21 @@ export async function saveResponse(input: {
   });
   if (!item) return { ok: false, reason: "NOT_FOUND" };
 
+  if (input.closeDate && !validResponseDate(input.closeDate)) return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  if (input.flowVersion === 2 && isClosedStage(input.stage) && input.closeDate != null) {
+    return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  }
+  if (input.flowVersion === 2 && !isClosedStage(input.stage) && !validResponseDate(input.closeDate)) {
+    return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  }
+  if (input.flowVersion === 2 || input.lossReason) {
+    if (isClosedStage(input.stage)) {
+      const options = await getSalesforceService().getLossReasonOptions?.().catch(() => []) ?? [];
+      const selected = options.find((option) => option.value === input.lossReason);
+      if (!selected) return { ok: false, reason: "INVALID_LOSS_REASON" };
+      reason = selected.label;
+    } else if (input.lossReason) return { ok: false, reason: "INVALID_LOSS_REASON" };
+  }
   const revised = item.submittedAt !== null;
   // This endpoint is public — anyone holding a link can post to it — so the
   // one free-text field is bounded rather than trusted.
@@ -171,7 +194,7 @@ export async function saveResponse(input: {
 
   // Recorded for the confirmed future write scope. Still never pushed to
   // Salesforce — capturing it is what makes close-date movement measurable.
-  const closeDate = parseCloseDate(input.closeDate);
+  const closeDate = isClosedStage(input.stage) ? null : parseCloseDate(input.closeDate);
 
   await prisma.$transaction([
     prisma.checkInOpportunity.update({
@@ -180,6 +203,7 @@ export async function saveResponse(input: {
         updatedStatus: input.stage,
         updatedCloseDate: closeDate,
         repComment: comment,
+        lossReason: isClosedStage(input.stage) ? input.lossReason ?? null : null,
         submittedAt: new Date(),
         syncStatus: "PENDING",
         syncError: null,

@@ -477,3 +477,30 @@ describe("REGRESSION — an unchanged stored answer is never re-sent", () => {
     expect(transport.countOf("save:0")).toBe(2);
   });
 });
+
+
+describe("server-saved answers restored after refresh", () => {
+  it("completes without rewriting a restored answer, but persists a later edit", async () => {
+    const transport = new FakeTransport();
+    const controller = new SubmissionController(2, transport);
+    controller.restoreSavedAnswer(0, "saved-open-answer");
+    expect(controller.outcomeOf(0)?.kind).toBe("ok");
+    await controller.queueSave(1, "new-answer");
+    expect(await controller.submit()).toEqual({ kind: "done" });
+    expect(transport.log).toEqual(["save:1", "complete"]);
+    await controller.queueSave(0, "edited-open-answer");
+    expect(transport.countOf("save:0")).toBe(1);
+  });
+  it("persists an earlier answer edited after returning to it", async () => {
+    const transport = new FakeTransport();
+    const controller = new SubmissionController(2, transport);
+    const keys = ["original", "last"];
+    controller.describeAnswer = position => keys[position];
+    controller.restoreSavedAnswer(0, keys[0]);
+    await controller.queueSave(1, keys[1]);
+    keys[0] = "edited-back-navigation";
+    expect(await controller.submit()).toEqual({ kind: "done" });
+    expect(transport.log).toEqual(["save:1", "save:0", "complete"]);
+  });
+
+});

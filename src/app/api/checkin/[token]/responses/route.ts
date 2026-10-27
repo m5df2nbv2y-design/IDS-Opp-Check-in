@@ -12,9 +12,15 @@ export async function POST(
     stage?: string;
     comment?: string | null;
     closeDate?: string | null;
+    lossReason?: string | null;
+    flowVersion?: number;
   } | null;
 
-  if (!body?.itemId || !body?.stage) {
+  if (!body || typeof body.itemId !== "string" || typeof body.stage !== "string" ||
+      (body.comment != null && typeof body.comment !== "string") ||
+      (body.closeDate != null && typeof body.closeDate !== "string") ||
+      (body.lossReason != null && typeof body.lossReason !== "string") ||
+      (body.flowVersion != null && body.flowVersion !== 2)) {
     return NextResponse.json({ error: "itemId and stage are required." }, { status: 400 });
   }
 
@@ -24,6 +30,8 @@ export async function POST(
     stage: body.stage,
     comment: body.comment ?? null,
     closeDate: body.closeDate ?? null,
+    lossReason: body.lossReason ?? null,
+    flowVersion: body.flowVersion,
   });
 
   if (result.ok) {
@@ -35,6 +43,8 @@ export async function POST(
     ALREADY_COMPLETED: 409,
     INVALID_STAGE: 400,
     REASON_REQUIRED: 400,
+    INVALID_CLOSE_DATE: 400,
+    INVALID_LOSS_REASON: 400,
   }[result.reason];
   return NextResponse.json({ ok: false, reason: result.reason }, { status });
 }

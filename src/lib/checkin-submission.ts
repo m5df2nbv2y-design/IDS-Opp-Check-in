@@ -71,6 +71,15 @@ export class SubmissionController {
     this.sequence = Array.from({ length: itemCount }, () => 0);
   }
 
+  /** Seed only answers already confirmed by the token-authorized server read.
+   * This avoids rewriting earlier projects after a refresh. Subsequent edits
+   * have a different key and still go through the normal save path.
+   */
+  restoreSavedAnswer(position: number, answerKey: string): void {
+    this.outcomes[position] = { kind: "ok" };
+    this.storedKey[position] = answerKey;
+  }
+
   /** Milliseconds still to wait, or 0. An elapsed deadline imposes nothing. */
   remainingWait(): number {
     if (this.deadline === null) return 0;
@@ -165,12 +174,25 @@ export class SubmissionController {
   /** Optional: lets the controller read the current answer key for retries. */
   describeAnswer?: (position: number) => string;
 
+  /**
+   * The last recorded outcome for one position, or null if it has not settled.
+   *
+   * The save-before-advance flow needs this: it may only move on once THIS
+   * answer is genuinely stored, so it has to ask rather than infer.
+   */
+  outcomeOf(position: number): RequestOutcome | null {
+    return this.outcomes[position] ?? null;
+  }
+
   /** Positions whose current answer is not confirmed stored on the server. */
   private unsavedPositions(): number[] {
     const unsaved: number[] = [];
     for (let position = 0; position < this.itemCount; position += 1) {
       const outcome = this.outcomes[position];
-      if (outcome === null || isUnsaved(outcome)) unsaved.push(position);
+      const edited = this.storedKey[position] !== null &&
+        this.describeAnswer !== undefined &&
+        this.storedKey[position] !== this.describeAnswer(position);
+      if (outcome === null || isUnsaved(outcome) || edited) unsaved.push(position);
     }
     return unsaved;
   }

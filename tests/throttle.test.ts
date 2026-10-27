@@ -222,10 +222,24 @@ describe("the recipient flow keeps its throttle guarantees", () => {
     // executable tests in checkin-submission.test.ts instead of by matching
     // source text here.
     expect(flow).toContain("SubmissionController");
-    expect(flow).toContain("getController().submit()");
-    expect(flow).toContain("getController().queueSave(index, answerKeyAt(index))");
+    // Saves and completion both go through the controller rather than calling
+    // fetch inline and collapsing the result.
+    expect(flow).toContain("controller.queueSave(index, answerKeyAt(index))");
+    expect(flow).toContain("controller.submit()");
     // The key is what lets an unchanged, already-stored answer be skipped.
     expect(flow).toContain("function answerKeyAt");
+    // Save-before-advance: the flow asks whether THIS answer actually landed.
+    expect(flow).toContain("controller.outcomeOf(index)");
+  });
+
+  it("never receives the opportunity value or the stored Salesforce stage", () => {
+    // A Client Response V2 product decision: those are administration data and
+    // must not reach the recipient's screen or payload. Asserted on the source
+    // because the component cannot display what it is never given.
+    expect(flow).not.toMatch(/\bformatAmount\b/);
+    expect(flow).not.toMatch(/\bamount\b/);
+    expect(flow).not.toMatch(/currentStage/);
+    expect(flow).not.toMatch(/stageLabel/);
   });
 
   it("tells the truth about unsaved answers only when they are unsaved", () => {

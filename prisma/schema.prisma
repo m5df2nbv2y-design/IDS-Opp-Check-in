@@ -102,6 +102,8 @@ model Opportunity {
   resolutionReason String?
   salesforceUrl   String
   closeDate       DateTime?
+  /// Original Salesforce CreatedDate, never the local cache timestamp.
+  salesforceCreatedAt DateTime?
   /// False once the opportunity leaves the open set in Salesforce. Closed
   /// opportunities are kept, never deleted, so past campaigns survive.
   isOpen          Boolean @default(true)
@@ -206,6 +208,7 @@ model CheckInOpportunity {
   previousStatus String
   updatedStatus  String?
   repComment     String?
+  lossReason     String?
   submittedAt    DateTime?
 
   /// Close date modelling for the confirmed future write scope
