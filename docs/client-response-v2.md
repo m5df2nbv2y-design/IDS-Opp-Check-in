@@ -67,3 +67,12 @@ fields, and derives the saved loss-reason label from provider-validated metadata
 No live metadata call, production migration/refresh, email delivery, or Salesforce
 write is part of local verification. The existing legacy API contract remains
 supported; local mock options are explicitly fictional.
+
+## Recipient branding
+
+The recipient-only layout and development preview share the existing IDS logo
+and Josh's approved Harvest Park portrait. The original photograph is untouched;
+the committed WebP is 1200 × 3589 pixels (88,314 bytes). White response panels keep
+text and controls legible, and the background is decorative for screen readers.
+No sign-in, admin, token, provider or authorization behavior is changed by this
+presentation layer.

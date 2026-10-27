@@ -246,7 +246,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
   }
 
   if (done) return (
-    <main className="mx-auto max-w-lg px-5 py-16">
+    <main className="ids-recipient-message mx-auto max-w-lg px-6 py-9">
       <p className="text-sm font-semibold text-brand">CHECK-IN COMPLETE</p>
       <h1 className="mt-3 text-3xl font-semibold text-ink">Thank you, {firstName(contactName)}.</h1>
       <p className="mt-3 text-body">{preview ? "Preview complete. No answers were sent or saved." : "Your updates have been recorded. You can close this tab."}</p>
@@ -261,16 +261,16 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
     </main>
   );
 
-  return <div className="flex min-h-dvh flex-col">
-    <header className="border-b border-line bg-surface">
-      <div className="mx-auto flex max-w-lg items-center justify-between px-5 py-4 text-sm text-muted">
+  return <div className="ids-recipient-flow flex flex-col">
+    <header className="mx-auto w-full max-w-lg px-5">
+      <div className="ids-recipient-panel mx-auto flex items-center justify-between px-5 py-3 text-sm text-muted">
         <button type="button" disabled={!index || busy} onClick={() => goTo(index - 1)} className="font-semibold disabled:invisible">← Back</button>
         <span>Project {index + 1} of {items.length}</span>
       </div>
     </header>
-    <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-7">
+    <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-3">
       {preview ? <p className="mb-5 rounded-xl bg-brand-soft px-4 py-3 text-sm text-brand">Fictional preview · nothing is saved · sample loss reasons</p> : null}
-      <article key={item.id}>
+      <article key={item.id} className="ids-recipient-panel p-5 sm:p-7">
         <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-ink">{item.projectName}</h1>
         <p className="mt-2 text-sm text-muted">Opportunity created {item.createdDate ? formatShortDate(item.createdDate) : "— date unavailable"}</p>
         <fieldset disabled={busy} className="mt-8">

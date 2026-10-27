@@ -84,7 +84,7 @@ function LinkProblem({ reason }: { reason: InviteRejection }) {
 
 function Message({ title, body }: { title: string; body: string }) {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-lg flex-col justify-center px-6 py-14">
+    <main className="ids-recipient-message mx-auto flex max-w-lg flex-col justify-center px-6 py-14">
       <p className="text-[13px] font-bold uppercase tracking-[0.16em] text-brand">
         {brand.companyName}
       </p>
