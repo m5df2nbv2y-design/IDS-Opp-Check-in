@@ -118,7 +118,7 @@ body {
   inset: 0;
   background: linear-gradient(180deg, #15365e8f 0%, #102b4eb3 100%);
 }
-.ids-recipient-logo { filter: drop-shadow(0 1px 5px #ffffffb0); }
+.ids-recipient-logo { filter: brightness(0) invert(1) drop-shadow(0 1px 0 #102b4e80); }
 .ids-recipient-flow { min-height: calc(100dvh - 132px); }
 .ids-recipient-panel { background: transparent; }
 .ids-recipient-message {
@@ -131,3 +131,6 @@ body {
 .ids-recipient select option { background: #15365e; color: white; }
 .ids-recipient button:focus-visible, .ids-recipient input:focus-visible,
 .ids-recipient select:focus-visible { outline: 3px solid white; outline-offset: 4px; }
+
+/* Disabled actions stay opaque so the photograph never shows through them. */
+.ids-recipient button:disabled { opacity: 1; background-color: #45617f; color: #e5eefb; }

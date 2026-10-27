@@ -72,8 +72,9 @@ supported; local mock options are explicitly fictional.
 
 The recipient-only layout and development preview share the existing IDS logo
 and Josh's approved Harvest Park portrait. The original photograph is untouched;
-the committed WebP is 1200 × 3589 pixels (88,314 bytes). A full-photo blue tint keeps white text legible; the logo, text and transparent
-outlined choices sit directly over the image without white framing panels.
-Selected choices use IDS orange. The background is decorative for screen readers.
+the committed WebP is 1200 × 3589 pixels (88,314 bytes). A full-photo blue tint keeps white text legible; the logo, text and solid blue choices sit directly over the image without white
+framing panels. Selected choices use IDS orange; disabled actions remain opaque.
+The original transparent logo is served losslessly at its natural aspect ratio,
+rendered white for contrast with a crisp one-pixel shadow instead of a blurred glow. The background is decorative for screen readers.
 No sign-in, admin, token, provider or authorization behavior is changed by this
 presentation layer.
