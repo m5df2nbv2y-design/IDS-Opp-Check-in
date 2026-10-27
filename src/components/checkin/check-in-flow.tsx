@@ -289,7 +289,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
         </div> : null}
         {answer.status === "OPEN" ? <div className="mt-7">
           <label htmlFor="close-date" className="text-lg font-semibold text-ink">When do you expect this opportunity to close?</label>
-          <input id="close-date" type="date" required value={answer.closeDate} disabled={busy} onChange={(event) => update({ closeDate: event.target.value, dateConfirmed: false, stage: null })} className="mt-3 min-h-14 w-full rounded-xl border border-brand bg-transparent px-4 text-brand" />
+          <input id="close-date" type="date" required value={answer.closeDate} disabled={busy} onChange={(event) => update({ closeDate: event.target.value, dateConfirmed: false, stage: null })} className="mt-3 min-h-14 w-full rounded-xl border border-white bg-transparent px-4 text-white" />
           {!answer.dateConfirmed ? <button type="button" disabled={busy || !validResponseDate(answer.closeDate)} onClick={() => update({ dateConfirmed: true })} className="mt-3 rounded-xl border border-white/60 bg-[#173f6d] px-4 py-3 font-semibold text-white hover:bg-[#235485] disabled:opacity-40">Confirm date →</button> : null}
           {answer.dateConfirmed && validResponseDate(answer.closeDate) ? <fieldset disabled={busy} className="mt-7">
             <legend className="text-lg font-semibold text-ink">How likely is it that you win the project?</legend>
