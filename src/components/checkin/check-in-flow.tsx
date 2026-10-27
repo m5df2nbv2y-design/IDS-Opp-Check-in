@@ -55,7 +55,7 @@ function answerKey(value: Answer): string {
   return JSON.stringify([value.status, value.stage, value.closeDate, value.lossReason, value.comment.trim()]);
 }
 
-const choiceStyle = (selected: boolean) => `min-h-14 rounded-2xl border-2 px-5 py-3 text-left text-[17px] font-semibold transition-colors ${selected ? "border-brand bg-brand-soft text-brand" : "border-line bg-surface text-ink hover:border-line-strong"}`;
+const choiceStyle = (selected: boolean) => `min-h-14 rounded-2xl border-2 px-5 py-3 text-left text-[17px] font-semibold transition-colors ${selected ? "border-white bg-brand text-white" : "border-white/70 bg-transparent text-white hover:bg-white/10"}`;
 
 export function CheckInFlow({ token, contactName, items, lossReasons, preview = false }: Props) {
   const [answers, setAnswers] = useState<Answer[]>(() => items.map((item) => ({
@@ -247,10 +247,10 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
 
   if (done) return (
     <main className="ids-recipient-message mx-auto max-w-lg px-6 py-9">
-      <p className="text-sm font-semibold text-brand">CHECK-IN COMPLETE</p>
+      <p className="text-sm font-semibold text-white">CHECK-IN COMPLETE</p>
       <h1 className="mt-3 text-3xl font-semibold text-ink">Thank you, {firstName(contactName)}.</h1>
       <p className="mt-3 text-body">{preview ? "Preview complete. No answers were sent or saved." : "Your updates have been recorded. You can close this tab."}</p>
-      <ul className="mt-7 divide-y divide-line rounded-2xl border border-line bg-surface">
+      <ul className="mt-7 divide-y divide-line">
         {items.map((entry, position) => <li key={entry.id} className="px-5 py-4">
           <p className="font-semibold text-ink">{entry.projectName}</p>
           <p className="mt-1 text-sm text-muted">{answers[position].status === "CLOSED_LOST"
@@ -269,7 +269,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
       </div>
     </header>
     <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-3">
-      {preview ? <p className="mb-5 rounded-xl bg-brand-soft px-4 py-3 text-sm text-brand">Fictional preview · nothing is saved · sample loss reasons</p> : null}
+      {preview ? <p className="mb-5 text-sm text-white/85">Fictional preview · nothing is saved · sample loss reasons</p> : null}
       <article key={item.id} className="ids-recipient-panel p-5 sm:p-7">
         <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-ink">{item.projectName}</h1>
         <p className="mt-2 text-sm text-muted">Opportunity created {item.createdDate ? formatShortDate(item.createdDate) : "— date unavailable"}</p>
@@ -281,7 +281,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
         </fieldset>
         {closing ? <div className="mt-7">
           <label htmlFor="loss-reason" className="text-lg font-semibold text-ink">What is the loss reason?</label>
-          <select id="loss-reason" value={answer.lossReason} disabled={busy || !lossReasons.length} onChange={(event) => update({ lossReason: event.target.value, stage: "CLOSED_LOST" })} className="mt-3 min-h-14 w-full rounded-xl border border-line bg-surface px-4 text-ink">
+          <select id="loss-reason" value={answer.lossReason} disabled={busy || !lossReasons.length} onChange={(event) => update({ lossReason: event.target.value, stage: "CLOSED_LOST" })} className="mt-3 min-h-14 w-full rounded-xl border border-white/70 bg-transparent px-4 text-white">
             <option value="">Select a loss reason</option>
             {lossReasons.map((reason) => <option key={reason.value} value={reason.value}>{reason.label}</option>)}
           </select>
@@ -289,8 +289,8 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
         </div> : null}
         {answer.status === "OPEN" ? <div className="mt-7">
           <label htmlFor="close-date" className="text-lg font-semibold text-ink">When do you expect this opportunity to close?</label>
-          <input id="close-date" type="date" required value={answer.closeDate} disabled={busy} onChange={(event) => update({ closeDate: event.target.value, dateConfirmed: false, stage: null })} className="mt-3 min-h-14 w-full rounded-xl border border-line bg-surface px-4 text-ink" />
-          {!answer.dateConfirmed ? <button type="button" disabled={busy || !validResponseDate(answer.closeDate)} onClick={() => update({ dateConfirmed: true })} className="mt-3 font-semibold text-brand disabled:opacity-40">Confirm date →</button> : null}
+          <input id="close-date" type="date" required value={answer.closeDate} disabled={busy} onChange={(event) => update({ closeDate: event.target.value, dateConfirmed: false, stage: null })} className="mt-3 min-h-14 w-full rounded-xl border border-white/70 bg-transparent px-4 text-white" />
+          {!answer.dateConfirmed ? <button type="button" disabled={busy || !validResponseDate(answer.closeDate)} onClick={() => update({ dateConfirmed: true })} className="mt-3 font-semibold text-white underline underline-offset-4 disabled:opacity-40">Confirm date →</button> : null}
           {answer.dateConfirmed && validResponseDate(answer.closeDate) ? <fieldset disabled={busy} className="mt-7">
             <legend className="text-lg font-semibold text-ink">How likely is it that you win the project?</legend>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -300,7 +300,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
         </div> : null}
       </article>
     </main>
-    <footer className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
+    <footer className="ids-recipient-footer fixed inset-x-0 bottom-0">
       <div className="mx-auto max-w-lg px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         {error ? <p role="alert" className="mb-3 text-sm text-danger">{error}</p> : null}
         <Button size="lg" disabled={!ready || busy || waiting} onClick={handleNext}>

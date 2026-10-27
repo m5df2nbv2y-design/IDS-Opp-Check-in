@@ -16,9 +16,7 @@ export function RecipientShell({ children }: { children: ReactNode }) {
         />
       </div>
       <div className="mx-auto flex max-w-lg justify-center px-5 pb-2 pt-5">
-        <div className="rounded-2xl bg-white/95 px-5 py-3 shadow-sm">
-          <Image src="/brand/ids-orange-logo.png" alt="IDS Sculpture" width={112} height={78} />
-        </div>
+        <Image src="/brand/ids-orange-logo.png" alt="IDS Sculpture" width={148} height={103} className="ids-recipient-logo" />
       </div>
       {children}
     </div>
