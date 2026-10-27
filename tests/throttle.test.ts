@@ -223,7 +223,9 @@ describe("the recipient flow keeps its throttle guarantees", () => {
     // source text here.
     expect(flow).toContain("SubmissionController");
     expect(flow).toContain("getController().submit()");
-    expect(flow).toContain("getController().queueSave(index)");
+    expect(flow).toContain("getController().queueSave(index, answerKeyAt(index))");
+    // The key is what lets an unchanged, already-stored answer be skipped.
+    expect(flow).toContain("function answerKeyAt");
   });
 
   it("tells the truth about unsaved answers only when they are unsaved", () => {

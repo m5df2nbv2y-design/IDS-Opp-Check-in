@@ -47,6 +47,15 @@ export type SubmitResult =
 
 export class SubmissionController {
   private readonly outcomes: (RequestOutcome | null)[];
+  /**
+   * For each position, the answer that is currently stored on the server.
+   *
+   * Lets a repeat save be skipped entirely. Without it, tapping SUBMIT again
+   * after a COMPLETION-only throttle re-sent the final item's answer, because
+   * the component queues a save for the current item on every tap. That is a
+   * wasted write into a limiter that has just asked us to slow down.
+   */
+  private readonly storedKey: (string | null)[];
   private readonly chains: Promise<void>[];
   private readonly sequence: number[];
   /** Absolute epoch-ms. Null when no limit is in force. */
@@ -57,6 +66,7 @@ export class SubmissionController {
     private readonly transport: SubmissionTransport,
   ) {
     this.outcomes = Array.from({ length: itemCount }, () => null);
+    this.storedKey = Array.from({ length: itemCount }, () => null);
     this.chains = Array.from({ length: itemCount }, () => Promise.resolve());
     this.sequence = Array.from({ length: itemCount }, () => 0);
   }
@@ -101,10 +111,21 @@ export class SubmissionController {
    * Serialised per item so two writes for the same answer are never in flight
    * together and a slow earlier write cannot land after a newer edit.
    */
-  queueSave(position: number): Promise<void> {
+  queueSave(position: number, answerKey?: string): Promise<void> {
+    // Already stored, and unchanged since: there is nothing to send. An edit
+    // produces a different key, so a genuine change is never skipped.
+    if (
+      answerKey !== undefined &&
+      this.storedKey[position] === answerKey &&
+      this.outcomes[position]?.kind === "ok"
+    ) {
+      return this.chains[position];
+    }
+
     const seq = (this.sequence[position] ?? 0) + 1;
     this.sequence[position] = seq;
     this.outcomes[position] = null;
+    this.storedKey[position] = null;
 
     const chained = this.chains[position]
       .catch(() => undefined)
@@ -124,11 +145,25 @@ export class SubmissionController {
         // item's state — but its throttle was already noted above.
         if (this.sequence[position] !== seq) return;
         this.outcomes[position] = outcome;
+        this.storedKey[position] = outcome.kind === "ok" ? (answerKey ?? null) : null;
       });
 
     this.chains[position] = chained;
     return chained;
   }
+
+  /**
+   * The key a retry should use for this position.
+   *
+   * Supplied by the caller through `describeAnswer` so a retry always sends —
+   * and records — the answer as it stands NOW, not a stale snapshot.
+   */
+  private pendingKey(position: number): string | undefined {
+    return this.describeAnswer ? this.describeAnswer(position) : undefined;
+  }
+
+  /** Optional: lets the controller read the current answer key for retries. */
+  describeAnswer?: (position: number) => string;
 
   /** Positions whose current answer is not confirmed stored on the server. */
   private unsavedPositions(): number[] {
@@ -166,7 +201,7 @@ export class SubmissionController {
     // nothing was throttled, so a throttled item was never retried at all.
     let unsaved = this.unsavedPositions();
     if (unsaved.length > 0) {
-      await Promise.all(unsaved.map((position) => this.queueSave(position)));
+      await Promise.all(unsaved.map((position) => this.queueSave(position, this.pendingKey(position))));
       await this.settle();
       unsaved = this.unsavedPositions();
     }

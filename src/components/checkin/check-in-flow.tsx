@@ -142,6 +142,12 @@ export function CheckInFlow({ token, contactName, items }: Props) {
 
   // Declared as plain functions so the ref is read when a request is actually
   // sent, never during render.
+  /** Identifies an answer's VALUE, so an unchanged one is never re-sent. */
+  function answerKeyAt(position: number): string {
+    const a = answersRef.current[position];
+    return `${a.stage ?? ""}|${a.comment.trim()}|${a.closeDate}`;
+  }
+
   function sendAnswerAt(position: number): Promise<RequestOutcome> {
     return postAnswer(position, answersRef.current[position]);
   }
@@ -163,6 +169,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
         sendAnswer: sendAnswerAt,
         sendCompletion,
       });
+      controllerRef.current.describeAnswer = answerKeyAt;
     }
     return controllerRef.current;
   }
@@ -178,7 +185,7 @@ export function CheckInFlow({ token, contactName, items }: Props) {
   async function handleNext() {
     if (!answer.stage || reasonMissing || waiting) return;
 
-    void getController().queueSave(index);
+    void getController().queueSave(index, answerKeyAt(index));
 
     if (!isLast) {
       goTo(index + 1);

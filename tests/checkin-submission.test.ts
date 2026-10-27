@@ -415,3 +415,65 @@ describe("PROOF — the previous control flow could not recover", () => {
     expect(transport.countOf("complete")).toBe(1);
   });
 });
+
+/**
+ * Found by driving the real browser, not by these tests.
+ *
+ * The component queues a save for the CURRENT item on every tap of the action
+ * button — including the tap that retries a throttled COMPLETION. So after a
+ * completion-only 429, submitting again re-sent the final item's answer even
+ * though it was already stored and unchanged: a wasted write into a limiter
+ * that had just asked us to slow down.
+ *
+ * These tests drive the controller the way the component does — queueSave then
+ * submit — which is what the earlier tests missed by calling submit() alone.
+ */
+describe("REGRESSION — an unchanged stored answer is never re-sent", () => {
+  it("does not resave the current item when only completion was throttled", async () => {
+    const transport = new FakeTransport();
+    const controller = new SubmissionController(2, transport);
+    controller.describeAnswer = (p) => `answer-${p}`;
+    transport.completionScript = ["throttle", "ok"];
+
+    await controller.queueSave(0, "answer-0");
+    await controller.queueSave(1, "answer-1");
+
+    const held = await controller.submit();
+    expect(held.kind).toBe("waiting");
+    if (held.kind === "waiting") expect(held.pendingAnswers).toBe(false);
+
+    transport.advance(10);
+    // The retry tap, exactly as the component performs it.
+    await controller.queueSave(1, "answer-1");
+    expect(await controller.submit()).toEqual({ kind: "done" });
+
+    expect(transport.countOf("save:0")).toBe(1);
+    expect(transport.countOf("save:1")).toBe(1);
+    expect(transport.countOf("complete")).toBe(2);
+    // No save may sit between the two completion attempts.
+    expect(transport.log).toEqual(["save:0", "save:1", "complete", "complete"]);
+  });
+
+  it("DOES resend when the answer actually changed", async () => {
+    const transport = new FakeTransport();
+    const controller = new SubmissionController(1, transport);
+
+    await controller.queueSave(0, "first");
+    await controller.queueSave(0, "edited");
+
+    expect(transport.countOf("save:0")).toBe(2);
+    expect(await controller.submit()).toEqual({ kind: "done" });
+  });
+
+  it("still resends when the previous attempt did not succeed", async () => {
+    const transport = new FakeTransport();
+    const controller = new SubmissionController(1, transport);
+    transport.scriptAnswer(0, "fail", "ok");
+
+    // Same key both times, but the first attempt failed — so it is not stored
+    // and the guard must not suppress the retry.
+    await controller.queueSave(0, "same");
+    await controller.queueSave(0, "same");
+    expect(transport.countOf("save:0")).toBe(2);
+  });
+});
