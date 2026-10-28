@@ -1,0 +1,4 @@
+ALTER TABLE "Campaign"
+ADD COLUMN "emailSubject" TEXT,
+ADD COLUMN "emailBody" TEXT,
+ADD COLUMN "emailRevision" INTEGER NOT NULL DEFAULT 0;

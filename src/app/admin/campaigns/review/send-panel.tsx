@@ -23,15 +23,20 @@ export function SendPanel({
   summary,
   emailProviderLabel,
   simulated,
+  campaignId,
+  emailRevision,
 }: {
   summary: DraftSummary;
   emailProviderLabel: string;
   simulated: boolean;
+  campaignId: string;
+  emailRevision: number;
 }) {
   const { pending: selectionPending, revision, setSending } = useReviewSelectionState();
   const [confirmedRevision, setConfirmedRevision] = useState<number | null>(null);
   const confirmed = confirmedRevision === revision;
   const [pending, startTransition] = useTransition();
+  const [error, setError] = useState("");
 
   return (
     <Card className="border-brand/30 px-6 py-5">
@@ -56,7 +61,7 @@ export function SendPanel({
         <span>
           I have reviewed the {summary.selectedContacts}{" "}
           {pluralize(summary.selectedContacts, "recipient")} above and confirm these are
-          the people who should be contacted.
+          the people who should be contacted, using the email preview above.
         </span>
       </label>
 
@@ -65,9 +70,11 @@ export function SendPanel({
           variant="primary"
           disabled={!confirmed || pending || selectionPending}
           onClick={() => startTransition(async () => {
+            setError("");
             setSending(true);
             try {
-              await sendDraftAction();
+              const result = await sendDraftAction(campaignId, emailRevision);
+              if (result?.error) { setError(result.error); setConfirmedRevision(null); }
             } finally {
               setSending(false);
             }
@@ -75,9 +82,11 @@ export function SendPanel({
         >
           {pending
             ? "Sending…"
-            : `Send ${summary.selectedOpportunities} ${pluralize(summary.selectedOpportunities, "check-in")} to ${summary.selectedContacts} ${pluralize(summary.selectedContacts, "contact")}`}
+            : `Confirm & send ${summary.selectedOpportunities} ${pluralize(summary.selectedOpportunities, "check-in")} to ${summary.selectedContacts} ${pluralize(summary.selectedContacts, "contact")}`}
         </Button>
       </div>
+
+      {error ? <p role="alert" className="mt-3 text-sm text-danger">{error}</p> : null}
 
       <p className="mt-3 text-[13px] text-muted">
         Each selection is re-resolved against Salesforce data at this moment. Anything

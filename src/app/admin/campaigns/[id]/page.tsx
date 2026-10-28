@@ -41,6 +41,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ButtonLink href={`/admin/campaigns/${summary.id}/receipt`} variant="secondary">View sending results</ButtonLink>
           {failed.length > 0 ? (
             <ActionButton
               action={retrySyncAction.bind(null, summary.id)}
