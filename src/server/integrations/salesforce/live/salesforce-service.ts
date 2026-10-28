@@ -63,7 +63,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * standard AccountId and OpportunityContactRole are the real model.
  */
 const OPEN_OPPORTUNITY_SOQL = `
-  SELECT Id, Name, Amount, StageName, CloseDate, CreatedDate, OwnerId,
+  SELECT Id, Name, Amount, StageName, CloseDate, CreatedDate, LastModifiedDate, OwnerId,
          AccountId, Account.Name,
          (SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)
   FROM Opportunity
@@ -401,6 +401,7 @@ export class LiveSalesforceService implements SalesforceService {
       stage,
       closeDate: row.CloseDate ? new Date(row.CloseDate) : null,
       createdDate: row.CreatedDate ? new Date(row.CreatedDate) : null,
+      lastModifiedDate: row.LastModifiedDate ? new Date(row.LastModifiedDate) : null,
       url: `${instanceUrl}/lightning/r/Opportunity/${row.Id}/view`,
       ownerExternalId: row.OwnerId,
       // The partner account drives recipient resolution. Orgs that sell direct
@@ -419,6 +420,7 @@ type SalesforceOpportunityRow = {
   StageName: string;
   CloseDate: string | null;
   CreatedDate?: string;
+  LastModifiedDate?: string;
   OwnerId: string;
   AccountId: string | null;
   Account: { Name: string } | null;

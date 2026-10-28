@@ -222,6 +222,7 @@ export class MockSalesforceService implements SalesforceService {
     amount: number;
     stageName: string;
     closeDate: Date | null;
+    lastModifiedAt?: Date | null;
     contactExternalId: string | null;
   }): SalesforceOpportunity | null {
     const stage = stageFromSalesforce(record.stageName);
@@ -235,6 +236,9 @@ export class MockSalesforceService implements SalesforceService {
       amount: record.amount,
       stage,
       closeDate: record.closeDate,
+      // The mock org keeps its own modification stamp, surfaced like the live
+      // LastModifiedDate so the dashboard has something real to order by.
+      lastModifiedDate: record.lastModifiedAt ?? null,
       url: `${MOCK_INSTANCE_URL}/lightning/r/Opportunity/${record.externalId}/view`,
       ownerExternalId: record.ownerExternalId,
       accountExternalId: record.accountExternalId,

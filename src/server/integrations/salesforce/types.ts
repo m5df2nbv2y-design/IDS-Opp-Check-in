@@ -54,6 +54,8 @@ export type SalesforceOpportunity = {
   stage: OpportunityStage;
   closeDate: Date | null;
   createdDate?: Date | null;
+  /** Salesforce Opportunity.LastModifiedDate. Null when unknown. */
+  lastModifiedDate?: Date | null;
   url: string;
   /** OwnerId — the internal IDS rep. */
   ownerExternalId: string;

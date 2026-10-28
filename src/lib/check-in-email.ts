@@ -2,6 +2,7 @@
 import { brand } from "@/lib/brand";
 import { firstName, pluralize } from "@/lib/format";
 import { STANDARD_CHECK_IN_BODY, STANDARD_CHECK_IN_SUBJECT, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
+import { renderEmailHtml, toPlainText, type EmailStyle } from "@/lib/email-markup";
 import type { OutboundEmail } from "@/lib/email-message";
 
 type CheckInEmailInput = {
@@ -36,7 +37,7 @@ export function buildInviteEmail(input: CheckInEmailInput): OutboundEmail {
     text: [
       `Hi ${name},`,
       "",
-      body,
+      toPlainText(body),
       "",
       `Please take a quick moment to update their current status — ${opportunities}, about 60 seconds.`,
       "",
@@ -49,7 +50,7 @@ export function buildInviteEmail(input: CheckInEmailInput): OutboundEmail {
       preheader: `${opportunities} to review — about 60 seconds.`,
       heading: `Hi ${escapeHtml(name)},`,
       paragraphs: [
-        ...body.split(/\n\s*\n/).map((paragraph) => escapeHtml(paragraph).replace(/\n/g, "<br />")),
+        ...renderEmailHtml(body, EMAIL_BODY_STYLE),
         `Please take a quick moment to update their current status — <strong>${opportunities}</strong>. It should take about 60 seconds.`,
       ],
       buttonLabel: "UPDATE MY OPPORTUNITIES",
@@ -105,13 +106,25 @@ type EmailLayout = {
   footer: string;
 };
 
+/** Inline styles for a custom body's formatting, matching the surrounding copy. */
+const EMAIL_BODY_STYLE: EmailStyle = {
+  paragraph: `margin:0 0 16px;font-size:16px;line-height:26px;color:${brand.colors.body};`,
+  list: `margin:0 0 16px;padding-left:22px;font-size:16px;line-height:26px;color:${brand.colors.body};`,
+  item: "margin:0 0 6px;",
+  link: `color:${brand.colors.primary};`,
+};
+
+/** An entry that is already a block element must not be wrapped again. */
+const ALREADY_A_BLOCK = /^<(p|ul|ol)[\s>]/i;
+
 /** Table-based layout, inline styles — the only thing email clients agree on. */
 function renderEmail(layout: EmailLayout): string {
   const c = brand.colors;
   const paragraphs = layout.paragraphs
-    .map(
-      (text) =>
-        `<p style="margin:0 0 16px;font-size:16px;line-height:26px;color:${c.body};">${text}</p>`,
+    .map((text) =>
+      ALREADY_A_BLOCK.test(text)
+        ? text
+        : `<p style="margin:0 0 16px;font-size:16px;line-height:26px;color:${c.body};">${text}</p>`,
     )
     .join("");
 

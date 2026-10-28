@@ -140,6 +140,14 @@ function OpportunityRow({ row }: { row: DraftOpportunityRow }) {
           </span>
           <span className="tabular-nums">{formatAmount(row.amount)}</span>
           {row.closeDate ? <span>closes {formatDate(row.closeDate)}</span> : null}
+          {/*
+            Salesforce's own modification stamp — deliberately NOT our import
+            time or row write time, and not described as customer activity: a
+            Salesforce change may well have come from an integration.
+          */}
+          <span title={row.lastModifiedAt ? `Salesforce last modified ${new Date(row.lastModifiedAt).toISOString()}` : "No Salesforce modification date has been imported for this opportunity"}>
+            {row.lastModifiedAt ? `SF modified ${formatDate(row.lastModifiedAt)}` : "SF modified — unknown"}
+          </span>
           <span>IDS: {row.ownerName}</span>
           <a
             href={row.salesforceUrl}

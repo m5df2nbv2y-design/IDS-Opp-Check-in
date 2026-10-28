@@ -135,6 +135,7 @@ export async function refreshCatalogFromSalesforce(
       salesforceUrl: opportunity.url,
       closeDate: opportunity.closeDate,
       salesforceCreatedAt: opportunity.createdDate ?? null,
+      salesforceLastModifiedAt: opportunity.lastModifiedDate ?? null,
       isOpen: true,
       lastSyncedAt: new Date(),
     };

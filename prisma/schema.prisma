@@ -104,6 +104,10 @@ model Opportunity {
   closeDate       DateTime?
   /// Original Salesforce CreatedDate, never the local cache timestamp.
   salesforceCreatedAt DateTime?
+  /// Salesforce Opportunity.LastModifiedDate. Distinct from lastSyncedAt (our
+  /// import time) and updatedAt (our row's write time). Null when the source
+  /// value is unknown — never substituted from a local timestamp.
+  salesforceLastModifiedAt DateTime?
   /// False once the opportunity leaves the open set in Salesforce. Closed
   /// opportunities are kept, never deleted, so past campaigns survive.
   isOpen          Boolean @default(true)
