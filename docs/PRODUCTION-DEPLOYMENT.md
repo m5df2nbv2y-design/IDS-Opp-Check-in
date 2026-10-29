@@ -73,7 +73,6 @@ refused at startup.
    or rename it:
    - Display name: `Opportunity Check-In Administrator`
    - Value: `Admin` ← this exact string goes in `AUTH_REQUIRED_APP_ROLE`
-   - Role ID: `290156f4-0248-4a0f-a2f8-3ead8f59fda7`
    - Allowed member types: Users/Groups
 6. **Enterprise application → Users and groups** — assignments ALREADY EXIST
    and are verified for Josh Young, Jason Macmillan, John Ryan, Joel Sumearll
