@@ -45,7 +45,7 @@ and names every problem at once.
 | `AUTH_MICROSOFT_ENTRA_ID_ID` | Application (client) ID. |
 | `AUTH_MICROSOFT_ENTRA_ID_SECRET` | Client secret **value**, not the secret ID. |
 | `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | Set to the IDS tenant to prevent multi-tenant sign-in. |
-| `AUTH_REQUIRED_APP_ROLE` | `SalesOps.Admin`. Without this (or the group fallback) nobody is admitted. |
+| `AUTH_REQUIRED_APP_ROLE` | `Admin` — the role's display name is `Opportunity Check-In Administrator` and its **value** is `Admin`. Without this (or the group fallback) nobody is admitted. |
 | `APP_BASE_URL` | Public origin. A localhost value is refused — customers open these links. |
 | `SALESFORCE_PROVIDER` | Must be `salesforce`. The mock org is refused in production. |
 | `SF_CLIENT_ID` / `SF_CLIENT_SECRET` | External Client App Consumer Key / Secret. |
@@ -69,12 +69,20 @@ refused at startup.
    `https://<your-host>/api/auth/callback/microsoft-entra-id`
 4. **API permissions** → `openid`, `profile`, `email` (delegated). Grant admin
    consent.
-5. **App roles** → create a role:
-   - Display name: `Sales Operations Admin`
-   - Value: `SalesOps.Admin` ← this exact string goes in `AUTH_REQUIRED_APP_ROLE`
+5. **App roles** — this role ALREADY EXISTS in the IDS tenant. Do not create
+   or rename it:
+   - Display name: `Opportunity Check-In Administrator`
+   - Value: `Admin` ← this exact string goes in `AUTH_REQUIRED_APP_ROLE`
+   - Role ID: `290156f4-0248-4a0f-a2f8-3ead8f59fda7`
    - Allowed member types: Users/Groups
-6. **Enterprise application → Users and groups** → assign the Sales Operations
-   security group to that App Role.
+6. **Enterprise application → Users and groups** — assignments ALREADY EXIST
+   and are verified for Josh Young, Jason Macmillan, John Ryan, Joel Sumearll
+   and Ian Glas. **Do not recreate or duplicate them.**
+
+   > An earlier draft of this guide proposed a role valued `SalesOps.Admin`.
+   > That role was never created. Setting `AUTH_REQUIRED_APP_ROLE` to it locks
+   > every administrator out, and because authorization fails closed the symptom
+   > is "nobody is authorized" rather than an error naming the mismatch.
 
 App Roles are used rather than raw group claims on purpose: a user who belongs
 to more than 200 groups triggers Entra's "groups overage", which silently drops
@@ -228,7 +236,7 @@ substitute for scoping the variables correctly.
 | `AUTH_MICROSOFT_ENTRA_ID_ID` | ✅ | separate app registration, or omit | omit | production-only secret |
 | `AUTH_MICROSOFT_ENTRA_ID_SECRET` | ✅ | separate, or omit | omit | production-only secret |
 | `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | ✅ | separate, or omit | omit | non-secret configuration |
-| `AUTH_REQUIRED_APP_ROLE` | `SalesOps.Admin` | same | omit | non-secret configuration |
+| `AUTH_REQUIRED_APP_ROLE` | `Admin` | same | omit | non-secret configuration |
 | `RESEND_API_KEY` | only when email is commissioned | **omit** | local `.env` | production-only secret |
 | `EMAIL_PROVIDER` | `mock` for launch | `mock` | `mock` | non-secret configuration |
 | `EMAIL_FROM_ADDRESS` | verified domain | anything | local | non-secret configuration |

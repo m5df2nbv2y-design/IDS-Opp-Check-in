@@ -38,6 +38,15 @@ export default defineConfig({
     // Files within a run share the one schema, so they run in sequence and a
     // fixture reset cannot race another file's.
     fileParallelism: false,
+    // Several suites reset the schema and re-import the mock catalog in a
+    // beforeEach. That is a lot of database work, and on a loaded machine it
+    // comfortably exceeds Vitest's 10s hookTimeout default — which surfaces as
+    // whole files failing with "Hook timed out", in a different file each run,
+    // and reads exactly like flaky code rather than a tight limit. These
+    // ceilings are generous on purpose: a genuine hang still fails, but
+    // ordinary contention no longer does.
+    testTimeout: 60_000,
+    hookTimeout: 120_000,
     env: {
       DATABASE_URL: testDatabaseUrl,
       APP_BASE_URL: "https://checkin.test",
