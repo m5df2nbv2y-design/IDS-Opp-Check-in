@@ -1,4 +1,5 @@
 import { getSalesforceService } from "@/server/integrations/salesforce";
+import { headers } from "next/headers";
 import type { Metadata } from "next";
 import { CheckInFlow } from "@/components/checkin/check-in-flow";
 import { brand } from "@/lib/brand";
@@ -8,6 +9,7 @@ import {
   resolveCheckInToken,
   type InviteRejection,
 } from "@/server/services/response-service";
+import { countUnresolved, rateLimit, reportRateLimit } from "@/server/security/rate-limit";
 
 export const metadata: Metadata = {
   title: `${brand.companyName} Opportunity Check-In`,
@@ -21,9 +23,21 @@ export const metadata: Metadata = {
  */
 export default async function CheckInPage({ params }: PageProps<"/checkin/[token]">) {
   const { token } = await params;
+
+  // A page cannot usefully answer 429: the recipient is looking at a browser
+  // window, not reading a status code. So this class is counted and reported,
+  // and a ceiling here does not refuse the render. Volumetric abuse of the
+  // page belongs to the coarse edge cap (SEC-001 layer 1, still open), which
+  // can reject before any of this runs.
+  const limit = await rateLimit("page", await headers(), token);
+  reportRateLimit(limit);
+
   const resolved = await resolveCheckInToken(token);
 
-  if (!resolved.ok) return <LinkProblem reason={resolved.reason} />;
+  if (!resolved.ok) {
+    if (resolved.reason === "NOT_FOUND") await countUnresolved(await headers());
+    return <LinkProblem reason={resolved.reason} />;
+  }
 
   const { session } = resolved;
   await markCheckInOpened(session.recipientId);
