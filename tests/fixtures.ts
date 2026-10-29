@@ -17,6 +17,10 @@ export async function resetDatabase() {
   await prisma.externalContact.deleteMany();
   await prisma.account.deleteMany();
   await prisma.salesRep.deleteMany();
+  // Request counters are not campaign data, but they outlive a test if not
+  // cleared, and a leftover count would make the next test's limit arrive
+  // early — for a reason nothing in that test mentions.
+  await prisma.rateLimitCounter.deleteMany();
   await new MockSalesforceService().resetOrg();
 }
 

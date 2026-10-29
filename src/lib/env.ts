@@ -61,6 +61,19 @@ export const env = {
     password: process.env.SF_PASSWORD ?? "",
   },
 
+  /**
+   * SEC-001 request limits on the public check-in routes.
+   *
+   *   "count"   (default) observe and record, never return 429
+   *   "enforce" actually refuse once a ceiling is passed
+   *   "off"     do not count at all
+   *
+   * It defaults to counting rather than enforcing on purpose: the limiter can
+   * then be deployed and watched against real traffic before it is allowed to
+   * turn a customer away mid-check-in.
+   */
+  rateLimitMode: str("RATE_LIMIT_MODE", "count"),
+
   emailReplyTo: process.env.EMAIL_REPLY_TO ?? "",
   resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? "",
   resendApiKey: process.env.RESEND_API_KEY ?? "",

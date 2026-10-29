@@ -500,3 +500,25 @@ model MockSalesforceOpportunity {
   @@index([ownerExternalId])
   @@index([accountExternalId])
 }
+
+/// One fixed-window request counter, shared by every serverless instance.
+///
+/// A process-local map is not a limiter: the application runs as several
+/// instances in several regions, so each would keep its own count and the
+/// effective ceiling would be the limit multiplied by however many instances
+/// happen to be warm. The counter therefore lives in the one place all of them
+/// already agree on.
+///
+/// `key` is deliberately opaque and derived — a request class plus the client
+/// IP, plus for a resolved recipient a TRUNCATED token digest. A raw check-in
+/// token must never appear here: this is durable state, and ADR-005 forbids
+/// persisting the bearer credential anywhere but the recipient's hash.
+model RateLimitCounter {
+  key       String   @id
+  count     Int      @default(0)
+  /// End of the current window. A row whose window has passed is reused in
+  /// place rather than deleted, so a busy key does not churn rows.
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
