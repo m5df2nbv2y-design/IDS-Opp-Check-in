@@ -183,8 +183,10 @@ export class MockSalesforceService implements SalesforceService {
   }
 
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    // Stage only, mirroring the live provider's confirmed write scope.
     await this.updateOpportunityStatus(update.externalId, update.stage);
+    if (update.closeDate) await prisma.mockSalesforceOpportunity.update({
+      where: { externalId: update.externalId }, data: { closeDate: new Date(update.closeDate) },
+    });
   }
 
   private async requireRecord(externalId: string) {

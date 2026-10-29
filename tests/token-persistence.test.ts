@@ -108,7 +108,7 @@ describe("the bearer token is never persisted by a real provider", () => {
       "fetch",
       vi.fn(async (_url: string, init: { body: string }) => {
         sent.push(JSON.parse(init.body).html);
-        return new Response(JSON.stringify({ id: "stub" }), { status: 200 });
+        return new Response(JSON.stringify({ id: `stub-${sent.length}` }), { status: 200 });
       }),
     );
 
@@ -143,7 +143,7 @@ describe("the bearer token is never persisted by a real provider", () => {
       "fetch",
       vi.fn(async (_url: string, init: { body: string }) => {
         sent.push(JSON.parse(init.body).html);
-        return new Response(JSON.stringify({ id: "stub" }), { status: 200 });
+        return new Response(JSON.stringify({ id: `stub-${sent.length}` }), { status: 200 });
       }),
     );
 
@@ -193,7 +193,7 @@ describe("the bearer token is never persisted by a real provider", () => {
       "fetch",
       vi.fn(async (_url: string, init: { body: string }) => {
         sent.push(JSON.parse(init.body).html);
-        return new Response(JSON.stringify({ id: "stub" }), { status: 200 });
+        return new Response(JSON.stringify({ id: `stub-${sent.length}` }), { status: 200 });
       }),
     );
 
@@ -222,7 +222,7 @@ describe("the bearer token is never persisted by a real provider", () => {
     vi.stubEnv("DEMO_TEST_EMAIL", "demo.person@example.com");
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ id: "stub" }), { status: 200 })),
+      vi.fn(async () => new Response(JSON.stringify({ id: crypto.randomUUID() }), { status: 200 })),
     );
 
     const campaignId = await launchCampaignFreshly();

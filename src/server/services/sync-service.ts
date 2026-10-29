@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
-import { isOpportunityStage, stageLabel } from "@/lib/stages";
+import { isClosedStage, isOpportunityStage, stageLabel } from "@/lib/stages";
 import { getSalesforceService, SalesforceSyncError } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
 
@@ -23,6 +23,7 @@ export type SyncOutcome = {
 export async function syncCampaignResponses(
   filter: { campaignId: string; recipientId?: string; itemIds?: string[] },
   actor = "system",
+  approval?: { itemId: string; revision: string },
 ): Promise<SyncOutcome> {
   const salesforce = getSalesforceService();
 
@@ -65,6 +66,7 @@ export async function syncCampaignResponses(
     }
 
     const stageChanged = nextStage !== item.previousStatus;
+    const dateChanged = !!item.updatedCloseDate && item.updatedCloseDate.getTime() !== item.previousCloseDate?.getTime();
     const label = `${item.customerName} — ${item.projectName ?? item.opportunityName}`;
 
     const auditContext = {
@@ -75,10 +77,10 @@ export async function syncCampaignResponses(
       opportunityId: item.opportunityId,
     };
 
-    // Nothing to push when the stage is unchanged — notes are not written.
-    if (!stageChanged) {
-      await prisma.checkInOpportunity.update({
-        where: { id: item.id },
+    // Nothing to push when stage and date are unchanged; notes stay local.
+    if (!stageChanged && !dateChanged) {
+      await prisma.checkInOpportunity.updateMany({
+        where: { id: item.id, updatedAt: item.updatedAt, syncStatus: { in: ["PENDING", "FAILED", "WITHHELD"] } },
         data: { syncStatus: "SKIPPED", syncedAt: new Date(), syncError: null },
       });
       await recordAudit({
@@ -94,9 +96,10 @@ export async function syncCampaignResponses(
 
     // The answer is already safely stored. Withholding the push keeps
     // Salesforce untouched while still showing exactly what WOULD be sent.
-    if (!writeEnabled) {
-      await prisma.checkInOpportunity.update({
-        where: { id: item.id },
+    const approved = approval?.itemId === item.id && approval.revision === item.updatedAt.toISOString() && !!item.recipient.completedAt;
+    if (!writeEnabled || (!salesforce.info.simulated && (!approved || isClosedStage(nextStage)))) {
+      await prisma.checkInOpportunity.updateMany({
+        where: { id: item.id, updatedAt: item.updatedAt, syncStatus: { in: ["PENDING", "FAILED", "WITHHELD"] } },
         data: { syncStatus: "WITHHELD", syncError: null },
       });
       await recordAudit({
@@ -106,19 +109,45 @@ export async function syncCampaignResponses(
         actorKind: "SYSTEM",
         fromStatus: item.previousStatus,
         toStatus: nextStage,
-        detail: "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\").",
+        detail: !writeEnabled ? "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\")." : "Individual approval is required; Closed Lost remains deferred.",
         ...auditContext,
       });
       outcome.withheld += 1;
       continue;
     }
 
+    // Claim this exact reviewed revision once. In-flight or uncertain writes are
+    // never picked up by retry-all. Approval and claim share a transaction.
+    const claimed = await prisma.$transaction(async (tx) => {
+      const result = await tx.checkInOpportunity.updateMany({
+        where: { id: item.id, updatedAt: item.updatedAt, syncStatus: { in: ["PENDING", "FAILED", "WITHHELD"] } },
+        data: { syncStatus: "SYNCING", syncAttempts: { increment: 1 } },
+      });
+      if (result.count && approved) await tx.auditEvent.create({ data: {
+        type: "WRITEBACK_APPROVED", summary: `${label} approved for Salesforce`, actor, actorKind: "ADMIN",
+        ...auditContext, fromStatus: item.previousStatus, toStatus: nextStage,
+        detail: JSON.stringify({ itemId: item.id, revision: approval!.revision, closeDate: item.updatedCloseDate?.toISOString().slice(0, 10) ?? null }),
+      } });
+      return result.count === 1;
+    });
+    if (!claimed) { outcome.skipped += 1; continue; }
+    let patchStarted = false;
     try {
-      // Stage only. The recipient's comment is stored locally and shown in the
-      // admin UI and audit trail, but is never written to Salesforce.
+      let expectedLastModified: Date | undefined;
+      if (!salesforce.info.simulated) {
+        const current = await salesforce.getOpportunity(item.opportunity.externalId);
+        if (!current || current.stage !== item.previousStatus ||
+            current.closeDate?.getTime() !== item.previousCloseDate?.getTime() || !current.lastModifiedDate) {
+          throw new SalesforceSyncError("Salesforce changed since this check-in. Review the record before proceeding.", { code: "CONFLICT", retryable: false });
+        }
+        expectedLastModified = current.lastModifiedDate;
+      }
+      patchStarted = true;
       await salesforce.applyUpdate({
         externalId: item.opportunity.externalId,
         stage: nextStage,
+        ...(dateChanged ? { closeDate: item.updatedCloseDate!.toISOString().slice(0, 10) } : {}),
+        expectedLastModified,
       });
 
       await prisma.$transaction([
@@ -128,12 +157,11 @@ export async function syncCampaignResponses(
             syncStatus: "SYNCED",
             syncedAt: new Date(),
             syncError: null,
-            syncAttempts: { increment: 1 },
           },
         }),
         prisma.opportunity.update({
           where: { id: item.opportunityId },
-          data: { currentStage: nextStage, lastSyncedAt: new Date() },
+          data: { currentStage: nextStage, ...(dateChanged ? { closeDate: item.updatedCloseDate } : {}), lastSyncedAt: new Date() },
         }),
       ]);
 
@@ -156,9 +184,9 @@ export async function syncCampaignResponses(
             ? caught.message
             : String(caught);
 
-      await prisma.checkInOpportunity.update({
-        where: { id: item.id },
-        data: { syncStatus: "FAILED", syncError: message, syncAttempts: { increment: 1 } },
+      await prisma.checkInOpportunity.updateMany({
+        where: { id: item.id, syncStatus: "SYNCING" },
+        data: { syncStatus: !salesforce.info.simulated && patchStarted && (!(caught instanceof SalesforceSyncError) || ["NETWORK", "WRITE_UNCERTAIN"].includes(caught.code)) ? "UNCERTAIN" : "FAILED", syncError: message },
       });
 
       await recordAudit({

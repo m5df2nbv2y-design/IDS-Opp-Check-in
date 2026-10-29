@@ -49,7 +49,9 @@ const SYNC_STATUS_STYLES: Record<string, { label: string; className: string }> =
   PENDING: { label: "Pending sync", className: "bg-canvas text-muted border-line-strong" },
   SYNCED: { label: "Synced", className: "bg-success-soft text-success border-success/25" },
   SKIPPED: { label: "No change", className: "bg-canvas text-muted border-line-strong" },
-  WITHHELD: { label: "Held — write-back off", className: "bg-warning-soft text-warning border-warning/25" },
+  SYNCING: { label: "Applying — do not retry", className: "bg-warning-soft text-warning" },
+  UNCERTAIN: { label: "Verify in Salesforce", className: "bg-warning-soft text-warning" },
+  WITHHELD: { label: "Held for review", className: "bg-warning-soft text-warning border-warning/25" },
   FAILED: { label: "Sync error", className: "bg-danger-soft text-danger border-danger/25" },
 };
 

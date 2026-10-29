@@ -215,7 +215,7 @@ describe("a provider failure never leaks the API key", () => {
     expect(result.ok).toBe(false);
     const message = result.ok ? "" : result.message;
     expect(message).not.toContain(secret);
-    expect(message).toContain("[redacted]");
+    expect(message).toContain("could not be confirmed");
 
     // And it must not reach the database either.
     const row = await prisma.emailMessage.findFirstOrThrow({ where: { kind: "TEST" } });

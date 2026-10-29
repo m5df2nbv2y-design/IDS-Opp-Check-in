@@ -278,6 +278,8 @@ model AuditEvent {
 
 /// Outbox. Every message the app sends, real or simulated.
 model EmailMessage {
+  requestKey String? @unique
+  providerMessageId String? @unique
   id          String    @id @default(cuid())
   provider    String
   kind        String // INVITE | REMINDER

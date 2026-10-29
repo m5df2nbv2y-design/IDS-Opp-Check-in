@@ -50,7 +50,8 @@ export function redactCheckInTokens(value: string | null | undefined): string | 
 type RecordInput = {
   message: OutboundEmail;
   info: EmailProviderInfo;
-  status: "SENT" | "FAILED";
+  status: "SENT" | "FAILED" | "PENDING";
+  requestKey?: string;
   error?: string | null;
 };
 
@@ -59,7 +60,7 @@ type RecordInput = {
  * simulated. Every provider must go through this — it is the only writer of
  * EmailMessage.
  */
-export async function recordOutboundEmail({ message, info, status, error }: RecordInput) {
+export async function recordOutboundEmail({ message, info, status, error, requestKey }: RecordInput) {
   // A simulated provider delivered nothing anywhere, so its outbox is allowed
   // to hold a working link — that is what makes the local demo demonstrable.
   const keep = info.simulated;
@@ -68,18 +69,19 @@ export async function recordOutboundEmail({ message, info, status, error }: Reco
 
   return prisma.emailMessage.create({
     data: {
+      requestKey,
       provider: info.id,
       kind: message.kind,
       toEmail: message.to.email,
       toName: message.to.name,
-      subject: message.subject,
+      subject: clean(message.subject) ?? "",
       html: clean(message.html) ?? "",
       text: clean(message.text) ?? "",
       linkUrl: clean(message.linkUrl),
       campaignId: message.campaignId ?? null,
       contactId: message.contactId ?? null,
       status,
-      error: error ?? null,
+      error: clean(error),
     },
   });
 }

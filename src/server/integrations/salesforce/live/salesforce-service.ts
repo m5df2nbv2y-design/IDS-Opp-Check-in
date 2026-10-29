@@ -1,4 +1,3 @@
-import { lossReasonOptionsFromDescribe } from "@/lib/client-response";
 import { accountTypeFromSalesforce } from "@/lib/account-types";
 import { assertLiveIntegrationAllowed } from "@/lib/deployment-environment";
 import { env } from "@/lib/env";
@@ -232,14 +231,21 @@ export class LiveSalesforceService implements SalesforceService {
   }
 
   async updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void> {
-    await this.patchOpportunity(externalId, { StageName: stageToSalesforce(stage) });
+    await this.applyUpdate({ externalId, stage });
   }
 
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    // Stage only. Notes are never written to Salesforce — see ../FIELD-MAPPING.md.
+    if (!env.salesforce.writeEnabled || update.stage === "CLOSED_LOST" || !update.expectedLastModified || !Number.isFinite(update.expectedLastModified.getTime())) {
+      throw new SalesforceSyncError("A current approved open-opportunity update and enabled write-back are required.", { code: "WRITE_REFUSED", retryable: false });
+    }
+    if (update.closeDate && (!/^\d{4}-\d{2}-\d{2}$/.test(update.closeDate) || !Number.isFinite(Date.parse(update.closeDate)) || new Date(update.closeDate).toISOString().slice(0, 10) !== update.closeDate)) {
+      throw new SalesforceSyncError("Invalid CloseDate.", { code: "WRITE_REFUSED", retryable: false });
+    }
+    // Explicit allowlist. Notes, Probability and loss reasons are never written.
     await this.patchOpportunity(update.externalId, {
       StageName: stageToSalesforce(update.stage),
-    });
+      ...(update.closeDate ? { CloseDate: update.closeDate } : {}),
+    }, update.expectedLastModified);
   }
 
   // -- transport ------------------------------------------------------------
@@ -353,20 +359,13 @@ export class LiveSalesforceService implements SalesforceService {
     return results;
   }
 
-  private lossReasonCache: { expires: number; options: { value: string; label: string }[] } | null = null;
-
   async getLossReasonOptions(): Promise<{ value: string; label: string }[]> {
-    if (this.lossReasonCache && this.lossReasonCache.expires > Date.now()) return this.lossReasonCache.options;
-    const response = await this.readWithRetry(
-      (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
-    );
-    const metadata = await response.json();
-    const options = lossReasonOptionsFromDescribe(metadata);
-    this.lossReasonCache = { expires: Date.now() + 5 * 60_000, options };
-    return options;
+    // Josh has deferred the Salesforce field and choices. No live Describe or
+    // guessed mapping is permitted until that decision is explicitly supplied.
+    return [];
   }
 
-  private async patchOpportunity(externalId: string, fields: Record<string, unknown>) {
+  private async patchOpportunity(externalId: string, fields: Record<string, unknown>, expectedLastModified?: Date) {
     // Deliberately NOT routed through readWithRetry: replaying a write is a
     // decision for the sync service, not the transport.
     const response = await this.request(
@@ -374,14 +373,14 @@ export class LiveSalesforceService implements SalesforceService {
         `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/${encodeURIComponent(externalId)}`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(expectedLastModified ? { "If-Unmodified-Since": expectedLastModified.toUTCString() } : {}) },
         body: JSON.stringify(fields),
       },
     );
 
     if (!response.ok) {
       throw new SalesforceSyncError(await describeError(response), {
-        code: "UPDATE_FAILED",
+        code: response.status === 412 ? "CONFLICT" : response.status >= 500 ? "WRITE_UNCERTAIN" : "UPDATE_FAILED",
         retryable: response.status >= 500 || response.status === 429,
       });
     }

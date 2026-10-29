@@ -36,6 +36,8 @@ export default async function OutboxMessagePage({ params }: PageProps<"/admin/ou
       </div>
 
       <p className="rounded-xl border border-line bg-surface p-4 text-sm font-semibold text-ink">{emailDeliveryLabel(email)}</p>
+      {email.providerMessageId ? <p className="text-sm text-muted">Resend receipt: <code>{email.providerMessageId}</code></p> : null}
+      {email.error ? <p className="text-sm text-danger">{email.error}</p> : null}
       {email.campaignId ? <ButtonLink href={`/admin/campaigns/${email.campaignId}/receipt`} variant="secondary" size="sm">Sending results</ButtonLink> : null}
 
       {path ? (

@@ -96,6 +96,8 @@ export type SalesforceOpportunityOutcome = {
 export type OpportunityStatusUpdate = {
   externalId: string;
   stage: OpportunityStage;
+  closeDate?: string;
+  expectedLastModified?: Date;
 };
 
 export type SalesforceProviderInfo = {

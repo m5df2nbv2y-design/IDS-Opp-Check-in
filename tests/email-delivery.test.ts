@@ -16,7 +16,7 @@ describe("honest email receipts", () => {
   it("shows failures and missing records instead of assuming a successful send", () => {
     expect(emailDeliveryLabel({ provider: "mock", status: "FAILED", deliveredAt: null })).toBe("Failed");
     expect(emailDeliveryLabel(null)).toBe("No email record");
-    expect(emailDeliveryLabel({ provider: "resend", status: "PENDING", deliveredAt: null })).toBe("Delivery not confirmed");
+    expect(emailDeliveryLabel({ provider: "resend", status: "PENDING", deliveredAt: null })).toBe("Acceptance unconfirmed — check Resend");
   });
 });
 

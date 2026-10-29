@@ -61,6 +61,8 @@ export const env = {
     password: process.env.SF_PASSWORD ?? "",
   },
 
+  emailReplyTo: process.env.EMAIL_REPLY_TO ?? "",
+  resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? "",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
 
   /**

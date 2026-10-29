@@ -16,7 +16,7 @@ import {
   refreshSmartsheetSignals,
   saveSignalDraftResponse,
 } from "@/server/services/smartsheet-signal-service";
-import { retryFailedSyncs } from "@/server/services/sync-service";
+import { syncCampaignResponses, retryFailedSyncs } from "@/server/services/sync-service";
 import { sendDemoTestEmail, type TestEmailResult } from "@/server/services/test-email-service";
 import { requireAdminActor } from "@/server/auth/require-admin";
 import { saveCampaignEmail } from "@/server/services/campaign-email-service";
@@ -165,5 +165,13 @@ export async function saveSignalDraftResponseAction(signalId: string, formData: 
   const actor = await requireAdminActor();
   const draft = String(formData.get("draftResponse") ?? "");
   await saveSignalDraftResponse(signalId, draft, actor);
+  revalidatePath("/admin");
+}
+
+/** Approve exactly the response revision displayed on the review page. */
+export async function approveWritebackAction(campaignId: string, itemId: string, revision: string) {
+  const actor = await requireAdminActor();
+  await syncCampaignResponses({ campaignId, itemIds: [itemId] }, actor, { itemId, revision });
+  revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
 }

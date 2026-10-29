@@ -192,12 +192,16 @@ export async function saveResponse(input: {
   // one free-text field is bounded rather than trusted.
   const comment = reason ? reason.slice(0, MAX_COMMENT_LENGTH) : null;
 
-  // Recorded for the confirmed future write scope. Still never pushed to
-  // Salesforce — capturing it is what makes close-date movement measurable.
+  // Store the proposed date locally; live write-back requires separate admin approval.
   const closeDate = isClosedStage(input.stage) ? null : parseCloseDate(input.closeDate);
 
-  await prisma.$transaction([
-    prisma.checkInOpportunity.update({
+  const saved = await prisma.$transaction(async (tx) => {
+    // Updating the same primary key acquires a row lock in the configured schema.
+    await tx.checkInRecipient.updateMany({ where: { id: resolved.session.recipientId }, data: { id: resolved.session.recipientId } });
+    const recipient = await tx.checkInRecipient.findUnique({ where: { id: resolved.session.recipientId } });
+    if (!recipient || recipient.tokenHash !== hashToken(input.token) || recipient.revokedAt || recipient.expiresAt <= new Date()) return "NOT_FOUND" as const;
+    if (recipient.completedAt) return "ALREADY_COMPLETED" as const;
+    await tx.checkInOpportunity.update({
       where: { id: item.id },
       data: {
         updatedStatus: input.stage,
@@ -208,12 +212,14 @@ export async function saveResponse(input: {
         syncStatus: "PENDING",
         syncError: null,
       },
-    }),
-    prisma.checkInRecipient.updateMany({
+    });
+    await tx.checkInRecipient.updateMany({
       where: { id: resolved.session.recipientId, startedAt: null },
       data: { startedAt: new Date() },
-    }),
-  ]);
+    });
+    return "SAVED" as const;
+  });
+  if (saved !== "SAVED") return { ok: false, reason: saved };
 
   const changed = input.stage !== item.previousStatus;
   await recordAudit({
@@ -257,19 +263,27 @@ export async function completeCheckIn(token: string): Promise<CompleteResult> {
   }
   if (submitted < session.items.length) return { ok: false, reason: "INCOMPLETE" };
 
-  await prisma.checkInRecipient.update({
-    where: { id: session.recipientId },
-    data: { completedAt: new Date() },
-  });
-
-  await recordAudit({
+  const completion = await prisma.$transaction(async (tx) => {
+    // Updating the same primary key acquires a row lock in the configured schema.
+    await tx.checkInRecipient.updateMany({ where: { id: session.recipientId }, data: { id: session.recipientId } });
+    const recipient = await tx.checkInRecipient.findUnique({ where: { id: session.recipientId } });
+    if (!recipient || recipient.tokenHash !== hashToken(token) || recipient.revokedAt || recipient.expiresAt <= new Date()) return "NOT_FOUND" as const;
+    if (recipient.completedAt) return "ALREADY_COMPLETED" as const;
+    const outstanding = await tx.checkInOpportunity.count({ where: { recipientId: session.recipientId, submittedAt: null } });
+    if (outstanding) return "INCOMPLETE" as const;
+    await tx.checkInRecipient.update({ where: { id: session.recipientId }, data: { completedAt: new Date() } });
+    await tx.auditEvent.create({ data: {
     type: AUDIT_EVENTS.CHECKIN_COMPLETED,
     summary: `${session.contactName} at ${session.organizationName} completed their check-in (${submitted} opportunities)`,
     actor: session.contactName,
     actorKind: "EXTERNAL_CONTACT",
     campaignId: session.campaignId,
     contactId: session.contactId,
+    } });
+    return "COMPLETED" as const;
   });
+  if (completion === "ALREADY_COMPLETED") return { ok: true, alreadyCompleted: true, submitted, total: session.items.length };
+  if (completion !== "COMPLETED") return { ok: false, reason: completion };
 
   await syncCampaignResponses(
     { campaignId: session.campaignId, recipientId: session.recipientId },
