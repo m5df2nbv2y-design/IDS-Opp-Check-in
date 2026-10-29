@@ -53,6 +53,9 @@ export type SalesforceOpportunity = {
   amount: number;
   stage: OpportunityStage;
   closeDate: Date | null;
+  createdDate?: Date | null;
+  /** Salesforce Opportunity.LastModifiedDate. Null when unknown. */
+  lastModifiedDate?: Date | null;
   url: string;
   /** OwnerId — the internal IDS rep. */
   ownerExternalId: string;
@@ -93,6 +96,8 @@ export type SalesforceOpportunityOutcome = {
 export type OpportunityStatusUpdate = {
   externalId: string;
   stage: OpportunityStage;
+  closeDate?: string;
+  expectedLastModified?: Date;
 };
 
 export type SalesforceProviderInfo = {
@@ -116,6 +121,9 @@ export interface SalesforceService {
 
   /** All open (not Closed Won / Closed Lost) opportunities. */
   getOpenOpportunities(options?: { ownerExternalIds?: string[] }): Promise<SalesforceOpportunity[]>;
+
+  /** Read-only, active Loss Reason options; no fallback to invented live values. */
+  getLossReasonOptions?(): Promise<{ value: string; label: string }[]>;
 
   getOpportunity(externalId: string): Promise<SalesforceOpportunity | null>;
 

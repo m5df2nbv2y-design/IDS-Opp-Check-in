@@ -1,3 +1,5 @@
+import { getSalesforceService } from "@/server/integrations/salesforce";
+import { headers } from "next/headers";
 import type { Metadata } from "next";
 import { CheckInFlow } from "@/components/checkin/check-in-flow";
 import { brand } from "@/lib/brand";
@@ -7,6 +9,7 @@ import {
   resolveCheckInToken,
   type InviteRejection,
 } from "@/server/services/response-service";
+import { countUnresolved, rateLimit, reportRateLimit } from "@/server/security/rate-limit";
 
 export const metadata: Metadata = {
   title: `${brand.companyName} Opportunity Check-In`,
@@ -20,9 +23,21 @@ export const metadata: Metadata = {
  */
 export default async function CheckInPage({ params }: PageProps<"/checkin/[token]">) {
   const { token } = await params;
+
+  // A page cannot usefully answer 429: the recipient is looking at a browser
+  // window, not reading a status code. So this class is counted and reported,
+  // and a ceiling here does not refuse the render. Volumetric abuse of the
+  // page belongs to the coarse edge cap (SEC-001 layer 1, still open), which
+  // can reject before any of this runs.
+  const limit = await rateLimit("page", await headers(), token);
+  reportRateLimit(limit);
+
   const resolved = await resolveCheckInToken(token);
 
-  if (!resolved.ok) return <LinkProblem reason={resolved.reason} />;
+  if (!resolved.ok) {
+    if (resolved.reason === "NOT_FOUND") await countUnresolved(await headers());
+    return <LinkProblem reason={resolved.reason} />;
+  }
 
   const { session } = resolved;
   await markCheckInOpened(session.recipientId);
@@ -50,7 +65,15 @@ export default async function CheckInPage({ params }: PageProps<"/checkin/[token
     );
   }
 
-  return <CheckInFlow token={token} contactName={session.contactName} items={session.items} />;
+  const lossReasons = await getSalesforceService().getLossReasonOptions?.().catch(() => []) ?? [];
+  // Explicit allowlist: current stage and opportunity value never reach client props.
+  const items = session.items.map((item) => ({
+    id: item.id, projectName: item.projectName, createdDate: item.createdDate ?? null,
+    selectedStage: item.selectedStage, selectedCloseDate: item.selectedCloseDate,
+    currentCloseDate: item.currentCloseDate, selectedLossReason: item.selectedLossReason ?? null,
+    comment: item.comment,
+  }));
+  return <CheckInFlow token={token} contactName={session.contactName} items={items} lossReasons={lossReasons} />;
 }
 
 const REJECTIONS: Record<InviteRejection, { title: string; body: string }> = {
@@ -75,7 +98,7 @@ function LinkProblem({ reason }: { reason: InviteRejection }) {
 
 function Message({ title, body }: { title: string; body: string }) {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-lg flex-col justify-center px-6 py-14">
+    <main className="ids-recipient-message mx-auto flex max-w-lg flex-col justify-center px-6 py-14">
       <p className="text-[13px] font-bold uppercase tracking-[0.16em] text-brand">
         {brand.companyName}
       </p>

@@ -3,10 +3,16 @@ import { Card, EmptyState } from "@/components/ui/primitives";
 import { formatDateTime } from "@/lib/format";
 import { prisma } from "@/lib/db";
 import { getEmailService } from "@/server/integrations/email";
+import { getOrCreateDraft, getDraftSummary } from "@/server/services/campaign-draft-service";
+import { requireAdminActor } from "@/server/auth/require-admin";
+import { EmailComposer } from "@/components/admin/email-composer";
+import { ButtonLink } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
 
 export default async function OutboxPage() {
+  const draft = await getOrCreateDraft(await requireAdminActor());
+  const summary = await getDraftSummary(draft.id);
   const emails = await prisma.emailMessage.findMany({
     orderBy: { createdAt: "desc" },
     take: 100,
@@ -23,6 +29,11 @@ export default async function OutboxPage() {
             : `Sent through ${provider.info.label}. Every message is recorded here for audit.`}
         </p>
       </div>
+
+      <EmailComposer key={draft.id} campaignId={draft.id} initial={draft} selectedCount={summary.selectedOpportunities} />
+      <ButtonLink href="/admin/recipient-preview" variant="secondary">Preview what recipients see →</ButtonLink>
+
+      <h2 className="text-xl font-semibold text-ink">Message history</h2>
 
       {emails.length === 0 ? (
         <EmptyState

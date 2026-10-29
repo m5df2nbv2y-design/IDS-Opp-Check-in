@@ -57,7 +57,10 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
 
   const status = params.get("status") ?? "all";
   const owner = params.get("owner") ?? "all";
-  const hasFilters = Boolean(params.get("q") || params.get("status") || params.get("owner"));
+  const hasFilters = Boolean(
+    params.get("q") || params.get("status") || params.get("owner") ||
+    params.get("mfrom") || params.get("mto") || params.get("sort") || params.get("munknown"),
+  );
 
   return (
     <div className="ids-filters flex flex-wrap items-center gap-3">
@@ -97,6 +100,52 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
           </option>
         ))}
       </select></label>
+
+      {/*
+        Salesforce modification window and ordering.
+
+        These narrow and reorder the VIEW only. Selections live in
+        CampaignSelection rows keyed by opportunity id, so nothing here adds or
+        removes a selected opportunity — the selection bar keeps reporting the
+        campaign-wide total, including rows this filter is hiding.
+      */}
+      <label className="text-xs font-semibold text-muted">SF modified from<input
+        type="date"
+        value={params.get("mfrom") ?? ""}
+        onChange={(event) => update("mfrom", event.target.value || "all")}
+        aria-label="Only opportunities modified in Salesforce on or after this date"
+        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
+      /></label>
+
+      <label className="text-xs font-semibold text-muted">to<input
+        type="date"
+        value={params.get("mto") ?? ""}
+        onChange={(event) => update("mto", event.target.value || "all")}
+        aria-label="Only opportunities modified in Salesforce on or before this date"
+        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
+      /></label>
+
+      <label className="text-xs font-semibold text-muted">Sort<select
+        value={params.get("sort") ?? "all"}
+        onChange={(event) => update("sort", event.target.value)}
+        aria-label="Sort by Salesforce modification date"
+        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
+      >
+        <option value="all">Account order</option>
+        <option value="modified_desc">Modified — newest first</option>
+        <option value="modified_asc">Modified — oldest first</option>
+      </select></label>
+
+      <label className="flex items-center gap-2 text-xs font-semibold text-muted">
+        <input
+          type="checkbox"
+          checked={params.get("munknown") !== "0"}
+          onChange={(event) => update("munknown", event.target.checked ? "all" : "0")}
+          aria-label="Include opportunities with no known Salesforce modification date"
+          className="size-4 accent-[var(--color-brand)]"
+        />
+        Include unknown dates
+      </label>
 
       {hasFilters ? (
         <button

@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { validResponseDate } from "@/lib/client-response";
+import { DraftEmailConflictError, readEmailCopy } from "@/lib/check-in-copy";
 import { deriveSendState, type SendState } from "@/lib/send-states";
 import { launchCampaign } from "./campaign-service";
 import { currentPeriod } from "./campaign-service";
@@ -23,7 +25,42 @@ export type SelectionFilters = {
   ownerId?: string;
   /** "all" | "eligible" | "needs_attention" | "selected" */
   status?: string;
+  /**
+   * Salesforce modification window, as yyyy-mm-dd in the display timezone.
+   * Boundaries are inclusive whole days — see toDayRange.
+   */
+  modifiedFrom?: string;
+  modifiedTo?: string;
+  /**
+   * Whether opportunities with NO known Salesforce modification date are
+   * included when a window is set. Default true: a date filter should narrow
+   * by what is known, not silently hide records whose date we never imported.
+   */
+  includeUnknownModified?: boolean;
+  /** "modified_desc" | "modified_asc" | undefined (account order) */
+  sort?: string;
 };
+
+/**
+ * Inclusive whole-day bounds for a yyyy-mm-dd filter.
+ *
+ * The stored value is a UTC instant; the filter is expressed in the display
+ * timezone, so "from 1 March" must start at that day's first moment and "to 1
+ * March" must include the whole of it. Treated as UTC days, matching how the
+ * dashboard formats these dates.
+ */
+export function toDayRange(from?: string, to?: string): { gte?: Date; lte?: Date } {
+  // validResponseDate round-trips through Date, so a well-SHAPED but impossible
+  // value like 2026-13-45 is rejected. Matching the shape alone would let an
+  // Invalid Date reach the query.
+  const valid = (v?: string) => (v && validResponseDate(v) ? v : undefined);
+  const start = valid(from);
+  const end = valid(to);
+  return {
+    ...(start ? { gte: new Date(`${start}T00:00:00.000Z`) } : {}),
+    ...(end ? { lte: new Date(`${end}T23:59:59.999Z`) } : {}),
+  };
+}
 
 export type DraftOpportunityRow = {
   id: string;
@@ -33,6 +70,8 @@ export type DraftOpportunityRow = {
   amount: number;
   currentStage: string;
   closeDate: Date | null;
+  /** Salesforce Opportunity.LastModifiedDate, or null when unknown. */
+  lastModifiedAt: Date | null;
   salesforceUrl: string;
   ownerName: string;
   contactName: string | null;
@@ -109,6 +148,15 @@ export async function listDraftAccounts(
       ...(filters.status === "eligible" ? { resolutionStatus: "RESOLVED" } : {}),
       ...(filters.status === "needs_attention" ? { resolutionStatus: "UNRESOLVED" } : {}),
       ...(filters.status === "selected" ? { selections: { some: { campaignId } } } : {}),
+      ...(() => {
+        const range = toDayRange(filters.modifiedFrom, filters.modifiedTo);
+        if (range.gte === undefined && range.lte === undefined) return {};
+        // Unknown dates are kept by default: excluding them would quietly drop
+        // records we simply have not imported a date for yet.
+        return filters.includeUnknownModified === false
+          ? { salesforceLastModifiedAt: range }
+          : { OR: [{ salesforceLastModifiedAt: range }, { salesforceLastModifiedAt: null }] };
+      })(),
       ...(search
         ? {
             OR: [
@@ -127,7 +175,15 @@ export async function listDraftAccounts(
       contact: true,
       selections: { where: { campaignId }, select: { id: true } },
     },
-    orderBy: [{ account: { name: "asc" } }, { opportunityName: "asc" }],
+    orderBy:
+      filters.sort === "modified_desc"
+        // Unknown dates sort last either way: they are not "oldest", they are
+        // simply unknown, and burying them under known dates is the honest
+        // ordering in both directions.
+        ? [{ salesforceLastModifiedAt: { sort: "desc", nulls: "last" } }, { opportunityName: "asc" }]
+        : filters.sort === "modified_asc"
+          ? [{ salesforceLastModifiedAt: { sort: "asc", nulls: "last" } }, { opportunityName: "asc" }]
+          : [{ account: { name: "asc" } }, { opportunityName: "asc" }],
   });
 
   const groups = new Map<string, DraftAccountGroup>();
@@ -145,6 +201,7 @@ export async function listDraftAccounts(
       amount: opportunity.amount,
       currentStage: opportunity.currentStage,
       closeDate: opportunity.closeDate,
+      lastModifiedAt: opportunity.salesforceLastModifiedAt,
       salesforceUrl: opportunity.salesforceUrl,
       ownerName: opportunity.internalRep.name,
       contactName: opportunity.contact?.name ?? null,
@@ -425,7 +482,7 @@ export type SendDraftResult = {
  * than sent. With EMAIL_PROVIDER=mock the messages land in the in-app outbox.
  * Salesforce is not touched — no stage or close date is written here.
  */
-export async function sendDraft(campaignId: string, actor = "admin"): Promise<SendDraftResult> {
+export async function sendDraft(campaignId: string, actor = "admin", expectedEmailRevision?: number): Promise<SendDraftResult> {
   const { sendableOpportunityIds, drifted } = await validateSelection(campaignId);
 
   if (sendableOpportunityIds.length === 0) {
@@ -433,12 +490,17 @@ export async function sendDraft(campaignId: string, actor = "admin"): Promise<Se
   }
 
   const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+  if (expectedEmailRevision !== undefined && campaign.emailRevision !== expectedEmailRevision) {
+    throw new DraftEmailConflictError("The email draft changed. Reload and review the latest message before sending.");
+  }
   const result = await launchCampaign({
     campaignId,
     name: campaign.name,
     period: campaign.period,
     actor,
     opportunityIds: sendableOpportunityIds,
+    emailCopy: readEmailCopy(campaign),
+    expectedEmailRevision,
   });
 
   if (drifted.length > 0) {

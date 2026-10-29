@@ -60,7 +60,8 @@ redirect URI, and admin consent. Nobody can sign in until that exists.
 
 ## Authorization — 🟡
 
-**Code complete.** `AUTH_REQUIRED_APP_ROLE` (`SalesOps.Admin`) checked against
+**Code complete.** `AUTH_REQUIRED_APP_ROLE` (`Admin`, display name
+`Opportunity Check-In Administrator`) checked against
 the `roles` claim. Fails closed: with no policy configured, **nobody** is
 authorized — it does not fall back to admitting the tenant.
 
@@ -350,7 +351,7 @@ handling, security headers.
 | # | Item | Who |
 |---|---|---|
 | 1 | Entra app registration, client secret, redirect URI, admin consent | Entra admin |
-| 2 | `SalesOps.Admin` App Role created and the Sales Ops group assigned | Entra admin |
+| 2 | ~~App Role created and assigned~~ — **DONE.** Value `Admin`, five administrators verified; do not recreate | Entra admin |
 | 3 | Production External Client App; Run As user assigned via Permission Set | Salesforce admin |
 | 4 | PostgreSQL provisioned with TLS; `prisma migrate deploy` run | IT / you |
 | 5 | Host project created and every environment variable set | You |

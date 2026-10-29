@@ -13,6 +13,9 @@ import { requireAdminActor } from "@/server/auth/require-admin";
 import { getEmailService } from "@/server/integrations/email";
 import { SendPanel } from "./send-panel";
 import { ReviewOpportunityCheckbox, ReviewSelectionProvider } from "./review-selection-controls";
+import { readEmailCopy } from "@/lib/check-in-copy";
+import { ReviewedEmailPreview } from "@/components/admin/reviewed-email-preview";
+import { EmailComposer } from "@/components/admin/email-composer";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +62,7 @@ export default async function ReviewPage() {
         <ButtonLink href="/admin" variant="ghost" size="sm" className="-ml-3 mb-1">
           ← Back to selection
         </ButtonLink>
-        <h1 className="text-[26px] font-semibold tracking-tight text-ink">Review before sending</h1>
+        <h1 className="text-[26px] font-semibold tracking-tight text-ink">Review &amp; confirm</h1>
         <p className="mt-1 text-[15px] text-muted">{summary.campaignName}</p>
       </div>
 
@@ -158,8 +161,29 @@ export default async function ReviewPage() {
         </section>
       ) : null}
 
+      {/*
+        The email choice lives HERE, on the page where the send is actually
+        prepared, rather than only in the Outbox. Choosing between a generic
+        check-in and a custom one is part of deciding what to send, so it
+        belongs beside the recipients it will go to. The Outbox keeps its own
+        copy of the composer for editing outside a send.
+      */}
+      <section className="space-y-3">
+        <h2 className="font-semibold text-ink">The email these recipients will receive</h2>
+        <EmailComposer
+          key={`${draft.id}:${draft.emailRevision}`}
+          campaignId={draft.id}
+          initial={draft}
+          selectedCount={summary.selectedOpportunities}
+          compact
+        />
+        <ReviewedEmailPreview copy={readEmailCopy(draft)} recipients={recipients.map((recipient) => ({ contactId: recipient.contactId, contactName: recipient.contactName, contactEmail: recipient.contactEmail, accountName: recipient.accountName, opportunityCount: recipient.opportunities.length }))} />
+        <ButtonLink href="/admin/recipient-preview" variant="ghost" size="sm">Preview the recipient experience →</ButtonLink>
+      </section>
       <SendPanel
-        key={recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}
+        key={`${draft.id}:${draft.emailRevision}:${recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}`}
+        campaignId={draft.id}
+        emailRevision={draft.emailRevision}
         summary={summary}
         emailProviderLabel={email.info.label}
         simulated={email.info.simulated}

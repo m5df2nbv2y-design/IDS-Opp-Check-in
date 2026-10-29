@@ -102,6 +102,12 @@ model Opportunity {
   resolutionReason String?
   salesforceUrl   String
   closeDate       DateTime?
+  /// Original Salesforce CreatedDate, never the local cache timestamp.
+  salesforceCreatedAt DateTime?
+  /// Salesforce Opportunity.LastModifiedDate. Distinct from lastSyncedAt (our
+  /// import time) and updatedAt (our row's write time). Null when the source
+  /// value is unknown — never substituted from a local timestamp.
+  salesforceLastModifiedAt DateTime?
   /// False once the opportunity leaves the open set in Salesforce. Closed
   /// opportunities are kept, never deleted, so past campaigns survive.
   isOpen          Boolean @default(true)
@@ -146,6 +152,11 @@ model Campaign {
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
   completedAt DateTime?
+
+  // Null subject/body select the standard invitation. Custom copy is plain text.
+  emailSubject  String?
+  emailBody     String?
+  emailRevision Int @default(0)
 
   recipients  CheckInRecipient[]
   auditEvents AuditEvent[]
@@ -206,6 +217,7 @@ model CheckInOpportunity {
   previousStatus String
   updatedStatus  String?
   repComment     String?
+  lossReason     String?
   submittedAt    DateTime?
 
   /// Close date modelling for the confirmed future write scope
@@ -266,6 +278,8 @@ model AuditEvent {
 
 /// Outbox. Every message the app sends, real or simulated.
 model EmailMessage {
+  requestKey String? @unique
+  providerMessageId String? @unique
   id          String    @id @default(cuid())
   provider    String
   kind        String // INVITE | REMINDER
@@ -485,4 +499,26 @@ model MockSalesforceOpportunity {
 
   @@index([ownerExternalId])
   @@index([accountExternalId])
+}
+
+/// One fixed-window request counter, shared by every serverless instance.
+///
+/// A process-local map is not a limiter: the application runs as several
+/// instances in several regions, so each would keep its own count and the
+/// effective ceiling would be the limit multiplied by however many instances
+/// happen to be warm. The counter therefore lives in the one place all of them
+/// already agree on.
+///
+/// `key` is deliberately opaque and derived — a request class plus the client
+/// IP, plus for a resolved recipient a TRUNCATED token digest. A raw check-in
+/// token must never appear here: this is durable state, and ADR-005 forbids
+/// persisting the bearer credential anywhere but the recipient's hash.
+model RateLimitCounter {
+  key       String   @id
+  count     Int      @default(0)
+  /// End of the current window. A row whose window has passed is reused in
+  /// place rather than deleted, so a busy key does not churn rows.
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }

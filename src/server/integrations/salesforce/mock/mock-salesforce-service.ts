@@ -39,6 +39,15 @@ export class MockSalesforceService implements SalesforceService {
       "Demo data served through the same interface as the real integration. No external credentials required.",
   };
 
+  async getLossReasonOptions() {
+    // Fictional demo options; never used by the live provider.
+    return [
+      { value: "DEMO_BUDGET", label: "Budget unavailable" },
+      { value: "DEMO_CANCELLED", label: "Project cancelled" },
+      { value: "DEMO_COMPETITOR", label: "Selected another supplier" },
+    ];
+  }
+
   /** Load the sample org. Called by the seed script. */
   async resetOrg(): Promise<void> {
     await prisma.mockSalesforceOpportunity.deleteMany();
@@ -174,8 +183,10 @@ export class MockSalesforceService implements SalesforceService {
   }
 
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    // Stage only, mirroring the live provider's confirmed write scope.
     await this.updateOpportunityStatus(update.externalId, update.stage);
+    if (update.closeDate) await prisma.mockSalesforceOpportunity.update({
+      where: { externalId: update.externalId }, data: { closeDate: new Date(update.closeDate) },
+    });
   }
 
   private async requireRecord(externalId: string) {
@@ -213,6 +224,7 @@ export class MockSalesforceService implements SalesforceService {
     amount: number;
     stageName: string;
     closeDate: Date | null;
+    lastModifiedAt?: Date | null;
     contactExternalId: string | null;
   }): SalesforceOpportunity | null {
     const stage = stageFromSalesforce(record.stageName);
@@ -226,6 +238,9 @@ export class MockSalesforceService implements SalesforceService {
       amount: record.amount,
       stage,
       closeDate: record.closeDate,
+      // The mock org keeps its own modification stamp, surfaced like the live
+      // LastModifiedDate so the dashboard has something real to order by.
+      lastModifiedDate: record.lastModifiedAt ?? null,
       url: `${MOCK_INSTANCE_URL}/lightning/r/Opportunity/${record.externalId}/view`,
       ownerExternalId: record.ownerExternalId,
       accountExternalId: record.accountExternalId,

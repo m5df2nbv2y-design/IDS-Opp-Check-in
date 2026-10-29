@@ -1,3 +1,5 @@
+import { getSalesforceService } from "@/server/integrations/salesforce";
+import { validResponseDate } from "@/lib/client-response";
 import { prisma } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
 import { isClosedStage, isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
@@ -21,6 +23,8 @@ export type CheckInSessionItem = {
   selectedCloseDate: string | null;
   comment: string;
   submitted: boolean;
+  createdDate?: string | null;
+  selectedLossReason?: string | null;
 };
 
 export type CheckInSession = {
@@ -51,7 +55,7 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
     include: {
       contact: { include: { account: true } },
       campaign: true,
-      items: { orderBy: { position: "asc" } },
+      items: { orderBy: { position: "asc" }, include: { opportunity: { select: { salesforceCreatedAt: true } } } },
     },
   });
 
@@ -71,6 +75,8 @@ export async function resolveCheckInToken(token: string): Promise<ResolveResult>
       completedAt: recipient.completedAt,
       items: recipient.items.map((item) => ({
         id: item.id,
+        createdDate: item.opportunity.salesforceCreatedAt?.toISOString().slice(0, 10) ?? null,
+        selectedLossReason: item.lossReason,
         customerName: item.customerName,
         projectName: item.projectName ?? item.opportunityName,
         amount: item.amount,
@@ -124,7 +130,7 @@ export type SaveResponseResult =
   | { ok: true; revised: boolean }
   | {
       ok: false;
-      reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" | "REASON_REQUIRED";
+      reason: "NOT_FOUND" | "ALREADY_COMPLETED" | "INVALID_STAGE" | "REASON_REQUIRED" | "INVALID_CLOSE_DATE" | "INVALID_LOSS_REASON";
     };
 
 /**
@@ -141,6 +147,8 @@ export async function saveResponse(input: {
   comment?: string | null;
   /** Revised close date as ISO yyyy-mm-dd, or null to leave it unchanged. */
   closeDate?: string | null;
+  lossReason?: string | null;
+  flowVersion?: number;
 }): Promise<SaveResponseResult> {
   if (!isOpportunityStage(input.stage)) return { ok: false, reason: "INVALID_STAGE" };
 
@@ -149,7 +157,7 @@ export async function saveResponse(input: {
   // written, so a refused answer never half-saves. The text is also what a
   // future write-back will have for Salesforce's Loss Reason, which the
   // opportunity form marks as required.
-  const reason = input.comment?.trim();
+  let reason = input.comment?.trim() || input.lossReason?.trim();
   if (isClosedStage(input.stage) && !reason) {
     return { ok: false, reason: "REASON_REQUIRED" };
   }
@@ -164,32 +172,54 @@ export async function saveResponse(input: {
   });
   if (!item) return { ok: false, reason: "NOT_FOUND" };
 
+  if (input.closeDate && !validResponseDate(input.closeDate)) return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  if (input.flowVersion === 2 && isClosedStage(input.stage) && input.closeDate != null) {
+    return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  }
+  if (input.flowVersion === 2 && !isClosedStage(input.stage) && !validResponseDate(input.closeDate)) {
+    return { ok: false, reason: "INVALID_CLOSE_DATE" };
+  }
+  if (input.flowVersion === 2 || input.lossReason) {
+    if (isClosedStage(input.stage)) {
+      const options = await getSalesforceService().getLossReasonOptions?.().catch(() => []) ?? [];
+      const selected = options.find((option) => option.value === input.lossReason);
+      if (!selected) return { ok: false, reason: "INVALID_LOSS_REASON" };
+      reason = selected.label;
+    } else if (input.lossReason) return { ok: false, reason: "INVALID_LOSS_REASON" };
+  }
   const revised = item.submittedAt !== null;
   // This endpoint is public — anyone holding a link can post to it — so the
   // one free-text field is bounded rather than trusted.
   const comment = reason ? reason.slice(0, MAX_COMMENT_LENGTH) : null;
 
-  // Recorded for the confirmed future write scope. Still never pushed to
-  // Salesforce — capturing it is what makes close-date movement measurable.
-  const closeDate = parseCloseDate(input.closeDate);
+  // Store the proposed date locally; live write-back requires separate admin approval.
+  const closeDate = isClosedStage(input.stage) ? null : parseCloseDate(input.closeDate);
 
-  await prisma.$transaction([
-    prisma.checkInOpportunity.update({
+  const saved = await prisma.$transaction(async (tx) => {
+    // Updating the same primary key acquires a row lock in the configured schema.
+    await tx.checkInRecipient.updateMany({ where: { id: resolved.session.recipientId }, data: { id: resolved.session.recipientId } });
+    const recipient = await tx.checkInRecipient.findUnique({ where: { id: resolved.session.recipientId } });
+    if (!recipient || recipient.tokenHash !== hashToken(input.token) || recipient.revokedAt || recipient.expiresAt <= new Date()) return "NOT_FOUND" as const;
+    if (recipient.completedAt) return "ALREADY_COMPLETED" as const;
+    await tx.checkInOpportunity.update({
       where: { id: item.id },
       data: {
         updatedStatus: input.stage,
         updatedCloseDate: closeDate,
         repComment: comment,
+        lossReason: isClosedStage(input.stage) ? input.lossReason ?? null : null,
         submittedAt: new Date(),
         syncStatus: "PENDING",
         syncError: null,
       },
-    }),
-    prisma.checkInRecipient.updateMany({
+    });
+    await tx.checkInRecipient.updateMany({
       where: { id: resolved.session.recipientId, startedAt: null },
       data: { startedAt: new Date() },
-    }),
-  ]);
+    });
+    return "SAVED" as const;
+  });
+  if (saved !== "SAVED") return { ok: false, reason: saved };
 
   const changed = input.stage !== item.previousStatus;
   await recordAudit({
@@ -233,19 +263,27 @@ export async function completeCheckIn(token: string): Promise<CompleteResult> {
   }
   if (submitted < session.items.length) return { ok: false, reason: "INCOMPLETE" };
 
-  await prisma.checkInRecipient.update({
-    where: { id: session.recipientId },
-    data: { completedAt: new Date() },
-  });
-
-  await recordAudit({
+  const completion = await prisma.$transaction(async (tx) => {
+    // Updating the same primary key acquires a row lock in the configured schema.
+    await tx.checkInRecipient.updateMany({ where: { id: session.recipientId }, data: { id: session.recipientId } });
+    const recipient = await tx.checkInRecipient.findUnique({ where: { id: session.recipientId } });
+    if (!recipient || recipient.tokenHash !== hashToken(token) || recipient.revokedAt || recipient.expiresAt <= new Date()) return "NOT_FOUND" as const;
+    if (recipient.completedAt) return "ALREADY_COMPLETED" as const;
+    const outstanding = await tx.checkInOpportunity.count({ where: { recipientId: session.recipientId, submittedAt: null } });
+    if (outstanding) return "INCOMPLETE" as const;
+    await tx.checkInRecipient.update({ where: { id: session.recipientId }, data: { completedAt: new Date() } });
+    await tx.auditEvent.create({ data: {
     type: AUDIT_EVENTS.CHECKIN_COMPLETED,
     summary: `${session.contactName} at ${session.organizationName} completed their check-in (${submitted} opportunities)`,
     actor: session.contactName,
     actorKind: "EXTERNAL_CONTACT",
     campaignId: session.campaignId,
     contactId: session.contactId,
+    } });
+    return "COMPLETED" as const;
   });
+  if (completion === "ALREADY_COMPLETED") return { ok: true, alreadyCompleted: true, submitted, total: session.items.length };
+  if (completion !== "COMPLETED") return { ok: false, reason: completion };
 
   await syncCampaignResponses(
     { campaignId: session.campaignId, recipientId: session.recipientId },

@@ -39,6 +39,11 @@ export default async function AdminDashboardPage({
     search: typeof params.q === "string" ? params.q : undefined,
     ownerId: typeof params.owner === "string" ? params.owner : undefined,
     status: typeof params.status === "string" ? params.status : undefined,
+    modifiedFrom: typeof params.mfrom === "string" ? params.mfrom : undefined,
+    modifiedTo: typeof params.mto === "string" ? params.mto : undefined,
+    // Absent means include unknown dates; only an explicit "0" excludes them.
+    includeUnknownModified: params.munknown !== "0",
+    sort: typeof params.sort === "string" ? params.sort : undefined,
   };
 
   // The layout has already asserted a session; pass the real identity so the

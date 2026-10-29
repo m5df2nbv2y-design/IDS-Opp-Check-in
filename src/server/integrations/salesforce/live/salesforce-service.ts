@@ -62,7 +62,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * standard AccountId and OpportunityContactRole are the real model.
  */
 const OPEN_OPPORTUNITY_SOQL = `
-  SELECT Id, Name, Amount, StageName, CloseDate, OwnerId,
+  SELECT Id, Name, Amount, StageName, CloseDate, CreatedDate, LastModifiedDate, OwnerId,
          AccountId, Account.Name,
          (SELECT ContactId FROM OpportunityContactRoles WHERE IsPrimary = true)
   FROM Opportunity
@@ -231,14 +231,21 @@ export class LiveSalesforceService implements SalesforceService {
   }
 
   async updateOpportunityStatus(externalId: string, stage: OpportunityStage): Promise<void> {
-    await this.patchOpportunity(externalId, { StageName: stageToSalesforce(stage) });
+    await this.applyUpdate({ externalId, stage });
   }
 
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    // Stage only. Notes are never written to Salesforce — see ../FIELD-MAPPING.md.
+    if (!env.salesforce.writeEnabled || update.stage === "CLOSED_LOST" || !update.expectedLastModified || !Number.isFinite(update.expectedLastModified.getTime())) {
+      throw new SalesforceSyncError("A current approved open-opportunity update and enabled write-back are required.", { code: "WRITE_REFUSED", retryable: false });
+    }
+    if (update.closeDate && (!/^\d{4}-\d{2}-\d{2}$/.test(update.closeDate) || !Number.isFinite(Date.parse(update.closeDate)) || new Date(update.closeDate).toISOString().slice(0, 10) !== update.closeDate)) {
+      throw new SalesforceSyncError("Invalid CloseDate.", { code: "WRITE_REFUSED", retryable: false });
+    }
+    // Explicit allowlist. Notes, Probability and loss reasons are never written.
     await this.patchOpportunity(update.externalId, {
       StageName: stageToSalesforce(update.stage),
-    });
+      ...(update.closeDate ? { CloseDate: update.closeDate } : {}),
+    }, update.expectedLastModified);
   }
 
   // -- transport ------------------------------------------------------------
@@ -352,7 +359,13 @@ export class LiveSalesforceService implements SalesforceService {
     return results;
   }
 
-  private async patchOpportunity(externalId: string, fields: Record<string, unknown>) {
+  async getLossReasonOptions(): Promise<{ value: string; label: string }[]> {
+    // Josh has deferred the Salesforce field and choices. No live Describe or
+    // guessed mapping is permitted until that decision is explicitly supplied.
+    return [];
+  }
+
+  private async patchOpportunity(externalId: string, fields: Record<string, unknown>, expectedLastModified?: Date) {
     // Deliberately NOT routed through readWithRetry: replaying a write is a
     // decision for the sync service, not the transport.
     const response = await this.request(
@@ -360,14 +373,14 @@ export class LiveSalesforceService implements SalesforceService {
         `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/${encodeURIComponent(externalId)}`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(expectedLastModified ? { "If-Unmodified-Since": expectedLastModified.toUTCString() } : {}) },
         body: JSON.stringify(fields),
       },
     );
 
     if (!response.ok) {
       throw new SalesforceSyncError(await describeError(response), {
-        code: "UPDATE_FAILED",
+        code: response.status === 412 ? "CONFLICT" : response.status >= 500 ? "WRITE_UNCERTAIN" : "UPDATE_FAILED",
         retryable: response.status >= 500 || response.status === 429,
       });
     }
@@ -386,6 +399,8 @@ export class LiveSalesforceService implements SalesforceService {
       amount: row.Amount ?? 0,
       stage,
       closeDate: row.CloseDate ? new Date(row.CloseDate) : null,
+      createdDate: row.CreatedDate ? new Date(row.CreatedDate) : null,
+      lastModifiedDate: row.LastModifiedDate ? new Date(row.LastModifiedDate) : null,
       url: `${instanceUrl}/lightning/r/Opportunity/${row.Id}/view`,
       ownerExternalId: row.OwnerId,
       // The partner account drives recipient resolution. Orgs that sell direct
@@ -403,6 +418,8 @@ type SalesforceOpportunityRow = {
   Amount: number | null;
   StageName: string;
   CloseDate: string | null;
+  CreatedDate?: string;
+  LastModifiedDate?: string;
   OwnerId: string;
   AccountId: string | null;
   Account: { Name: string } | null;

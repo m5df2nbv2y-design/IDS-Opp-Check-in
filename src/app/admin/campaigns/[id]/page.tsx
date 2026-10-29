@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { retrySyncAction, sendRemindersAction } from "../../actions";
+import { approveWritebackAction, retrySyncAction, sendRemindersAction } from "../../actions";
 import { ActionButton } from "@/components/admin/action-button";
 import { RecipientTable } from "@/components/admin/recipient-table";
 import { TestEmailPanel } from "@/components/admin/test-email-panel";
@@ -41,6 +41,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ButtonLink href={`/admin/campaigns/${summary.id}/receipt`} variant="secondary">View sending results</ButtonLink>
           {failed.length > 0 ? (
             <ActionButton
               action={retrySyncAction.bind(null, summary.id)}
@@ -148,6 +149,15 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                   </div>
                 </div>
 
+                <p className="mt-2 text-sm text-muted">Close date: {response.previousCloseDate ? formatDate(response.previousCloseDate) : "Not set"} → {response.updatedCloseDate ? formatDate(response.updatedCloseDate) : "Unchanged"}</p>
+                {response.recipient.completedAt && response.updatedStatus !== "CLOSED_LOST" && ["PENDING", "FAILED", "WITHHELD"].includes(response.syncStatus) && env.salesforce.writeEnabled ? (
+                  <div className="mt-3"><ActionButton
+                    action={approveWritebackAction.bind(null, summary.id, response.id, response.updatedAt.toISOString())}
+                    confirm={`Approve this response and write its stage and close date to Salesforce?`}
+                    pendingLabel="Applying…"
+                  >Approve Salesforce update</ActionButton></div>
+                ) : null}
+                {response.updatedStatus === "CLOSED_LOST" ? <p className="mt-2 text-sm text-muted">Closed Lost write-back is deferred until its fields and choices are confirmed.</p> : null}
                 {response.repComment ? (
                   <p className="mt-3 rounded-xl bg-canvas px-4 py-2.5 text-[14px] text-body">
                     “{response.repComment}”
