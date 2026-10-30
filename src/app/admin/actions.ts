@@ -21,6 +21,10 @@ import { sendDemoTestEmail, type TestEmailResult } from "@/server/services/test-
 import { requireAdminActor } from "@/server/auth/require-admin";
 import { saveCampaignEmail } from "@/server/services/campaign-email-service";
 import { DraftEmailConflictError, requireEmailRevision } from "@/lib/check-in-copy";
+import {
+  reconcileUncertainWrite,
+  type ObservedOutcome,
+} from "@/server/services/reconcile-service";
 
 export async function saveCampaignEmailAction(campaignId: string, revision: number, input: unknown) {
   const actor = await requireAdminActor();
@@ -119,6 +123,51 @@ export async function sendTestEmailAction(recipientId: string): Promise<TestEmai
 export async function retrySyncAction(campaignId: string) {
   const actor = await requireAdminActor();
   await retryFailedSyncs(campaignId, actor);
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+}
+
+/**
+ * Resolve a Salesforce write whose outcome we never learned.
+ *
+ * The administrator has looked in Salesforce and is telling us what they saw.
+ * This is the only exit from UNCERTAIN, and it is per item on purpose — the
+ * commissioning note forbids clearing these with a blanket retry, because each
+ * is a separate question about a separate record.
+ *
+ * `revision` binds the `updatedAt` that was on screen, so a stale page cannot
+ * resolve an item that has moved underneath it.
+ */
+export async function reconcileUncertainAction(
+  campaignId: string,
+  itemId: string,
+  revision: string,
+  observed: ObservedOutcome,
+) {
+  const actor = await requireAdminActor();
+  const result = await reconcileUncertainWrite({
+    campaignId,
+    itemId,
+    revision,
+    observed,
+    actor,
+  });
+
+  // A refusal must not look like a click that did nothing. Throwing surfaces
+  // the reason, where returning quietly would leave an administrator pressing
+  // a button against an item that has already moved on.
+  if (!result.ok) {
+    throw new Error(
+      {
+        STALE:
+          "This response changed since the page was loaded. Reload, re-check Salesforce, and resolve it again.",
+        NOT_UNCERTAIN:
+          "This response is no longer awaiting reconciliation — someone may have resolved it already.",
+        NOT_FOUND: "This response is no longer part of the campaign.",
+      }[result.reason],
+    );
+  }
+
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
 }
