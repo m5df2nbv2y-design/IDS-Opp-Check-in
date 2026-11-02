@@ -37,6 +37,12 @@ import { requestAccessToken } from "./auth";
  * writes is StageName alone — see applyUpdate. Notes are never written.
  */
 
+import {
+  diagnoseLossReasonDescribe,
+  LOSS_REASON_REFUSAL_DETAIL,
+  type LossReasonRefusal,
+} from "@/lib/client-response";
+
 const API_VERSION = "v61.0";
 
 /**
@@ -359,10 +365,59 @@ export class LiveSalesforceService implements SalesforceService {
     return results;
   }
 
+  /**
+   * The Closed Lost choices, read from the org rather than hardcoded.
+   *
+   * Values and labels both come from Describe. That distinction matters: the
+   * VALUE is what a write would put in Salesforce, the LABEL is what the
+   * recipient reads, and in a picklist the two are frequently different.
+   * Copying labels from a screenshot would write the wrong thing.
+   *
+   * Reading this live also means a change in Salesforce needs no code change
+   * here — which is the point, since these choices have changed before.
+   *
+   * `diagnoseLossReasonDescribe` applies the guards. When it refuses, this
+   * returns no options AND says why, because an empty list is not a harmless
+   * outcome: with no options every Closed Lost answer is rejected as
+   * INVALID_LOSS_REASON and the recipient cannot finish their check-in.
+   */
   async getLossReasonOptions(): Promise<{ value: string; label: string }[]> {
-    // Josh has deferred the Salesforce field and choices. No live Describe or
-    // guessed mapping is permitted until that decision is explicitly supplied.
-    return [];
+    let described;
+    try {
+      described = await this.describeLossReasons();
+    } catch (caught) {
+      // A Describe outage must not propagate. Callers already treat an empty
+      // list as "Closed Lost cannot be offered", which is the safe degradation;
+      // throwing would make a transient metadata failure look like a broken
+      // check-in page. Logged loudly because silently losing the choices is
+      // precisely the failure this method was rewritten to make visible.
+      console.warn(
+        `[salesforce] Loss Reason Describe failed: ${caught instanceof Error ? caught.message : String(caught)}. ` +
+          "Closed Lost answers will be refused until it succeeds.",
+      );
+      return [];
+    }
+
+    const { options, refusal } = described;
+    if (refusal) {
+      console.warn(
+        `[salesforce] Loss Reason choices unavailable (${refusal}): ` +
+          `${LOSS_REASON_REFUSAL_DETAIL[refusal]} Closed Lost answers will be refused until this is resolved.`,
+      );
+    }
+    return options;
+  }
+
+  /** Exposed separately so an administrator can be shown the reason, not just an empty list. */
+  async describeLossReasons(): Promise<{
+    options: { value: string; label: string }[];
+    refusal: LossReasonRefusal | null;
+  }> {
+    const response = await this.readWithRetry(
+      (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
+    );
+    const metadata = (await response.json()) as Parameters<typeof diagnoseLossReasonDescribe>[0];
+    return diagnoseLossReasonDescribe(metadata);
   }
 
   private async patchOpportunity(externalId: string, fields: Record<string, unknown>, expectedLastModified?: Date) {
