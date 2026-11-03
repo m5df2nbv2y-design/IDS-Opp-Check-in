@@ -166,9 +166,9 @@ export async function syncCampaignResponses(
         stage: nextStage,
         ...(dateChanged ? { closeDate: item.updatedCloseDate!.toISOString().slice(0, 10) } : {}),
         expectedLastModified,
-        // Passed unconditionally; the provider's allowlist decides whether
-        // either is actually written, based on what is configured.
-        comment: item.repComment,
+        // Passed unconditionally; the provider's allowlist decides whether it
+        // is actually written, based on what is configured. The recipient's
+        // comment is deliberately NOT sent: it stays local, visible to admins.
         lossReason: item.lossReason,
       });
 

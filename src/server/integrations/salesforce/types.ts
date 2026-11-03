@@ -99,12 +99,6 @@ export type OpportunityStatusUpdate = {
   closeDate?: string;
   expectedLastModified?: Date;
   /**
-   * The recipient's own words. Written only when SF_FIELD_COMMENT names a
-   * field AND SF_COMMENT_WRITE_MODE acknowledges that the write REPLACES
-   * whatever that field already held.
-   */
-  comment?: string | null;
-  /**
    * The picklist VALUE — not the label — as read from the org's own Describe.
    * Written only when SF_FIELD_LOSS_REASON names a field.
    */

@@ -46,64 +46,19 @@ describe("nothing unconfigured is ever written", () => {
     expect(await payloadFor(OPEN)).toEqual({ StageName: "Negotiation" });
   });
 
-  it("ignores a comment and a loss reason when no field names them", async () => {
-    const payload = await payloadFor({
-      ...OPEN,
-      comment: "Board signs next week",
-      lossReason: "Lost to Competitor",
-    });
-    // Both answered, neither configured: the data stays local, as before.
+  it("ignores a loss reason when no field names it", async () => {
+    const payload = await payloadFor({ ...OPEN, lossReason: "Lost to Competitor" });
+    // Answered but not configured: the data stays local, as before.
     expect(payload).toEqual({ StageName: "Negotiation" });
   });
 
-  it("degrades to the old narrow write when the org is only half configured", async () => {
-    const payload = await payloadFor(
-      { ...OPEN, comment: "Board signs next week" },
-      // A field name without the mode is not enough.
-      { SF_FIELD_COMMENT: "Description" },
-    );
+  it("never sends the recipient's comment, which is deliberately local-only", async () => {
+    // The comment is collected and shown to admins, but by decision it does
+    // not go to Salesforce — there is no field for it and no way to configure
+    // one, so a future change cannot enable it by setting a variable.
+    const payload = await payloadFor({ ...OPEN, comment: "Board signs next week" } as never);
+    expect(JSON.stringify(payload)).not.toContain("Board signs next week");
     expect(payload).toEqual({ StageName: "Negotiation" });
-  });
-});
-
-describe("the recipient's comment", () => {
-  it("is written only when the field is named AND replace is acknowledged", async () => {
-    const payload = await payloadFor(
-      { ...OPEN, comment: "Board signs next week" },
-      { SF_FIELD_COMMENT: "Description", SF_COMMENT_WRITE_MODE: "replace" },
-    );
-    expect(payload.Description).toBe("Board signs next week");
-  });
-
-  it("goes to whatever custom field is named, not a hardcoded one", async () => {
-    const payload = await payloadFor(
-      { ...OPEN, comment: "Board signs next week" },
-      { SF_FIELD_COMMENT: "Check_In_Comment__c", SF_COMMENT_WRITE_MODE: "replace" },
-    );
-    expect(payload.Check_In_Comment__c).toBe("Board signs next week");
-    expect(payload.Description).toBeUndefined();
-  });
-
-  it("is omitted when blank, so an empty answer cannot erase an existing value", async () => {
-    // The write REPLACES the field. Sending "" for an unanswered comment would
-    // silently destroy whatever the sales team had written there.
-    for (const comment of ["", "   ", null, undefined]) {
-      const payload = await payloadFor(
-        { ...OPEN, comment },
-        { SF_FIELD_COMMENT: "Description", SF_COMMENT_WRITE_MODE: "replace" },
-      );
-      expect(payload.Description, JSON.stringify(comment)).toBeUndefined();
-    }
-  });
-
-  it("is refused under any mode other than the acknowledged one", async () => {
-    for (const mode of ["append", "true", "yes", ""]) {
-      const payload = await payloadFor(
-        { ...OPEN, comment: "text" },
-        { SF_FIELD_COMMENT: "Description", SF_COMMENT_WRITE_MODE: mode },
-      );
-      expect(payload.Description, mode).toBeUndefined();
-    }
   });
 });
 

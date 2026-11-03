@@ -73,16 +73,6 @@ export const env = {
        * differs from the one the recipient was shown.
        */
       probability: process.env.SF_WRITE_PROBABILITY === "true",
-      /**
-       * API name for the recipient's comment, e.g. "Description".
-       *
-       * DANGER: a PATCH REPLACES this field. Pointing it at Description
-       * destroys whatever the sales team had written there. That is why the
-       * mode below must also be set — the field name alone is not enough.
-       */
-      commentField: process.env.SF_FIELD_COMMENT ?? "",
-      /** Only "replace" is supported, and it must be stated out loud. */
-      commentMode: process.env.SF_COMMENT_WRITE_MODE ?? "",
       /** API name for the loss reason, e.g. "Loss_Reason__c". Custom field. */
       lossReasonField: process.env.SF_FIELD_LOSS_REASON ?? "",
       /**

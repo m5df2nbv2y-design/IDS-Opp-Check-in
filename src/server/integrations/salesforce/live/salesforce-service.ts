@@ -488,16 +488,6 @@ export function buildWritePayload(update: OpportunityStatusUpdate): Record<strin
     if (probability !== null) payload.Probability = probability;
   }
 
-  /**
-   * A PATCH replaces this field outright. Requiring the mode as well as the
-   * name means nobody can point it at Description and silently erase what the
-   * sales team wrote there without having said "replace" first.
-   */
-  if (write.commentField && write.commentMode === "replace") {
-    const comment = update.comment?.trim();
-    if (comment) payload[write.commentField] = comment;
-  }
-
   // The picklist VALUE, read from the org's own Describe — never the label.
   if (write.lossReasonField && update.lossReason) {
     payload[write.lossReasonField] = update.lossReason;
