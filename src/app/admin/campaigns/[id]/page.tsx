@@ -1,5 +1,10 @@
 import { notFound } from "next/navigation";
-import { approveWritebackAction, retrySyncAction, sendRemindersAction } from "../../actions";
+import {
+  approveWritebackAction,
+  reconcileUncertainAction,
+  retrySyncAction,
+  sendRemindersAction,
+} from "../../actions";
 import { ActionButton } from "@/components/admin/action-button";
 import { RecipientTable } from "@/components/admin/recipient-table";
 import { TestEmailPanel } from "@/components/admin/test-email-panel";
@@ -156,6 +161,46 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                     confirm={`Approve this response and write its stage and close date to Salesforce?`}
                     pendingLabel="Applying…"
                   >Approve Salesforce update</ActionButton></div>
+                ) : null}
+                {response.syncStatus === "UNCERTAIN" ? (
+                  <div className="mt-3 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
+                    <p className="text-[13px] font-semibold text-warning">
+                      This write may or may not have reached Salesforce.
+                    </p>
+                    <p className="mt-1 text-[13px] text-body">
+                      The request left us but Salesforce never confirmed it, so we will not
+                      guess and we will not retry on our own. Open the record, check the
+                      stage and close date, then tell us what you found.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <ActionButton
+                        action={reconcileUncertainAction.bind(
+                          null,
+                          summary.id,
+                          response.id,
+                          response.updatedAt.toISOString(),
+                          "APPLIED",
+                        )}
+                        confirm="Confirm the change IS in Salesforce? This marks the write complete and nothing will attempt it again."
+                        pendingLabel="Recording…"
+                      >
+                        It is in Salesforce
+                      </ActionButton>
+                      <ActionButton
+                        action={reconcileUncertainAction.bind(
+                          null,
+                          summary.id,
+                          response.id,
+                          response.updatedAt.toISOString(),
+                          "NOT_APPLIED",
+                        )}
+                        confirm="Confirm the change is NOT in Salesforce? This does not retry — it makes the response approvable again so you can decide."
+                        pendingLabel="Recording…"
+                      >
+                        It is not there
+                      </ActionButton>
+                    </div>
+                  </div>
                 ) : null}
                 {response.updatedStatus === "CLOSED_LOST" ? <p className="mt-2 text-sm text-muted">Closed Lost write-back is deferred until its fields and choices are confirmed.</p> : null}
                 {response.repComment ? (

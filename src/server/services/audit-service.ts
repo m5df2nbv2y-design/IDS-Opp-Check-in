@@ -19,6 +19,15 @@ export const AUDIT_EVENTS = {
   SYNC_FAILED: "SYNC_FAILED",
   SYNC_SKIPPED: "SYNC_SKIPPED",
   SYNC_WITHHELD: "SYNC_WITHHELD",
+  /**
+   * An administrator reconciled an UNCERTAIN write by hand and attested to what
+   * they saw in Salesforce. Deliberately distinct from SYNC_SUCCEEDED and
+   * SYNC_FAILED, which record what the API told us: these two record what a
+   * person told us. Collapsing them would let a human assertion masquerade as
+   * an observed provider result in the audit trail.
+   */
+  SYNC_RECONCILED_APPLIED: "SYNC_RECONCILED_APPLIED",
+  SYNC_RECONCILED_NOT_APPLIED: "SYNC_RECONCILED_NOT_APPLIED",
   CATALOG_REFRESHED: "CATALOG_REFRESHED",
   OPPORTUNITY_CLOSED: "OPPORTUNITY_CLOSED",
   SIGNAL_INGESTED: "SIGNAL_INGESTED",
