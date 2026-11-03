@@ -24,6 +24,41 @@ it("refuses disabled writes, Closed Lost, invalid dates and unconditioned legacy
   await expect(service.applyUpdate({ ...base, stage: "CLOSED_LOST" })).rejects.toThrow();
   await expect(service.applyUpdate({ ...base, closeDate: "2027-02-30" })).rejects.toThrow();
   await expect(service.updateOpportunityStatus("006-test", "PROPOSAL")).rejects.toThrow();
-  expect(await service.getLossReasonOptions()).toEqual([]);
+  // The contract under test: a refused WRITE never reaches the API.
   expect(network).not.toHaveBeenCalled();
+});
+
+it("reads Loss Reason choices from the org, and degrades without throwing", async () => {
+  // Reading the choices legitimately calls Describe now — they are no longer
+  // hardcoded — so this is deliberately separate from the no-network assertion
+  // above, which is about refused writes.
+  const describe = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        fields: [{
+          label: "Loss Reason",
+          type: "picklist",
+          picklistValues: [
+            { active: true, value: "Lost to Competitor", label: "Lost to Competitor" },
+            { active: false, value: "Retired", label: "Retired" },
+          ],
+        }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ),
+  );
+  vi.stubGlobal("fetch", describe);
+
+  expect(await new LiveSalesforceService().getLossReasonOptions()).toEqual([
+    { value: "Lost to Competitor", label: "Lost to Competitor" },
+  ]);
+  expect(describe).toHaveBeenCalled();
+  expect(String(describe.mock.calls[0][0])).toContain("/sobjects/Opportunity/describe");
+});
+
+it("returns no choices rather than throwing when Describe is unavailable", async () => {
+  // A metadata outage must not surface as a broken check-in page. Callers
+  // treat an empty list as "Closed Lost cannot be offered", which is safe.
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+  await expect(new LiveSalesforceService().getLossReasonOptions()).resolves.toEqual([]);
 });
