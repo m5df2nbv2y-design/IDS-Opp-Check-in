@@ -53,6 +53,46 @@ export const env = {
      * pipeline data must never carry a risk of modifying it.
      */
     writeEnabled: process.env.SALESFORCE_WRITE_ENABLED === "true",
+
+    /**
+     * The widened write scope, and every part of it is OFF unless named.
+     *
+     * The original scope was StageName plus CloseDate, deliberately. Each
+     * addition below is a separate switch because each carries a different
+     * risk, and bundling them would hide the one that can destroy data.
+     *
+     * No API name is ever guessed. A field with no configured name is simply
+     * not written — not an error, just absent from the PATCH — so a
+     * half-configured org degrades to the old narrow behaviour instead of
+     * failing sends or inventing a field.
+     */
+    write: {
+      /**
+       * Salesforce derives Probability from StageName on its own. Writing it
+       * explicitly only matters where the org's stage-to-probability mapping
+       * differs from the one the recipient was shown.
+       */
+      probability: process.env.SF_WRITE_PROBABILITY === "true",
+      /**
+       * API name for the recipient's comment, e.g. "Description".
+       *
+       * DANGER: a PATCH REPLACES this field. Pointing it at Description
+       * destroys whatever the sales team had written there. That is why the
+       * mode below must also be set — the field name alone is not enough.
+       */
+      commentField: process.env.SF_FIELD_COMMENT ?? "",
+      /** Only "replace" is supported, and it must be stated out loud. */
+      commentMode: process.env.SF_COMMENT_WRITE_MODE ?? "",
+      /** API name for the loss reason, e.g. "Loss_Reason__c". Custom field. */
+      lossReasonField: process.env.SF_FIELD_LOSS_REASON ?? "",
+      /**
+       * Closed Lost is withheld unless this is true AND a loss reason can
+       * actually travel with it. Pushing a loss with no reason recorded is
+       * worse than not pushing it: the CRM shows a dead opportunity and no
+       * explanation, and the explanation is the part the business wanted.
+       */
+      closedLost: process.env.SF_WRITE_CLOSED_LOST === "true",
+    },
     loginUrl: str("SF_LOGIN_URL", "https://login.salesforce.com"),
     instanceUrl: process.env.SF_INSTANCE_URL ?? "",
     clientId: process.env.SF_CLIENT_ID ?? "",

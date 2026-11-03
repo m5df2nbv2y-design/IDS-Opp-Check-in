@@ -7,6 +7,23 @@ export const WIN_PROBABILITIES = [
   { stage: "NEGOTIATION", label: "90%" },
 ] as const;
 
+/**
+ * The numeric win probability the recipient was shown for a stage.
+ *
+ * Parsed from the same table the UI renders, so the number written to
+ * Salesforce is by construction the number the person actually saw. Keeping a
+ * second hardcoded mapping here would be a silent way for the two to drift.
+ *
+ * Returns null for stages with no probability shown — the closed stages, where
+ * Salesforce sets 100 or 0 from the stage itself and our opinion is not wanted.
+ */
+export function probabilityForStage(stage: string): number | null {
+  const entry = WIN_PROBABILITIES.find((row) => row.stage === stage);
+  if (!entry) return null;
+  const parsed = Number.parseInt(entry.label, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export type LossReasonOption = { value: string; label: string };
 /** Deliberately excludes amount and the Salesforce current stage. */
 export type RecipientOpportunity = {

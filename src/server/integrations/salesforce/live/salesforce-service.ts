@@ -2,6 +2,7 @@ import { accountTypeFromSalesforce } from "@/lib/account-types";
 import { assertLiveIntegrationAllowed } from "@/lib/deployment-environment";
 import { env } from "@/lib/env";
 import { stageFromSalesforce, stageToSalesforce, type OpportunityStage } from "@/lib/stages";
+import { probabilityForStage } from "@/lib/client-response";
 import {
   SalesforceSyncError,
   type OpportunityStatusUpdate,
@@ -235,17 +236,32 @@ export class LiveSalesforceService implements SalesforceService {
   }
 
   async applyUpdate(update: OpportunityStatusUpdate): Promise<void> {
-    if (!env.salesforce.writeEnabled || update.stage === "CLOSED_LOST" || !update.expectedLastModified || !Number.isFinite(update.expectedLastModified.getTime())) {
-      throw new SalesforceSyncError("A current approved open-opportunity update and enabled write-back are required.", { code: "WRITE_REFUSED", retryable: false });
+    const closedLost = update.stage === "CLOSED_LOST";
+
+    if (!env.salesforce.writeEnabled || !update.expectedLastModified || !Number.isFinite(update.expectedLastModified.getTime())) {
+      throw new SalesforceSyncError("A current approved update and enabled write-back are required.", { code: "WRITE_REFUSED", retryable: false });
     }
+
+    /**
+     * Closed Lost needs three things true at once, and the third is the point:
+     * a loss with no reason recorded is worse in the CRM than no push at all,
+     * because the explanation is the part the business actually wanted.
+     */
+    if (closedLost) {
+      const reasonCanTravel = !!env.salesforce.write.lossReasonField && !!update.lossReason;
+      if (!env.salesforce.write.closedLost || !reasonCanTravel) {
+        throw new SalesforceSyncError(
+          "Closed Lost is withheld: it requires SF_WRITE_CLOSED_LOST, a configured SF_FIELD_LOSS_REASON, and a reason on the response.",
+          { code: "WRITE_REFUSED", retryable: false },
+        );
+      }
+    }
+
     if (update.closeDate && (!/^\d{4}-\d{2}-\d{2}$/.test(update.closeDate) || !Number.isFinite(Date.parse(update.closeDate)) || new Date(update.closeDate).toISOString().slice(0, 10) !== update.closeDate)) {
       throw new SalesforceSyncError("Invalid CloseDate.", { code: "WRITE_REFUSED", retryable: false });
     }
-    // Explicit allowlist. Notes, Probability and loss reasons are never written.
-    await this.patchOpportunity(update.externalId, {
-      StageName: stageToSalesforce(update.stage),
-      ...(update.closeDate ? { CloseDate: update.closeDate } : {}),
-    }, update.expectedLastModified);
+
+    await this.patchOpportunity(update.externalId, buildWritePayload(update), update.expectedLastModified);
   }
 
   // -- transport ------------------------------------------------------------
@@ -441,3 +457,52 @@ async function describeError(response: Response): Promise<string> {
   }
   return `Salesforce request failed (${response.status}) ${text.slice(0, 200)}`.trim();
 }
+
+/**
+ * The fields a write is allowed to touch, assembled from explicit configuration.
+ *
+ * This is still an allowlist — it just has more entries than StageName and
+ * CloseDate now. The property that must survive the widening: a field appears
+ * in the PATCH only when someone named it in configuration AND the response
+ * actually carries a value for it. Nothing here guesses an API name, and a
+ * half-configured org quietly degrades to the old narrow write rather than
+ * failing or inventing a field.
+ *
+ * Exported for testing, because the exact shape of this object IS the security
+ * boundary — asserting on it is more meaningful than asserting on a mock.
+ */
+export function buildWritePayload(update: OpportunityStatusUpdate): Record<string, unknown> {
+  const write = env.salesforce.write;
+  const payload: Record<string, unknown> = { StageName: stageToSalesforce(update.stage) };
+
+  if (update.closeDate) payload.CloseDate = update.closeDate;
+
+  /**
+   * Probability is standard and Salesforce derives it from StageName anyway.
+   * Writing it explicitly only changes anything where the org's own
+   * stage-to-probability mapping differs from the one the recipient saw — in
+   * which case the number they were shown is the one that should win.
+   */
+  if (write.probability) {
+    const probability = probabilityForStage(update.stage);
+    if (probability !== null) payload.Probability = probability;
+  }
+
+  /**
+   * A PATCH replaces this field outright. Requiring the mode as well as the
+   * name means nobody can point it at Description and silently erase what the
+   * sales team wrote there without having said "replace" first.
+   */
+  if (write.commentField && write.commentMode === "replace") {
+    const comment = update.comment?.trim();
+    if (comment) payload[write.commentField] = comment;
+  }
+
+  // The picklist VALUE, read from the org's own Describe — never the label.
+  if (write.lossReasonField && update.lossReason) {
+    payload[write.lossReasonField] = update.lossReason;
+  }
+
+  return payload;
+}
+
