@@ -16,6 +16,8 @@ import { ReviewOpportunityCheckbox, ReviewSelectionProvider } from "./review-sel
 import { readEmailCopy } from "@/lib/check-in-copy";
 import { ReviewedEmailPreview } from "@/components/admin/reviewed-email-preview";
 import { EmailComposer } from "@/components/admin/email-composer";
+import { LossReasonWarning } from "@/components/admin/loss-reason-warning";
+import { lossReasonHealth } from "@/server/services/loss-reason-health";
 
 export const dynamic = "force-dynamic";
 
@@ -180,6 +182,7 @@ export default async function ReviewPage() {
         <ReviewedEmailPreview copy={readEmailCopy(draft)} recipients={recipients.map((recipient) => ({ contactId: recipient.contactId, contactName: recipient.contactName, contactEmail: recipient.contactEmail, accountName: recipient.accountName, opportunityCount: recipient.opportunities.length }))} />
         <ButtonLink href="/admin/recipient-preview" variant="ghost" size="sm">Preview the recipient experience →</ButtonLink>
       </section>
+      <LossReasonWarning health={await lossReasonHealth()} />
       <SendPanel
         key={`${draft.id}:${draft.emailRevision}:${recipients.flatMap((recipient) => recipient.opportunities.map((opportunity) => opportunity.id)).sort().join(",")}`}
         campaignId={draft.id}

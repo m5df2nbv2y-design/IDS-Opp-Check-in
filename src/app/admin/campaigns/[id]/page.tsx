@@ -9,6 +9,8 @@ import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@
 import { stageLabel } from "@/lib/stages";
 import { getCampaignSummary, listResponses } from "@/server/services/campaign-service";
 import { env } from "@/lib/env";
+import { LossReasonWarning } from "@/components/admin/loss-reason-warning";
+import { lossReasonHealth } from "@/server/services/loss-reason-health";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +31,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
 
   return (
     <div className="space-y-8">
+      <LossReasonWarning health={await lossReasonHealth()} />
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <ButtonLink href="/admin" variant="ghost" size="sm" className="-ml-3 mb-1">

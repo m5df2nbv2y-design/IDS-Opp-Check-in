@@ -1,5 +1,6 @@
 import type { AccountType } from "@/lib/account-types";
 import type { OpportunityStage } from "@/lib/stages";
+import type { LossReasonRefusal } from "@/lib/client-response";
 
 /**
  * The contract between IDS Opportunity Check-In and Salesforce/SFX.
@@ -129,6 +130,20 @@ export interface SalesforceService {
 
   /** Read-only, active Loss Reason options; no fallback to invented live values. */
   getLossReasonOptions?(): Promise<{ value: string; label: string }[]>;
+
+  /**
+   * The same read as getLossReasonOptions, but reporting WHY it came back
+   * empty when it did.
+   *
+   * Exists so an administrator is not left with a silent empty dropdown and a
+   * recipient-facing "currently unavailable". Optional because only the live
+   * provider can refuse — the mock org's choices are fixed, so there is
+   * nothing to diagnose.
+   */
+  describeLossReasons?(): Promise<{
+    options: { value: string; label: string }[];
+    refusal: LossReasonRefusal | null;
+  }>;
 
   getOpportunity(externalId: string): Promise<SalesforceOpportunity | null>;
 
