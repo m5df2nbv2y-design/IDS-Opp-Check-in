@@ -1,6 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { env } from "@/lib/env";
-import { LiveSalesforceService } from "@/server/integrations/salesforce/live/salesforce-service";
+import {
+  LiveSalesforceService,
+  resetDescribeCacheForTests,
+} from "@/server/integrations/salesforce/live/salesforce-service";
 vi.mock("@/server/integrations/salesforce/live/auth", () => ({ requestAccessToken: vi.fn(async () => ({ accessToken: "synthetic", instanceUrl: "https://salesforce.example.invalid", identityUrl: null })) }));
 const previous = env.salesforce.writeEnabled;
 afterEach(() => { vi.unstubAllGlobals(); Object.defineProperty(env.salesforce, "writeEnabled", { value: previous, configurable: true }); });
@@ -59,6 +62,11 @@ it("reads Loss Reason choices from the org, and degrades without throwing", asyn
 it("returns no choices rather than throwing when Describe is unavailable", async () => {
   // A metadata outage must not surface as a broken check-in page. Callers
   // treat an empty list as "Closed Lost cannot be offered", which is safe.
+  //
+  // The cache is module-global and the test above populated it, so this asks
+  // for the COLD-cache behaviour explicitly. Warm, the correct answer is the
+  // opposite: a cached list should survive an outage rather than be discarded.
+  resetDescribeCacheForTests();
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
   await expect(new LiveSalesforceService().getLossReasonOptions()).resolves.toEqual([]);
 });

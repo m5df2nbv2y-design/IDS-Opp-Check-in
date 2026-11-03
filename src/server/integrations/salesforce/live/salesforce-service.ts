@@ -47,6 +47,49 @@ import {
 const API_VERSION = "v61.0";
 
 /**
+ * The Opportunity Describe, cached.
+ *
+ * Without this, getLossReasonOptions() calls Salesforce on EVERY render of the
+ * public check-in page and again on every Closed Lost save — one API call per
+ * page load, against the org's daily limit, for metadata that changes about
+ * once a year.
+ *
+ * Module scope rather than instance scope: the service is memoised per process
+ * already, but keeping the cache here means it survives even if that ever
+ * changes. Each serverless instance holds its own copy, which is the right
+ * granularity — it bounds calls per instance without needing shared state.
+ *
+ * A transport FAILURE is never cached. Caching it would let one network blip
+ * refuse Closed Lost for the whole TTL, turning a momentary problem into a
+ * sustained one. The cost of not caching it is a retry on the next request,
+ * which is exactly what should happen.
+ */
+let describeCache: {
+  value: { options: { value: string; label: string }[]; refusal: LossReasonRefusal | null };
+  expiresAt: number;
+} | null = null;
+
+/** Shared by concurrent callers on a cold cache, so a burst makes one call. */
+let describeInFlight: Promise<{
+  options: { value: string; label: string }[];
+  refusal: LossReasonRefusal | null;
+}> | null = null;
+
+/**
+ * Ten minutes. Long enough that a campaign's traffic costs a handful of calls,
+ * short enough that a corrected picklist reaches recipients without a deploy —
+ * which matters, because a stale list can offer a value the org will reject.
+ */
+const DESCRIBE_CACHE_MS = 10 * 60 * 1000;
+
+/** Test seam. Module state would otherwise leak between cases. */
+export function resetDescribeCacheForTests(): void {
+  describeCache = null;
+  describeInFlight = null;
+}
+
+
+/**
  * Transport policy.
  *
  * A hung Salesforce connection must not hold a serverless request open until
@@ -429,11 +472,42 @@ export class LiveSalesforceService implements SalesforceService {
     options: { value: string; label: string }[];
     refusal: LossReasonRefusal | null;
   }> {
-    const response = await this.readWithRetry(
-      (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
-    );
-    const metadata = (await response.json()) as Parameters<typeof diagnoseLossReasonDescribe>[0];
-    return diagnoseLossReasonDescribe(metadata);
+    const cached = describeCache;
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    /**
+     * Single-flight. Without this, a campaign send puts many recipients on the
+     * check-in page at once and every one of them triggers its own Describe
+     * against a cold cache — the exact burst the cache exists to prevent.
+     * Concurrent callers share one request instead.
+     */
+    if (describeInFlight) return describeInFlight;
+
+    describeInFlight = (async () => {
+      const response = await this.readWithRetry(
+        (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
+      );
+      const metadata = (await response.json()) as Parameters<typeof diagnoseLossReasonDescribe>[0];
+      return diagnoseLossReasonDescribe(metadata);
+    })();
+
+    try {
+      const value = await describeInFlight;
+      /**
+       * Cached whether or not it refused. A refusal such as RECORD_TYPE_SCOPED
+       * is a stable fact about how the org is configured, not a failure — it
+       * will keep being true until someone changes Salesforce, so re-asking
+       * every render would spend API calls to learn the same thing.
+       *
+       * A THROW is different and is deliberately not cached: see below.
+       */
+      describeCache = { value, expiresAt: Date.now() + DESCRIBE_CACHE_MS };
+      return value;
+    } finally {
+      // Cleared on failure too, so a transient outage does not pin every later
+      // caller to the same rejected promise.
+      describeInFlight = null;
+    }
   }
 
   private async patchOpportunity(externalId: string, fields: Record<string, unknown>, expectedLastModified?: Date) {
