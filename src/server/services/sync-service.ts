@@ -97,7 +97,21 @@ export async function syncCampaignResponses(
     // The answer is already safely stored. Withholding the push keeps
     // Salesforce untouched while still showing exactly what WOULD be sent.
     const approved = approval?.itemId === item.id && approval.revision === item.updatedAt.toISOString() && !!item.recipient.completedAt;
-    if (!writeEnabled || (!salesforce.info.simulated && (!approved || isClosedStage(nextStage)))) {
+
+    /**
+     * Closed Lost used to be withheld outright. It is now allowed, but only
+     * when its reason can travel with it: the switch is on, a field is named,
+     * and this response actually carries a reason.
+     *
+     * Pushing a loss with no reason recorded is worse than not pushing it —
+     * the CRM would show a dead opportunity and no explanation, and the
+     * explanation is the part the business wanted from the check-in.
+     */
+    const closedLostBlocked =
+      isClosedStage(nextStage) &&
+      !(env.salesforce.write.closedLost && env.salesforce.write.lossReasonField && item.lossReason);
+
+    if (!writeEnabled || (!salesforce.info.simulated && (!approved || closedLostBlocked))) {
       await prisma.checkInOpportunity.updateMany({
         where: { id: item.id, updatedAt: item.updatedAt, syncStatus: { in: ["PENDING", "FAILED", "WITHHELD"] } },
         data: { syncStatus: "WITHHELD", syncError: null },
@@ -109,7 +123,11 @@ export async function syncCampaignResponses(
         actorKind: "SYSTEM",
         fromStatus: item.previousStatus,
         toStatus: nextStage,
-        detail: !writeEnabled ? "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\")." : "Individual approval is required; Closed Lost remains deferred.",
+        detail: !writeEnabled
+          ? "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\")."
+          : closedLostBlocked
+            ? closedLostWithholdReason(item.lossReason)
+            : "Individual approval is required before this update is pushed.",
         ...auditContext,
       });
       outcome.withheld += 1;
@@ -148,6 +166,10 @@ export async function syncCampaignResponses(
         stage: nextStage,
         ...(dateChanged ? { closeDate: item.updatedCloseDate!.toISOString().slice(0, 10) } : {}),
         expectedLastModified,
+        // Passed unconditionally; the provider's allowlist decides whether it
+        // is actually written, based on what is configured. The recipient's
+        // comment is deliberately NOT sent: it stays local, visible to admins.
+        lossReason: item.lossReason,
       });
 
       await prisma.$transaction([
@@ -208,4 +230,23 @@ export async function syncCampaignResponses(
 
 export async function retryFailedSyncs(campaignId: string, actor = "admin"): Promise<SyncOutcome> {
   return syncCampaignResponses({ campaignId }, actor);
+}
+
+/**
+ * Say which of the three preconditions is missing, not merely that one is.
+ *
+ * An admin reading "Closed Lost remains deferred" cannot act on it. Naming the
+ * absent piece turns the audit line into an instruction.
+ */
+function closedLostWithholdReason(lossReason: string | null): string {
+  if (!env.salesforce.write.closedLost) {
+    return "Closed Lost write-back is off (SF_WRITE_CLOSED_LOST is not \"true\").";
+  }
+  if (!env.salesforce.write.lossReasonField) {
+    return "Closed Lost needs a loss reason field: SF_FIELD_LOSS_REASON is not set.";
+  }
+  if (!lossReason) {
+    return "This response records no loss reason, so Closed Lost was not pushed.";
+  }
+  return "Individual approval is required before this update is pushed.";
 }

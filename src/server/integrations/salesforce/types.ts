@@ -98,6 +98,11 @@ export type OpportunityStatusUpdate = {
   stage: OpportunityStage;
   closeDate?: string;
   expectedLastModified?: Date;
+  /**
+   * The picklist VALUE — not the label — as read from the org's own Describe.
+   * Written only when SF_FIELD_LOSS_REASON names a field.
+   */
+  lossReason?: string | null;
 };
 
 export type SalesforceProviderInfo = {
