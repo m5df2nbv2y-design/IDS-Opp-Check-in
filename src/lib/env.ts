@@ -79,6 +79,29 @@ export const env = {
   resendApiKey: process.env.RESEND_API_KEY ?? "",
 
   /**
+   * Microsoft Graph send-as-mailbox.
+   *
+   * Graph needs no DNS records of its own: Microsoft is already authoritative
+   * for the domain's mail, which is the whole reason this path exists. What it
+   * needs instead is admin consent for Mail.Send and — importantly — an
+   * Exchange Application Access Policy narrowing that consent to ONE mailbox.
+   * Mail.Send as granted is tenant-wide ("send mail as any user"), so the
+   * policy is what makes it least-privilege rather than a standing ability to
+   * impersonate anyone in the tenant.
+   *
+   * The tenant and client id are reused from the sign-in registration. The
+   * mailbox is explicit rather than derived from emailFromAddress, so a
+   * mis-set From cannot silently redirect which mailbox we send as.
+   */
+  graph: {
+    tenantId: process.env.GRAPH_TENANT_ID ?? "",
+    clientId: process.env.GRAPH_CLIENT_ID ?? "",
+    clientSecret: process.env.GRAPH_CLIENT_SECRET ?? "",
+    /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
+    senderMailbox: process.env.GRAPH_SENDER_MAILBOX ?? "",
+  },
+
+  /**
    * The ONE address the "Send test email" demo action may send to. Read only
    * on the server and never echoed to the browser. Empty disables the action
    * entirely — it fails closed rather than falling back to a contact's real
