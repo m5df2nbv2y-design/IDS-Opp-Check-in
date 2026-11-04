@@ -131,7 +131,7 @@ describe("resume a half-sent launch", () => {
     const gap = mine[1];
     await prisma.checkInOpportunity.deleteMany({ where: { opportunityId: gap.id, recipient: { campaignId } } });
     await prisma.opportunity.update({ where: { id: gap.id }, data: { isOpen: false } });
-    expect((await resumeLaunch(campaignId, "test")).unreachedAfter).toBeGreaterThanOrEqual(0);
+    expect((await resumeLaunch(campaignId, "test")).unreachedAfter).toBe(0);
     const reached = () =>
       prisma.checkInOpportunity.count({ where: { opportunityId: gap.id, recipient: { campaignId } } });
     expect(await reached()).toBe(0);
@@ -226,5 +226,46 @@ describe("resume a half-sent launch", () => {
     const result = await resumeLaunch(campaignId, "test");
     expect(result).toMatchObject({ emailsSent: 0, recipients: 0, opportunities: 0, unreachedAfter: 0 });
     expect(await audits()).toBe(before);
+  });
+
+  it("a drifted-then-sendable opportunity of a never-launched contact gets a fresh recipient and exactly one invite", async () => {
+    const { campaignId, others } = await halfSentCampaign();
+    const target = others[0];
+    await prisma.campaignSelection.deleteMany({ where: { campaignId, opportunityId: { not: target.id } } });
+    await prisma.opportunity.update({ where: { id: target.id }, data: { isOpen: false } });
+    await resumeLaunch(campaignId, "test");
+    expect(await prisma.checkInRecipient.count({ where: { campaignId, contactId: target.contactId! } })).toBe(0);
+    await prisma.opportunity.update({ where: { id: target.id }, data: { isOpen: true } });
+    await resumeLaunch(campaignId, "test");
+    expect(await prisma.checkInRecipient.count({ where: { campaignId, contactId: target.contactId! } })).toBe(1);
+    expect((await invites(campaignId)).filter((e) => e.toName === target.contact!.name)).toHaveLength(1);
+    await resumeLaunch(campaignId, "test");
+    expect((await invites(campaignId)).filter((e) => e.toName === target.contact!.name)).toHaveLength(1);
+  });
+
+  it("a finished campaign whose shortfall later clears is closed by resume", async () => {
+    const { campaignId, others } = await halfSentCampaign();
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+    await prisma.opportunity.updateMany({ where: { id: { in: others.map((o) => o.id) } }, data: { isOpen: false } });
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("IN_PROGRESS");
+    await resumeLaunch(campaignId, "test");
+    const after = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(after.status).toBe("COMPLETE");
+    expect(after.completedAt).not.toBeNull();
+  });
+
+  it("the early-return resume closes a campaign whose recipients are all complete", async () => {
+    const { campaignId } = await halfSentCampaign();
+    await resumeLaunch(campaignId, "test");
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+    await resumeLaunch(campaignId, "test");
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("COMPLETE");
+  });
+
+  it("resume leaves a campaign IN_PROGRESS while a recipient is still outstanding", async () => {
+    const { campaignId } = await halfSentCampaign();
+    await resumeLaunch(campaignId, "test");
+    await resumeLaunch(campaignId, "test");
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("IN_PROGRESS");
   });
 });

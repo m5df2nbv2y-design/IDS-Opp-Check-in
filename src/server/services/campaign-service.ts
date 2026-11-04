@@ -11,6 +11,14 @@ import { getSalesforceService } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit, type AuditEventType } from "./audit-service";
 import { recordSnapshot, SNAPSHOT_SOURCES } from "./snapshot-service";
 
+/** Provider text for the audit table: no URLs or check-in paths (they can carry a token), capped length. */
+export function safeErrorText(message: string): string {
+  return message
+    .replace(/https?:\/\/\S+/gi, "[link removed]")
+    .replace(/\/checkin\/\S*/gi, "[link removed]")
+    .slice(0, 300);
+}
+
 export type RecipientStatus =
   | "PENDING"
   | "SENT"
@@ -351,7 +359,8 @@ export async function launchCampaign(options: {
       if (!isRecipientClaimConflict(error)) throw error;
       if (options.resume) {
         // Already invited by an earlier launch: attach any missing items to the
-        // live link instead of emailing again. Done or revoked links get nothing.
+        // live link instead of emailing again. Done or revoked links get nothing;
+        // a sendable opportunity left that way is reported via `unreachedAfter`, not fixed here.
         const existing = await prisma.checkInRecipient.findUnique({
           where: { campaignId_contactId: { campaignId: campaign.id, contactId } },
           include: { items: { select: { opportunityId: true, position: true } } },
@@ -386,7 +395,9 @@ export async function launchCampaign(options: {
 
     if (!sendEmails) continue;
 
-    const result = await getEmailService().send(
+    let result: { status: string; error?: string };
+    try {
+      result = await getEmailService().send(
       buildInviteEmail({
         contactName: contact.name,
         contactEmail: contact.email,
@@ -398,6 +409,10 @@ export async function launchCampaign(options: {
         copy: emailCopy,
       }),
     );
+    } catch (err) {
+      // Never retried: the mail may or may not have gone. Record it so it is not silently "reached".
+      result = { status: "FAILED", error: safeErrorText(err instanceof Error ? err.message : "send threw") };
+    }
 
     if (result.status === "SENT") {
       emailsSent += 1;
@@ -419,14 +434,14 @@ export async function launchCampaign(options: {
       emailsFailed += 1;
       await prisma.checkInRecipient.update({
         where: { id: recipient.id },
-        data: { sendStatus: "FAILED", sendError: result.error ?? "Unknown error" },
+        data: { sendStatus: "FAILED", sendError: safeErrorText(result.error ?? "Unknown error") },
       });
       await recordAudit({
         type: AUDIT_EVENTS.INVITE_FAILED,
         summary: `Check-in email to ${contact.name} failed`,
         actor,
         actorKind: "ADMIN",
-        detail: result.error ?? null,
+        detail: result.error ? safeErrorText(result.error) : null,
         campaignId: campaign.id,
         contactId,
         accountId: contact.accountId,
@@ -479,6 +494,7 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
   });
   const opportunityIds = await getUnreachedOpportunityIds(campaignId);
   if (opportunityIds.length === 0) {
+    await closeCampaignIfDone(campaignId);
     return {
       campaignId,
       name: campaign.name,
@@ -499,7 +515,9 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
     emailCopy: readEmailCopy(campaign),
     resume: true,
   });
-  return { ...result, unreachedAfter: (await getUnreachedOpportunityIds(campaignId)).length };
+  const unreachedAfter = (await getUnreachedOpportunityIds(campaignId)).length;
+  await closeCampaignIfDone(campaignId);
+  return { ...result, unreachedAfter };
 }
 
 /**
@@ -594,6 +612,8 @@ export async function sendReminders(
     }
 
     // A failure while recording the outcome must not abort the rest of the batch.
+    const log = (err: unknown) =>
+      console.error(`sendReminders: could not record outcome for recipient ${recipient.id}`, err);
     try {
       if (result?.status === "SENT") {
         sent += 1;
@@ -604,13 +624,17 @@ export async function sendReminders(
         await audit(AUDIT_EVENTS.REMINDER_SENT, `Reminder sent to ${who}`);
       } else if (thrown !== undefined || result?.status === "FAILED") {
         failed += 1;
-        await restore();
+        try {
+          await restore();
+        } catch (err) {
+          log(err);
+        }
         await audit(
           AUDIT_EVENTS.REMINDER_FAILED,
           `Reminder failed for ${who}`,
           thrown !== undefined
-            ? `send threw before an outcome was known: ${thrown}`
-            : (result?.error ?? "send failed"),
+            ? `send threw before an outcome was known: ${safeErrorText(thrown)}`
+            : safeErrorText(result?.error ?? "send failed"),
         );
       } else {
         // Unknown outcome: the email may have been delivered, so keep the new token and never retry.
@@ -622,7 +646,7 @@ export async function sendReminders(
         );
       }
     } catch (err) {
-      console.error(`sendReminders: could not record outcome for recipient ${recipient.id}`, err);
+      log(err);
     }
   }
 
@@ -698,6 +722,21 @@ export async function getUnreachedOpportunityIds(campaignId: string): Promise<st
   ]);
   const reachedIds = new Set(reached.map((item) => item.opportunityId));
   return selections.map((s) => s.opportunityId).filter((id) => !reachedIds.has(id));
+}
+
+/** Marks the campaign COMPLETE once every recipient has finished. */
+export async function closeCampaignIfDone(campaignId: string): Promise<void> {
+  const outstanding = await prisma.checkInRecipient.count({
+    where: { campaignId, completedAt: null, revokedAt: null },
+  });
+  if (outstanding > 0) return;
+  // A half-sent launch is not finished just because everyone it reached is.
+  if ((await getUnreachedOpportunityIds(campaignId)).length > 0) return;
+
+  await prisma.campaign.updateMany({
+    where: { id: campaignId, completedAt: null },
+    data: { status: "COMPLETE", completedAt: new Date() },
+  });
 }
 
 export async function getCampaignSummary(campaignId: string): Promise<CampaignSummary | null> {

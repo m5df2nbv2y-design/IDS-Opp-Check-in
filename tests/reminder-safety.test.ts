@@ -135,4 +135,44 @@ describe("reminder safety", () => {
     expect(row.detail).toMatch(/send threw before an outcome was known/);
     expect(row.detail).toContain("live send refused");
   });
+
+  it("provider error text never puts a link or token in the audit table", async () => {
+    const { campaignId } = await campaignWithRecipient();
+    override = async () => ({ id: "", status: "FAILED", error: "bad https://example.invalid/checkin/SECRETTOKEN123 end" });
+    await sendReminders(campaignId, "test");
+    override = async () => {
+      throw new Error("see https://example.invalid/checkin/SECRETTOKEN123 " + "x".repeat(500));
+    };
+    await sendReminders(campaignId, "test");
+    const rows = await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.REMINDER_FAILED } });
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.detail).not.toContain("SECRETTOKEN123");
+      expect(r.detail).toContain("[link removed]");
+      expect(r.detail!.length).toBeLessThan(400);
+    }
+  });
+
+  it("a thrown invite send marks that recipient FAILED, audits it, and the rest are still sent", async () => {
+    await refreshCatalogFromSalesforce("test");
+    const opps = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    });
+    const two = [...new Map(opps.map((o) => [o.contactId, o])).values()].slice(0, 2);
+    let calls = 0;
+    override = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("live send refused https://example.invalid/checkin/SECRETTOKEN123");
+      return { id: "x", status: "SENT" };
+    };
+    const result = await launchCampaign({ opportunityIds: two.map((o) => o.id), name: "R", period: "T", actor: "test" });
+    expect(result.emailsFailed).toBe(1);
+    expect(result.emailsSent).toBe(1);
+    const rows = await prisma.checkInRecipient.findMany({ where: { campaignId: result.campaignId } });
+    expect(rows.filter((r) => r.sendStatus === "FAILED")).toHaveLength(1);
+    expect(rows.filter((r) => r.sendStatus === "SENT")).toHaveLength(1);
+    const [audit] = await audits(result.campaignId, AUDIT_EVENTS.INVITE_FAILED);
+    expect(audit.detail).toContain("live send refused");
+    expect(audit.detail).not.toContain("SECRETTOKEN123");
+  });
 });
