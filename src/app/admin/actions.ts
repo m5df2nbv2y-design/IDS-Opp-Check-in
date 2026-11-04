@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { sendReminders } from "@/server/services/campaign-service";
+import { resumeLaunch, sendReminders } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -92,6 +92,13 @@ export async function clearSelectionsAction() {
   await clearSelections(draft.id);
   revalidatePath("/admin");
   revalidatePath("/admin/campaigns/review");
+}
+
+export async function resumeLaunchAction(campaignId: string): Promise<void> {
+  const actor = await requireAdminActor();
+  await resumeLaunch(campaignId, actor);
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin/outbox");
 }
 
 export async function sendRemindersAction(campaignId: string) {

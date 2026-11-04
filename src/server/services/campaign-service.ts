@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
-import { DraftEmailConflictError, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
+import { DraftEmailConflictError, readEmailCopy, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
 import { checkInUrl, issueToken } from "@/lib/tokens";
 import { getEmailService } from "@/server/integrations/email";
 import {
@@ -178,6 +178,8 @@ export async function launchCampaign(options: {
   campaignId?: string;
   emailCopy?: EmailCopy;
   expectedEmailRevision?: number;
+  /** Finish an IN_PROGRESS campaign: leave its name, status and startedAt alone. */
+  resume?: boolean;
 }): Promise<LaunchResult> {
   // Runtime half of the type-level guarantee: a JavaScript caller, a bad cast,
   // or a deserialized payload cannot slip past the compiler into a full send.
@@ -213,7 +215,7 @@ export async function launchCampaign(options: {
     else byContact.set(opportunity.contactId!, [opportunity]);
   }
 
-  if (options.campaignId && options.expectedEmailRevision !== undefined) {
+  if (!options.resume && options.campaignId && options.expectedEmailRevision !== undefined) {
     const claimed = await prisma.campaign.updateMany({
       where: { id: options.campaignId, status: "DRAFT", emailRevision: options.expectedEmailRevision },
       data: { name, status: "IN_PROGRESS", startedAt: new Date() },
@@ -222,7 +224,7 @@ export async function launchCampaign(options: {
   }
 
   const campaign = options.campaignId
-    ? options.expectedEmailRevision !== undefined
+    ? options.resume || options.expectedEmailRevision !== undefined
       ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } })
       : await prisma.campaign.update({
         where: { id: options.campaignId },
@@ -277,15 +279,23 @@ export async function launchCampaign(options: {
     const contact = items[0].contact!;
     const token = issueToken();
 
-    const recipient = await prisma.checkInRecipient.create({
-      data: {
-        campaignId: campaign.id,
-        contactId,
-        tokenHash: token.hash,
-        tokenHint: token.hint,
-        expiresAt,
-      },
-    });
+    // The (campaignId, contactId) unique constraint is the claim: if another
+    // launch or resume created this contact first, skip — it owns the send.
+    let recipient;
+    try {
+      recipient = await prisma.checkInRecipient.create({
+        data: {
+          campaignId: campaign.id,
+          contactId,
+          tokenHash: token.hash,
+          tokenHint: token.hint,
+          expiresAt,
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string })?.code === "P2002") continue;
+      throw error;
+    }
 
     await prisma.checkInOpportunity.createMany({
       data: items.map((opportunity, index) => ({
@@ -381,7 +391,7 @@ export async function launchCampaign(options: {
 
   await recordAudit({
     type: AUDIT_EVENTS.CAMPAIGN_CREATED,
-    summary: `${campaign.name} launched to ${byContact.size} external contacts covering ${opportunities.length} opportunities`,
+    summary: `${campaign.name} ${options.resume ? "resumed" : "launched"} to ${byContact.size} external contacts covering ${opportunities.length} opportunities`,
     actor,
     actorKind: "ADMIN",
     campaignId: campaign.id,
@@ -397,6 +407,28 @@ export async function launchCampaign(options: {
     emailsFailed,
     unresolvedOpportunities: unresolved,
   };
+}
+
+/**
+ * Finish a half-sent launch: email every selected contact that has no recipient
+ * row yet. Contacts that already have one are never re-sent.
+ */
+export async function resumeLaunch(campaignId: string, actor = "admin"): Promise<LaunchResult> {
+  const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+  if (campaign.status !== "IN_PROGRESS") {
+    throw new Error("Only an IN_PROGRESS campaign can be resumed.");
+  }
+  // Crash orphans: a recipient created but never given items or sent.
+  await prisma.checkInRecipient.deleteMany({
+    where: { campaignId, sendStatus: "PENDING", sentAt: null, items: { none: {} } },
+  });
+  return launchCampaign({
+    opportunityIds: await getUnreachedOpportunityIds(campaignId),
+    campaignId,
+    actor,
+    emailCopy: readEmailCopy(campaign),
+    resume: true,
+  });
 }
 
 /**
