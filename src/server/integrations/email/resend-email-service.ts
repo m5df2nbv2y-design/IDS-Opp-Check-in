@@ -26,7 +26,7 @@ export class ResendEmailService implements EmailService {
     } catch (caught) {
       const existing = await prisma.emailMessage.findUnique({ where: { requestKey } });
       if (!existing) throw caught;
-      return { id: existing.id, status: existing.status === "SENT" ? "SENT" : "FAILED",
+      return { id: existing.id, status: existing.status === "SENT" ? "SENT" : existing.status === "FAILED" ? "FAILED" : "UNCERTAIN",
         error: existing.status === "SENT" ? undefined : existing.error ?? "This send is already recorded. Verify its status before sending again." };
     }
     let status: "SENT" | "FAILED" | "UNCERTAIN" = "FAILED";
@@ -57,6 +57,6 @@ export class ResendEmailService implements EmailService {
       }
     }
     await prisma.emailMessage.update({ where: { id: row.id }, data: { status, error, providerMessageId } });
-    return { id: row.id, status: status === "SENT" ? "SENT" : "FAILED", error };
+    return { id: row.id, status, error };
   }
 }

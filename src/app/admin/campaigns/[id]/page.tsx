@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { approveWritebackAction, retrySyncAction, sendRemindersAction } from "../../actions";
+import { approveWritebackAction, retrySyncAction, resumeLaunchAction, sendRemindersAction } from "../../actions";
 import { ActionButton } from "@/components/admin/action-button";
 import { RecipientTable } from "@/components/admin/recipient-table";
 import { TestEmailPanel } from "@/components/admin/test-email-panel";
@@ -51,17 +51,28 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
               Retry {failed.length} failed {failed.length === 1 ? "sync" : "syncs"}
             </ActionButton>
           ) : null}
-          {summary.pendingCount > 0 ? (
+          {summary.reminderEligibleCount > 0 ? (
             <ActionButton
               action={sendRemindersAction.bind(null, summary.id)}
               pendingLabel="Sending…"
-              confirm={`Send a reminder to the ${summary.pendingCount} contact${summary.pendingCount === 1 ? "" : "s"} who haven't finished? This issues a fresh link and invalidates the previous one.`}
+              confirm={`Send a reminder to the ${summary.reminderEligibleCount} contact${summary.reminderEligibleCount === 1 ? "" : "s"} who haven't finished? This issues a fresh link and invalidates the previous one.`}
             >
-              Send {summary.pendingCount} reminder{summary.pendingCount === 1 ? "" : "s"}
+              Send {summary.reminderEligibleCount} reminder{summary.reminderEligibleCount === 1 ? "" : "s"}
             </ActionButton>
           ) : null}
         </div>
       </div>
+
+      {summary.unreachedCount > 0 ? (
+        <Card className="space-y-3 p-5">
+          <p role="status">{summary.unreachedCount} approved opportunities have no invitation items. This campaign cannot close until the shortfall is reviewed.</p>
+          <p>{summary.recoverableCount} can safely resume for contacts never provisioned. Remaining work needs review of routing, eligibility or an existing invitation; issued links are never expanded.</p>
+          {summary.status === "IN_PROGRESS" && summary.recoverableCount > 0 ? <ActionButton action={resumeLaunchAction.bind(null, summary.id)} pendingLabel="Resuming…" confirm="Resume only approved opportunities for eligible contacts with no existing invitation?">Resume unsent invitations</ActionButton> : null}
+        </Card>
+      ) : null}
+      {summary.unresolvedDeliveryCount > 0 ? (
+        <Card className="p-5"><p role="status">{summary.unresolvedDeliveryCount} invitation or reminder deliveries are pending or unresolved. Automatic replay is blocked. Reconcile provider records before any replacement. An interrupted reminder may have invalidated the previous link; uninterrupted link access cannot be guaranteed.</p></Card>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
         <StatTile

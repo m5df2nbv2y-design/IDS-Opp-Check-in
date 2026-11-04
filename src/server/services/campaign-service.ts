@@ -1,23 +1,18 @@
+import { randomUUID } from "node:crypto";
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { DraftEmailConflictError, readEmailCopy, validateEmailCopy, type EmailCopy } from "@/lib/check-in-copy";
 import { checkInUrl, issueToken } from "@/lib/tokens";
 import { getEmailService } from "@/server/integrations/email";
+import type { EmailSendResult } from "@/server/integrations/email/types";
 import {
   buildInviteEmail,
   buildReminderEmail,
 } from "@/server/integrations/email/templates/check-in-email";
 import { getSalesforceService } from "@/server/integrations/salesforce";
-import { AUDIT_EVENTS, recordAudit, type AuditEventType } from "./audit-service";
+import { AUDIT_EVENTS, recordAudit, sanitizeProviderError } from "./audit-service";
 import { recordSnapshot, SNAPSHOT_SOURCES } from "./snapshot-service";
-
-/** Provider text for the audit table: no URLs or check-in paths (they can carry a token), capped length. */
-export function safeErrorText(message: string): string {
-  return message
-    .replace(/https?:\/\/\S+/gi, "[link removed]")
-    .replace(/\/checkin\/\S*/gi, "[link removed]")
-    .slice(0, 300);
-}
 
 export type RecipientStatus =
   | "PENDING"
@@ -26,16 +21,18 @@ export type RecipientStatus =
   | "IN_PROGRESS"
   | "COMPLETE"
   | "SYNC_ERROR"
-  | "SEND_FAILED";
+  | "SEND_FAILED"
+  | "SEND_UNCERTAIN";
 
 export const RECIPIENT_STATUS_LABELS: Record<RecipientStatus, string> = {
-  PENDING: "Not Sent",
+  PENDING: "Delivery pending",
   SENT: "Sent",
   OPENED: "Opened",
   IN_PROGRESS: "In Progress",
   COMPLETE: "Complete",
   SYNC_ERROR: "Sync Error",
   SEND_FAILED: "Send Failed",
+  SEND_UNCERTAIN: "Delivery unresolved",
 };
 
 /** "Fall 2026" / "Spring 2026" — IDS runs this twice a year. */
@@ -159,22 +156,17 @@ export type LaunchResult = {
   opportunities: number;
   emailsSent: number;
   emailsFailed: number;
+  emailsUncertain?: number;
   unresolvedOpportunities: number;
   /** Set only by resumeLaunch: selected opportunities still unreached after the run. */
   unreachedAfter?: number;
 };
 
-/** A recipient younger than this may belong to a launch still building it. */
-const ORPHAN_GRACE_MS = 2 * 60_000;
-
 /** True only for a unique violation on (campaignId, contactId), not e.g. tokenHash. */
 function isRecipientClaimConflict(error: unknown): boolean {
-  type Constraint = { index?: unknown; fields?: unknown };
-  type Meta = { target?: unknown; driverAdapterError?: { cause?: { constraint?: Constraint } } };
-  const e = error as { code?: string; meta?: Meta } | null;
+  const e = error as { code?: string; meta?: Record<string, unknown> } | null;
   if (e?.code !== "P2002") return false;
-  const constraint = e.meta?.driverAdapterError?.cause?.constraint;
-  const target = e.meta?.target ?? constraint?.index ?? constraint?.fields;
+  const target = e.meta?.target ?? (e.meta?.driverAdapterError as { cause?: { constraint?: { index?: string; fields?: string[] } } } | undefined)?.cause?.constraint?.index;
   const text = Array.isArray(target) ? target.join(",") : String(target ?? "");
   return text.includes("campaignId") && text.includes("contactId");
 }
@@ -233,6 +225,12 @@ export async function launchCampaign(options: {
     orderBy: { amount: "desc" },
   });
 
+  // Never turn an explicit launch selection into a silent partial send.
+  // Resuming an existing campaign reports persisted shortfalls separately.
+  if ((!options.resume || !options.campaignId) && opportunities.length !== new Set(options.opportunityIds).size) {
+    throw new Error("Some selected opportunities are missing or no longer eligible. Review your selection before launching.");
+  }
+
   const byContact = new Map<string, typeof opportunities>();
   for (const opportunity of opportunities) {
     const list = byContact.get(opportunity.contactId!);
@@ -240,24 +238,19 @@ export async function launchCampaign(options: {
     else byContact.set(opportunity.contactId!, [opportunity]);
   }
 
-  if (!options.resume && options.campaignId && options.expectedEmailRevision !== undefined) {
+  const previousCampaign = options.campaignId ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } }) : null;
+  if (previousCampaign && !["DRAFT", "IN_PROGRESS"].includes(previousCampaign.status)) throw new Error("Only draft or in-progress campaigns can launch.");
+  if (!options.resume && options.campaignId && (previousCampaign?.status === "DRAFT" || options.expectedEmailRevision !== undefined)) {
     const claimed = await prisma.campaign.updateMany({
-      where: { id: options.campaignId, status: "DRAFT", emailRevision: options.expectedEmailRevision },
+      where: { id: options.campaignId, status: "DRAFT", ...(options.expectedEmailRevision !== undefined ? { emailRevision: options.expectedEmailRevision } : {}) },
       data: { name, status: "IN_PROGRESS", startedAt: new Date() },
     });
     if (claimed.count !== 1) throw new DraftEmailConflictError("The email draft changed or was already sent. Reload and review it again.");
   }
 
   const campaign = options.campaignId
-    ? options.resume || options.expectedEmailRevision !== undefined
-      ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } })
-      : await prisma.campaign.update({
-        where: { id: options.campaignId },
-        data: { name, status: "IN_PROGRESS", startedAt: new Date() },
-      })
-    : await prisma.campaign.create({
-        data: { name, period, status: "IN_PROGRESS", startedAt: new Date() },
-      });
+    ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } })
+    : await prisma.campaign.create({ data: { name, period, status: "IN_PROGRESS", startedAt: new Date() } });
 
   // `opportunityIds` IS the selection — it is the explicit, human-chosen set,
   // which is why it has no fallback. Record it with the values frozen at this
@@ -283,6 +276,10 @@ export async function launchCampaign(options: {
     (opportunity) => !alreadyRecorded.has(opportunity.id),
   );
 
+  const existingRouting = await prisma.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
+  if (previousCampaign?.status === "IN_PROGRESS" && (!existingRouting || newSelections.length > 0)) {
+    throw new Error("Existing campaign selections and routing require review; launch cannot expand approved work.");
+  }
   if (newSelections.length > 0) {
     await prisma.campaignSelection.createMany({
       data: newSelections.map((opportunity) => ({
@@ -296,13 +293,26 @@ export async function launchCampaign(options: {
     });
   }
 
+  if (!options.resume) {
+    await prisma.$transaction(async (tx) => {
+      await tx.campaign.update({ where: { id: campaign.id }, data: { id: campaign.id } });
+      const previous = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
+      if (!previous) {
+        const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
+        await recordAudit({ type: AUDIT_EVENTS.CAMPAIGN_ROUTING, summary: "Approved invitation routing", actor, actorKind: "ADMIN", campaignId: campaign.id,
+          detail: JSON.stringify({ version: 1, routes: Object.fromEntries(selected.map(({ opportunity: o }) => [o.id, o.contactId])) }) }, tx);
+      }
+    });
+  }
+
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let emailsSent = 0;
   let emailsFailed = 0;
+  let emailsUncertain = 0;
 
   /** Attach items to a recipient and mark the intervention point on the observation timeline. */
-  const addItems = async (recipientId: string, items: typeof opportunities, startPosition: number) => {
-    await prisma.checkInOpportunity.createMany({
+  const addItems = async (tx: Prisma.TransactionClient, recipientId: string, items: typeof opportunities, startPosition: number) => {
+    await tx.checkInOpportunity.createMany({
       data: items.map((opportunity, index) => ({
         recipientId,
         opportunityId: opportunity.id,
@@ -337,7 +347,7 @@ export async function launchCampaign(options: {
         accountName: opportunity.account.name,
         internalRepId: opportunity.internalRepId,
         internalRepName: opportunity.internalRep.name,
-      });
+      }, tx);
     }
   };
 
@@ -349,58 +359,32 @@ export async function launchCampaign(options: {
     // launch or resume created this contact first, skip — it owns the send.
     let recipient;
     try {
-      recipient = await prisma.checkInRecipient.create({
-        data: {
-          campaignId: campaign.id,
-          contactId,
-          tokenHash: token.hash,
-          tokenHint: token.hint,
-          expiresAt,
-        },
+      recipient = await prisma.$transaction(async (tx) => {
+        // Share the campaign lock with completion and recovery. Nothing becomes
+        // externally visible until this recipient's complete item set commits.
+        await tx.campaign.update({ where: { id: campaign.id }, data: { id: campaign.id } });
+        const current = await tx.campaign.findUniqueOrThrow({ where: { id: campaign.id } });
+        if (current.status !== "IN_PROGRESS") throw new Error("Campaign is no longer in progress.");
+        const manifest = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } });
+        const routes: Record<string, string | null> = JSON.parse(manifest?.detail ?? "{}").routes ?? {};
+        const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
+        const approved = selected.filter(s => routes[s.opportunityId] === contactId);
+        const itemIds = new Set(items.map(o => o.id));
+        if (approved.length !== items.length || approved.some(({ opportunity: o }) => !itemIds.has(o.id) || o.contactId !== contactId || !o.isOpen || o.resolutionStatus !== "RESOLVED")) return null;
+        const row = await tx.checkInRecipient.create({
+          data: { campaignId: campaign.id, contactId, tokenHash: token.hash, tokenHint: token.hint, expiresAt },
+        });
+        await addItems(tx, row.id, items, 0);
+        return row;
       });
     } catch (error) {
       if (!isRecipientClaimConflict(error)) throw error;
-      if (options.resume) {
-        // Already invited by an earlier launch: attach any missing items to the
-        // live link instead of emailing again. Done or revoked links get nothing;
-        // a sendable opportunity left that way is reported via `unreachedAfter`, not fixed here.
-        const existing = await prisma.checkInRecipient.findUnique({
-          where: { campaignId_contactId: { campaignId: campaign.id, contactId } },
-          include: { items: { select: { opportunityId: true, position: true } } },
-        });
-        // A fresh, item-less, unsent recipient is still being built by whoever
-        // created it; that run attaches the items itself, so leave it alone.
-        const beingBuilt =
-          existing !== null &&
-          existing.items.length === 0 &&
-          existing.sendStatus === "PENDING" &&
-          existing.sentAt === null &&
-          existing.createdAt.getTime() > Date.now() - ORPHAN_GRACE_MS;
-        if (existing && !beingBuilt && !existing.completedAt && !existing.revokedAt) {
-          const have = new Set(existing.items.map((i) => i.opportunityId));
-          const missing = items.filter((i) => !have.has(i.id));
-          if (missing.length > 0) {
-            const next = Math.max(-1, ...existing.items.map((i) => i.position)) + 1;
-            try {
-              await addItems(existing.id, missing, next);
-            } catch (addError) {
-              // A rival run attached some of these first: the pair is already
-              // reached, which is the goal. Anything else is a real failure.
-              if ((addError as { code?: string })?.code !== "P2002") throw addError;
-            }
-          }
-        }
-      }
       continue;
     }
 
-    await addItems(recipient.id, items, 0);
+    if (!recipient || !sendEmails) continue;
 
-    if (!sendEmails) continue;
-
-    let result: { status: string; error?: string };
-    try {
-      result = await getEmailService().send(
+    const result = await getEmailService().send(
       buildInviteEmail({
         contactName: contact.name,
         contactEmail: contact.email,
@@ -411,45 +395,44 @@ export async function launchCampaign(options: {
         contactId,
         copy: emailCopy,
       }),
-    );
-    } catch (err) {
-      // Never retried: the mail may or may not have gone. Record it so it is not silently "reached".
-      result = { status: "FAILED", error: safeErrorText(err instanceof Error ? err.message : "send threw") };
-    }
+    ).catch(() => ({ id: "", status: "UNCERTAIN" as const, error: "Invitation acceptance is unresolved. Reconcile before sending again." }));
 
-    if (result.status === "SENT") {
-      emailsSent += 1;
-      await prisma.checkInRecipient.update({
-        where: { id: recipient.id },
-        data: { sentAt: new Date(), sendStatus: "SENT" },
-      });
-      await recordAudit({
-        type: AUDIT_EVENTS.INVITE_SENT,
-        summary: `Check-in sent to ${contact.name} at ${contact.account.name}`,
-        actor,
-        actorKind: "ADMIN",
-        detail: `${items.length} opportunities · internal reps: ${[...new Set(items.map((i) => i.internalRep.name))].join(", ")}`,
-        campaignId: campaign.id,
-        contactId,
-        accountId: contact.accountId,
-      });
-    } else {
-      emailsFailed += 1;
-      await prisma.checkInRecipient.update({
-        where: { id: recipient.id },
-        data: { sendStatus: "FAILED", sendError: safeErrorText(result.error ?? "Unknown error") },
-      });
-      await recordAudit({
-        type: AUDIT_EVENTS.INVITE_FAILED,
-        summary: `Check-in email to ${contact.name} failed`,
-        actor,
-        actorKind: "ADMIN",
-        detail: result.error ? safeErrorText(result.error) : null,
-        campaignId: campaign.id,
-        contactId,
-        accountId: contact.accountId,
-      });
-    }
+    await prisma.$transaction(async (tx) => {
+      if (result.status === "SENT") {
+        emailsSent += 1;
+        await tx.checkInRecipient.update({
+          where: { id: recipient.id },
+          data: { sentAt: new Date(), sendStatus: "SENT" },
+        });
+        await recordAudit({
+          type: AUDIT_EVENTS.INVITE_SENT,
+          summary: `Check-in sent to ${contact.name} at ${contact.account.name}`,
+          actor,
+          actorKind: "ADMIN",
+          detail: `${items.length} opportunities · internal reps: ${[...new Set(items.map((i) => i.internalRep.name))].join(", ")}`,
+          campaignId: campaign.id,
+          contactId,
+          accountId: contact.accountId,
+        }, tx);
+      } else {
+        if (result.status === "FAILED") emailsFailed += 1;
+        else emailsUncertain += 1;
+        await tx.checkInRecipient.update({
+          where: { id: recipient.id },
+          data: { sendStatus: result.status, sendError: sanitizeProviderError(result.error) ?? "Unknown error" },
+        });
+        await recordAudit({
+          type: result.status === "UNCERTAIN" ? AUDIT_EVENTS.INVITE_UNCERTAIN : AUDIT_EVENTS.INVITE_FAILED,
+          summary: `Check-in email to ${contact.name} ${result.status === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
+          actor,
+          actorKind: "ADMIN",
+          detail: sanitizeProviderError(result.error),
+          campaignId: campaign.id,
+          contactId,
+          accountId: contact.accountId,
+        }, tx);
+      }
+    });
   }
 
   const unresolved = await prisma.opportunity.count({
@@ -472,8 +455,23 @@ export async function launchCampaign(options: {
     opportunities: opportunities.length,
     emailsSent,
     emailsFailed,
+    emailsUncertain,
     unresolvedOpportunities: unresolved,
   };
+}
+
+/** Marks the campaign COMPLETE once every recipient has finished and every persisted selection is reached. */
+export async function closeCampaignIfDone(campaignId: string): Promise<void> {
+  await prisma.$transaction(async tx => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const outstanding = await tx.checkInRecipient.count({ where: { campaignId, completedAt: null, revokedAt: null } });
+    if (outstanding > 0) return;
+    const selections = await tx.campaignSelection.findMany({ where: { campaignId }, select: { opportunityId: true } });
+    const reached = await tx.checkInOpportunity.findMany({ where: { recipient: { campaignId } }, select: { opportunityId: true } });
+    const reachedIds = new Set(reached.map(item => item.opportunityId));
+    if (selections.some(selection => !reachedIds.has(selection.opportunityId))) return;
+    await tx.campaign.updateMany({ where: { id: campaignId, status: "IN_PROGRESS", completedAt: null }, data: { status: "COMPLETE", completedAt: new Date() } });
+  });
 }
 
 /**
@@ -485,17 +483,7 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
   if (campaign.status !== "IN_PROGRESS") {
     throw new Error("Only an IN_PROGRESS campaign can be resumed.");
   }
-  // Crash orphans: a recipient created but never given items or sent.
-  await prisma.checkInRecipient.deleteMany({
-    where: {
-      campaignId,
-      sendStatus: "PENDING",
-      sentAt: null,
-      items: { none: {} },
-      createdAt: { lt: new Date(Date.now() - ORPHAN_GRACE_MS) },
-    },
-  });
-  const opportunityIds = await getUnreachedOpportunityIds(campaignId);
+  const opportunityIds = await getRecoverableOpportunityIds(campaignId);
   if (opportunityIds.length === 0) {
     await closeCampaignIfDone(campaignId);
     return {
@@ -508,7 +496,7 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
       unresolvedOpportunities: await prisma.opportunity.count({
         where: { isOpen: true, resolutionStatus: "UNRESOLVED" },
       }),
-      unreachedAfter: 0,
+      unreachedAfter: (await getUnreachedOpportunityIds(campaignId)).length,
     };
   }
   const result = await launchCampaign({
@@ -518,20 +506,17 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
     emailCopy: readEmailCopy(campaign),
     resume: true,
   });
-  const unreachedAfter = (await getUnreachedOpportunityIds(campaignId)).length;
   await closeCampaignIfDone(campaignId);
-  return { ...result, unreachedAfter };
+  return { ...result, unreachedAfter: (await getUnreachedOpportunityIds(campaignId)).length };
 }
 
 /**
  * Re-issue a link and send the "you haven't completed your check-in" nudge.
- * The token is rotated, which invalidates the previous link — the reminder is
- * always the newest valid entry point.
+ * The durable claim rotates the token before sending. A confirmed rejection
+ * restores the prior link; unknown acceptance retains recovery evidence and
+ * blocks another send. A crash cannot guarantee uninterrupted old-link access.
  */
-export async function sendReminders(
-  campaignId: string,
-  actor = "admin",
-): Promise<{ sent: number; failed: number; skipped: number }> {
+export async function sendReminders(campaignId: string, actor = "admin"): Promise<number> {
   const recipients = await prisma.checkInRecipient.findMany({
     where: { campaignId, completedAt: null, revokedAt: null },
     include: { contact: { include: { account: true } }, campaign: true, items: true },
@@ -539,121 +524,50 @@ export async function sendReminders(
 
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let sent = 0;
-  let failed = 0;
-  let skipped = 0;
-
   for (const recipient of recipients) {
-    if (recipient.items.length === 0) {
-      skipped += 1;
-      continue;
-    }
-
-    const who = `${recipient.contact.name} at ${recipient.contact.account.name}`;
-    const audit = (type: AuditEventType, summary: string, detail?: string) =>
-      recordAudit({
-        type,
-        summary,
-        detail,
-        actor,
-        actorKind: "ADMIN",
-        campaignId,
-        contactId: recipient.contactId,
-        accountId: recipient.contact.accountId,
-      });
-
+    // PENDING and unknown invitation outcomes must never become resend orders.
+    if (!recipient.items.length || recipient.sendStatus !== "SENT") continue;
     const token = issueToken();
-    // CAS rotation and the attempt row commit together: a lost race leaves no attempt row, a crash
-    // after rotation leaves an attempt with no outcome. Hint only, never the token.
-    const rotated = await prisma.$transaction(async (tx) => {
-      const r = await tx.checkInRecipient.updateMany({
-        where: { id: recipient.id, completedAt: null, revokedAt: null, tokenHash: recipient.tokenHash },
-        data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt },
+    const metadata = JSON.stringify({ version: 1, attempt: randomUUID(), kind: "REMINDER", previous: {
+      hash: recipient.tokenHash, hint: recipient.tokenHint, expiresAt: recipient.expiresAt.toISOString(),
+    } });
+    if (!readReminderRecovery(metadata)) throw new Error("Invalid reminder recovery metadata");
+    const claim = await prisma.$transaction(async tx => {
+      const claimed = await tx.checkInRecipient.updateMany({
+        where: { id: recipient.id, tokenHash: recipient.tokenHash, sendStatus: "SENT", sendError: recipient.sendError, completedAt: null, revokedAt: null },
+        data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt, sendStatus: "REMINDER_PENDING", sendError: metadata },
       });
-      if (r.count > 0) {
-        await tx.auditEvent.create({
-          data: {
-            type: AUDIT_EVENTS.REMINDER_ATTEMPTED,
-            summary: `Reminder attempted for ${who}`,
-            detail: `new token hint ${token.hint}`,
-            actor,
-            actorKind: "ADMIN",
-            campaignId,
-            contactId: recipient.contactId,
-            accountId: recipient.contact.accountId,
-          },
-        });
-      }
-      return r.count;
+      if (claimed.count === 1) await recordAudit({ type: AUDIT_EVENTS.REMINDER_STARTED, summary: `Reminder attempt started for ${recipient.contact.name}`, actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, detail: JSON.stringify({ attempt: JSON.parse(metadata).attempt }) }, tx);
+      return claimed;
     });
-    if (rotated === 0) {
-      skipped += 1;
-      continue;
-    }
-
-    const restore = () =>
-      prisma.checkInRecipient.updateMany({
-        where: { id: recipient.id, tokenHash: token.hash },
-        data: { tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt },
+    if (claim.count !== 1) continue;
+    const result = await getEmailService().send(buildReminderEmail({
+      contactName: recipient.contact.name, contactEmail: recipient.contact.email,
+      organizationName: recipient.contact.account.name, opportunityCount: recipient.items.length,
+      checkInUrl: checkInUrl(env.appBaseUrl, token.token), campaignId, contactId: recipient.contactId,
+    })).catch((): EmailSendResult => ({ id: "", status: "UNCERTAIN" }));
+    const safeError = sanitizeProviderError(result.error);
+    await prisma.$transaction(async (tx) => {
+      const finalized = await tx.checkInRecipient.updateMany({
+        where: { id: recipient.id, tokenHash: token.hash, sendStatus: "REMINDER_PENDING", sendError: metadata },
+        data: result.status === "SENT"
+          ? { sendStatus: "SENT", sendError: null, remindedAt: new Date(), reminderCount: { increment: 1 } }
+          : result.status === "FAILED"
+            ? { sendStatus: "SENT", sendError: JSON.stringify({ ...JSON.parse(metadata), outcome: "FAILED", ...(safeError ? { error: safeError } : {}) }), tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt }
+            : { sendStatus: "REMINDER_UNCERTAIN" },
       });
-
-    let result: Awaited<ReturnType<ReturnType<typeof getEmailService>["send"]>> | undefined;
-    let thrown: string | undefined;
-    try {
-      result = await getEmailService().send(
-        buildReminderEmail({
-          contactName: recipient.contact.name,
-          contactEmail: recipient.contact.email,
-          organizationName: recipient.contact.account.name,
-          opportunityCount: recipient.items.length,
-          checkInUrl: checkInUrl(env.appBaseUrl, token.token),
-          campaignId,
-          contactId: recipient.contactId,
-        }),
-      );
-    } catch (err) {
-      thrown = err instanceof Error ? err.message : "unknown error";
-    }
-
-    // A failure while recording the outcome must not abort the rest of the batch.
-    const log = (err: unknown) =>
-      console.error(`sendReminders: could not record outcome for recipient ${recipient.id}`, err);
-    try {
-      if (result?.status === "SENT") {
-        sent += 1;
-        await prisma.checkInRecipient.update({
-          where: { id: recipient.id },
-          data: { remindedAt: new Date(), reminderCount: { increment: 1 } },
-        });
-        await audit(AUDIT_EVENTS.REMINDER_SENT, `Reminder sent to ${who}`);
-      } else if (thrown !== undefined || result?.status === "FAILED") {
-        failed += 1;
-        try {
-          await restore();
-        } catch (err) {
-          log(err);
-        }
-        await audit(
-          AUDIT_EVENTS.REMINDER_FAILED,
-          `Reminder failed for ${who}`,
-          thrown !== undefined
-            ? `send threw before an outcome was known: ${safeErrorText(thrown)}`
-            : safeErrorText(result?.error ?? "send failed"),
-        );
-      } else {
-        // Unknown outcome: the email may have been delivered, so keep the new token and never retry.
-        failed += 1;
-        await audit(
-          AUDIT_EVENTS.REMINDER_FAILED,
-          `Reminder outcome unknown for ${who}`,
-          `Outcome unknown (status ${String(result?.status)}); new token kept, not restored`,
-        );
-      }
-    } catch (err) {
-      log(err);
-    }
+      if (finalized.count !== 1) throw new Error("Reminder claim changed; reconciliation required.");
+      await recordAudit({
+        type: result.status === "SENT" ? AUDIT_EVENTS.REMINDER_SENT : result.status === "FAILED" ? AUDIT_EVENTS.REMINDER_FAILED : AUDIT_EVENTS.REMINDER_UNCERTAIN,
+        summary: result.status === "SENT" ? `Reminder sent to ${recipient.contact.name}` : result.status === "FAILED" ? `Reminder rejected for ${recipient.contact.name}; prior link restored` : `Reminder acceptance unresolved for ${recipient.contact.name}; manual reconciliation required`,
+        actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+        detail: JSON.stringify({ attempt: JSON.parse(metadata).attempt, outcome: result.status, ...(safeError ? { error: safeError } : {}) }),
+      }, tx);
+    });
+    if (result.status === "SENT") sent += 1;
   }
 
-  return { sent, failed, skipped };
+  return sent;
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +592,7 @@ export type RecipientProgress = {
   completedAt: Date | null;
   reminderCount: number;
   tokenHint: string;
+  deliveryNote?: string | null;
 };
 
 export type CampaignSummary = {
@@ -699,22 +614,23 @@ export type CampaignSummary = {
   pendingCount: number;
   syncErrorCount: number;
   totalValue: number;
-  /** Selected, still-sendable opportunities that no recipient of this campaign received. */
+  /** All approved opportunities without invitation items, including unsafe drift. */
   unreachedCount: number;
+  recoverableCount: number;
+  unresolvedDeliveryCount: number;
+  reminderEligibleCount: number;
   recipients: RecipientProgress[];
 };
 
 /**
- * Selections that should have produced a check-in item but did not (a half-sent
- * launch). Opportunities that are no longer open/resolved cannot be sent, so
- * they are not a shortfall. A revoked recipient's items still count as reached.
+ * Every approved selection without an invitation item remains visible, including
+ * routing and eligibility drift that requires review. Revoked items count as reached.
  */
 export async function getUnreachedOpportunityIds(campaignId: string): Promise<string[]> {
   const [selections, reached] = await Promise.all([
     prisma.campaignSelection.findMany({
       where: {
         campaignId,
-        opportunity: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
       },
       select: { opportunityId: true },
     }),
@@ -727,19 +643,39 @@ export async function getUnreachedOpportunityIds(campaignId: string): Promise<st
   return selections.map((s) => s.opportunityId).filter((id) => !reachedIds.has(id));
 }
 
-/** Marks the campaign COMPLETE once every recipient has finished. */
-export async function closeCampaignIfDone(campaignId: string): Promise<void> {
-  const outstanding = await prisma.checkInRecipient.count({
-    where: { campaignId, completedAt: null, revokedAt: null },
-  });
-  if (outstanding > 0) return;
-  // A half-sent launch is not finished just because everyone it reached is.
-  if ((await getUnreachedOpportunityIds(campaignId)).length > 0) return;
+/** Validate recovery evidence before it can be used by manual reconciliation. */
+export function readReminderRecovery(value: string | null): { version: 1; attempt: string; kind: "REMINDER"; previous: { hash: string; hint: string; expiresAt: string } } | null {
+  try {
+    const data = JSON.parse(value ?? "null");
+    if (data?.version !== 1 || data.kind !== "REMINDER" || !/^[0-9a-f-]{36}$/.test(data.attempt) ||
+      !/^[0-9a-f]{64}$/.test(data.previous?.hash) || typeof data.previous.hint !== "string" || data.previous.hint.length > 16 ||
+      typeof data.previous.expiresAt !== "string" || !Number.isFinite(Date.parse(data.previous.expiresAt))) return null;
+    return data;
+  } catch { return null; }
+}
 
-  await prisma.campaign.updateMany({
-    where: { id: campaignId, completedAt: null },
-    data: { status: "COMPLETE", completedAt: new Date() },
-  });
+export async function getRecoverableOpportunityIds(campaignId: string): Promise<string[]> {
+  const [manifest, selections, recipients, missing] = await Promise.all([
+    prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
+    prisma.campaignSelection.findMany({ where: { campaignId }, include: { opportunity: true } }),
+    prisma.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
+    getUnreachedOpportunityIds(campaignId),
+  ]);
+  let routes: Record<string, string | null>;
+  try {
+    const data = JSON.parse(manifest?.detail ?? "null");
+    if (data?.version !== 1 || !data.routes || typeof data.routes !== "object" || Array.isArray(data.routes)) return [];
+    routes = data.routes;
+  } catch { return []; }
+  const existing = new Set(recipients.map(r => r.contactId));
+  const missingSet = new Set(missing);
+  const unsafe = new Set<string>();
+  for (const { opportunity: o } of selections) {
+    const original = routes[o.id];
+    if (typeof original === "string" && (!o.isOpen || o.resolutionStatus !== "RESOLVED" || o.contactId !== original)) unsafe.add(original);
+  }
+  return selections.flatMap(({ opportunity: o }) =>
+    missingSet.has(o.id) && o.contactId && routes[o.id] === o.contactId && o.isOpen && o.resolutionStatus === "RESOLVED" && !existing.has(o.contactId) && !unsafe.has(o.contactId) ? [o.id] : []);
 }
 
 export async function getCampaignSummary(campaignId: string): Promise<CampaignSummary | null> {
@@ -786,6 +722,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         completedAt: recipient.completedAt,
         reminderCount: recipient.reminderCount,
         tokenHint: recipient.tokenHint,
+        deliveryNote: recipient.sendStatus === "SENT" && readReminderRecovery(recipient.sendError) ? "Reminder rejected; previous link restored" : null,
       };
     })
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
@@ -815,6 +752,9 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     syncErrorCount: recipients.filter((r) => r.status === "SYNC_ERROR").length,
     totalValue: items.reduce((sum, item) => sum + item.amount, 0),
     unreachedCount,
+    recoverableCount: (await getRecoverableOpportunityIds(campaignId)).length,
+    reminderEligibleCount: campaign.recipients.filter(r => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0).length,
+    unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,
   };
 }
@@ -830,6 +770,7 @@ export function deriveRecipientStatus(input: {
   if (input.sendStatus === "FAILED") return "SEND_FAILED";
   if (input.syncErrorCount > 0) return "SYNC_ERROR";
   if (input.completedAt) return "COMPLETE";
+  if (["UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(input.sendStatus)) return "SEND_UNCERTAIN";
   if (input.submittedCount > 0) return "IN_PROGRESS";
   if (input.openedAt) return "OPENED";
   if (input.sentAt) return "SENT";

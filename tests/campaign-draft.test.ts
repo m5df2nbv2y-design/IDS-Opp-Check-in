@@ -475,6 +475,57 @@ describe("launchCampaign has no whole-catalog fallback", () => {
     expect(await prisma.emailMessage.count()).toBe(0);
   });
 
+  const launchCounts = () => Promise.all([
+    prisma.campaign.count(), prisma.campaignSelection.count(),
+    prisma.checkInRecipient.count(), prisma.checkInOpportunity.count(),
+    prisma.emailMessage.count(), prisma.auditEvent.count(), prisma.opportunitySnapshot.count(),
+  ]);
+
+  it.each(["closed", "unresolved", "unassigned", "missing"])(
+    "rejects a mixed direct selection containing a %s opportunity before any side effects",
+    async invalid => {
+      const [valid, other] = await prisma.opportunity.findMany({
+        where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } }, take: 2,
+      });
+      let invalidId = other.id;
+      if (invalid === "closed") await prisma.opportunity.update({ where: { id: other.id }, data: { isOpen: false } });
+      if (invalid === "unresolved") await prisma.opportunity.update({ where: { id: other.id }, data: { resolutionStatus: "UNRESOLVED" } });
+      if (invalid === "unassigned") await prisma.opportunity.update({ where: { id: other.id }, data: { contactId: null } });
+      if (invalid === "missing") invalidId = "nonexistent-selected-opportunity";
+      const before = await launchCounts();
+      await expect(launchCampaign({ opportunityIds: [valid.id, invalidId] })).rejects.toThrow(/review.*selection/i);
+      expect(await launchCounts()).toEqual(before);
+    },
+  );
+
+  it("rejects an entirely missing selection without creating an empty campaign", async () => {
+    const before = await launchCounts();
+    await expect(launchCampaign({ opportunityIds: ["nonexistent-selected-opportunity"] })).rejects.toThrow(/review.*selection/i);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("cannot bypass new-campaign validation with a resume flag", async () => {
+    const before = await launchCounts();
+    await expect(launchCampaign({ opportunityIds: ["nonexistent-selected-opportunity"], resume: true })).rejects.toThrow(/review.*selection/i);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("does not claim a supplied draft when a direct selection is incomplete", async () => {
+    const draft = await prisma.campaign.create({ data: { name: "Still a draft", period: "Test", status: "DRAFT" } });
+    const before = await launchCounts();
+    await expect(launchCampaign({ campaignId: draft.id, expectedEmailRevision: draft.emailRevision, opportunityIds: ["nonexistent-selected-opportunity"] })).rejects.toThrow(/review.*selection/i);
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: draft.id } })).toEqual(draft);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("treats duplicate valid ids as one explicit selection", async () => {
+    const valid = await prisma.opportunity.findFirstOrThrow({ where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } } });
+    const result = await launchCampaign({ opportunityIds: [valid.id, valid.id] });
+    expect(result.opportunities).toBe(1);
+    expect(await prisma.campaignSelection.count({ where: { campaignId: result.campaignId } })).toBe(1);
+    expect(await prisma.emailMessage.count({ where: { campaignId: result.campaignId, kind: "INVITE" } })).toBe(1);
+  });
+
   it("sends to exactly the selection it is given, never more", async () => {
     const all = await prisma.opportunity.findMany({
       where: { isOpen: true, resolutionStatus: "RESOLVED" },

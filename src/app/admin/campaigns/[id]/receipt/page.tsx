@@ -34,7 +34,7 @@ export default async function SendingReceipt({ params }: PageProps<"/admin/campa
           </div>
           <ul className="list-inside list-disc space-y-1 text-sm text-body">{recipient.items.map((item) => <li key={item.id}>{item.opportunityName}</li>)}</ul>
           {email ? <><p className="break-words text-sm font-medium text-ink">{email.subject}</p><p className="text-xs text-muted">Recorded {formatDateTime(email.createdAt)}</p><ButtonLink href={`/admin/outbox/${email.id}`} variant="secondary" size="sm">{email.status === "FAILED" ? "View email record" : "View sent email"}</ButtonLink></> : null}
-          {email?.error || recipient.sendError ? <p className="break-words text-sm text-danger">{email?.error ?? recipient.sendError}</p> : null}
+          {email?.error || recipient.sendError ? <p className="break-words text-sm text-danger">{email?.error ?? (recipient.sendStatus.startsWith("REMINDER_") ? "Reminder pending or unresolved; reconcile provider records before replacing the link." : recipient.sendError)}</p> : null}
         </Card>
       ))}
       <div className="flex flex-wrap gap-3"><ButtonLink href={`/admin/campaigns/${id}`} variant="secondary">Campaign activity</ButtonLink><ButtonLink href="/admin/outbox" variant="ghost">Outbox</ButtonLink><ButtonLink href="/admin" variant="ghost">Dashboard</ButtonLink></div>

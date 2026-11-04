@@ -181,8 +181,10 @@ model CheckInRecipient {
   startedAt   DateTime?
   completedAt DateTime?
   revokedAt   DateTime?
-  /// PENDING | SENT | FAILED — delivery state of the invitation itself.
+  /// PENDING | SENT | FAILED | UNCERTAIN | REMINDER_PENDING | REMINDER_UNCERTAIN.
+  /// Pending/uncertain outcomes block automatic replay.
   sendStatus  String    @default("PENDING")
+  /// Error text, or versioned reminder recovery metadata (hash/hint/expiry only).
   sendError   String?
   remindedAt  DateTime?
   reminderCount Int     @default(0)

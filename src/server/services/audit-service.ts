@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
@@ -10,9 +11,12 @@ export const AUDIT_EVENTS = {
   CAMPAIGN_EMAIL_DRAFTED: "CAMPAIGN_EMAIL_DRAFTED",
   INVITE_SENT: "INVITE_SENT",
   INVITE_FAILED: "INVITE_FAILED",
+  INVITE_UNCERTAIN: "INVITE_UNCERTAIN",
+  REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
-  REMINDER_ATTEMPTED: "REMINDER_ATTEMPTED",
   REMINDER_FAILED: "REMINDER_FAILED",
+  REMINDER_UNCERTAIN: "REMINDER_UNCERTAIN",
+  CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
   CHECKIN_OPENED: "CHECKIN_OPENED",
   RESPONSE_SUBMITTED: "RESPONSE_SUBMITTED",
   RESPONSE_REVISED: "RESPONSE_REVISED",
@@ -48,8 +52,8 @@ export type AuditInput = {
   opportunityId?: string | null;
 };
 
-export async function recordAudit(input: AuditInput) {
-  return prisma.auditEvent.create({
+export async function recordAudit(input: AuditInput, db: Prisma.TransactionClient = prisma) {
+  return db.auditEvent.create({
     data: {
       type: input.type,
       summary: input.summary,
@@ -80,4 +84,13 @@ export async function listAuditEvents(options?: { campaignId?: string; limit?: n
       opportunity: { select: { customerName: true, opportunityName: true } },
     },
   });
+}
+
+/**
+ * Persistence-time defense for provider-returned text: drops URLs and check-in
+ * paths (bearer links) and caps length. It does not claim to redact every secret.
+ */
+export function sanitizeProviderError(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  return text.replace(/\bhttps?:\/\/\S*/gi, "[link removed]").replace(/\/checkin\/\S*/gi, "[link removed]").slice(0, 300);
 }

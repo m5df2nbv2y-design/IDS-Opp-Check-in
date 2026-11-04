@@ -5,7 +5,7 @@ import { stageLabel } from "@/lib/stages";
 import { REDACTED_TOKEN } from "@/server/integrations/email/outbox";
 import { ResendEmailService } from "@/server/integrations/email/resend-email-service";
 import { buildTestCheckInEmail } from "@/server/integrations/email/templates/test-check-in-email";
-import { AUDIT_EVENTS, recordAudit } from "./audit-service";
+import { AUDIT_EVENTS, recordAudit, sanitizeProviderError } from "./audit-service";
 
 /**
  * The demo test-email path.
@@ -33,7 +33,7 @@ export type TestEmailResult =
   | { ok: true; sentTo: string; opportunityName: string; alreadySent?: boolean }
   | {
       ok: false;
-      reason: "NOT_CONFIGURED" | "RECIPIENT_NOT_FOUND" | "NO_CHECKIN_LINK" | "SEND_FAILED";
+      reason: "NOT_CONFIGURED" | "RECIPIENT_NOT_FOUND" | "NO_CHECKIN_LINK" | "SEND_FAILED" | "SEND_UNCERTAIN";
       message: string;
     };
 
@@ -147,20 +147,20 @@ export async function sendDemoTestEmail(
     summary:
       result.status === "SENT"
         ? `${actor} sent a demo test email to ${deliverTo} for ${opportunityName}`
-        : `${actor} attempted a demo test email to ${deliverTo} — send failed`,
+        : `${actor} attempted a demo test email to ${deliverTo} — ${result.status === "UNCERTAIN" ? "acceptance unresolved" : "send failed"}`,
     actor,
     actorKind: "ADMIN",
-    detail: result.error ?? null,
+    detail: sanitizeProviderError(result.error),
     campaignId: recipient.campaignId,
     contactId: recipient.contactId,
     accountId: recipient.contact.accountId,
   });
 
-  if (result.status === "FAILED") {
+  if (result.status !== "SENT") {
     return {
       ok: false,
-      reason: "SEND_FAILED",
-      message: result.error ?? "The email provider rejected the send.",
+      reason: result.status === "UNCERTAIN" ? "SEND_UNCERTAIN" : "SEND_FAILED",
+      message: sanitizeProviderError(result.error) ?? "The email provider rejected the send.",
     };
   }
 
