@@ -152,7 +152,21 @@ export type LaunchResult = {
   emailsSent: number;
   emailsFailed: number;
   unresolvedOpportunities: number;
+  /** Set only by resumeLaunch: selected opportunities still unreached after the run. */
+  unreachedAfter?: number;
 };
+
+/** A recipient younger than this may belong to a launch still building it. */
+const ORPHAN_GRACE_MS = 2 * 60_000;
+
+/** True only for a unique violation on (campaignId, contactId), not e.g. tokenHash. */
+function isRecipientClaimConflict(error: unknown): boolean {
+  const e = error as { code?: string; meta?: Record<string, any> } | null;
+  if (e?.code !== "P2002") return false;
+  const target = e.meta?.target ?? e.meta?.driverAdapterError?.cause?.constraint?.index ?? e.meta?.driverAdapterError?.cause?.constraint?.fields;
+  const text = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  return text.includes("campaignId") && text.includes("contactId");
+}
 
 /**
  * Group the given opportunities by external contact, create one recipient per
@@ -275,31 +289,11 @@ export async function launchCampaign(options: {
   let emailsSent = 0;
   let emailsFailed = 0;
 
-  for (const [contactId, items] of byContact) {
-    const contact = items[0].contact!;
-    const token = issueToken();
-
-    // The (campaignId, contactId) unique constraint is the claim: if another
-    // launch or resume created this contact first, skip — it owns the send.
-    let recipient;
-    try {
-      recipient = await prisma.checkInRecipient.create({
-        data: {
-          campaignId: campaign.id,
-          contactId,
-          tokenHash: token.hash,
-          tokenHint: token.hint,
-          expiresAt,
-        },
-      });
-    } catch (error) {
-      if ((error as { code?: string })?.code === "P2002") continue;
-      throw error;
-    }
-
+  /** Attach items to a recipient and mark the intervention point on the observation timeline. */
+  const addItems = async (recipientId: string, items: typeof opportunities, startPosition: number) => {
     await prisma.checkInOpportunity.createMany({
       data: items.map((opportunity, index) => ({
-        recipientId: recipient.id,
+        recipientId,
         opportunityId: opportunity.id,
         customerName: opportunity.customerName,
         opportunityName: opportunity.opportunityName,
@@ -312,7 +306,7 @@ export async function launchCampaign(options: {
         // Snapshotted for the confirmed future write scope. Not captured from
         // the recipient yet, and never written to Salesforce today.
         previousCloseDate: opportunity.closeDate,
-        position: index,
+        position: startPosition + index,
       })),
     });
 
@@ -334,6 +328,61 @@ export async function launchCampaign(options: {
         internalRepName: opportunity.internalRep.name,
       });
     }
+  };
+
+  for (const [contactId, items] of byContact) {
+    const contact = items[0].contact!;
+    const token = issueToken();
+
+    // The (campaignId, contactId) unique constraint is the claim: if another
+    // launch or resume created this contact first, skip — it owns the send.
+    let recipient;
+    try {
+      recipient = await prisma.checkInRecipient.create({
+        data: {
+          campaignId: campaign.id,
+          contactId,
+          tokenHash: token.hash,
+          tokenHint: token.hint,
+          expiresAt,
+        },
+      });
+    } catch (error) {
+      if (!isRecipientClaimConflict(error)) throw error;
+      if (options.resume) {
+        // Already invited by an earlier launch: attach any missing items to the
+        // live link instead of emailing again. Done or revoked links get nothing.
+        const existing = await prisma.checkInRecipient.findUnique({
+          where: { campaignId_contactId: { campaignId: campaign.id, contactId } },
+          include: { items: { select: { opportunityId: true, position: true } } },
+        });
+        // A fresh, item-less, unsent recipient is still being built by whoever
+        // created it; that run attaches the items itself, so leave it alone.
+        const beingBuilt =
+          existing !== null &&
+          existing.items.length === 0 &&
+          existing.sendStatus === "PENDING" &&
+          existing.sentAt === null &&
+          existing.createdAt.getTime() > Date.now() - ORPHAN_GRACE_MS;
+        if (existing && !beingBuilt && !existing.completedAt && !existing.revokedAt) {
+          const have = new Set(existing.items.map((i) => i.opportunityId));
+          const missing = items.filter((i) => !have.has(i.id));
+          if (missing.length > 0) {
+            const next = Math.max(-1, ...existing.items.map((i) => i.position)) + 1;
+            try {
+              await addItems(existing.id, missing, next);
+            } catch (addError) {
+              // A rival run attached some of these first: the pair is already
+              // reached, which is the goal. Anything else is a real failure.
+              if ((addError as { code?: string })?.code !== "P2002") throw addError;
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    await addItems(recipient.id, items, 0);
 
     if (!sendEmails) continue;
 
@@ -395,7 +444,7 @@ export async function launchCampaign(options: {
     actor,
     actorKind: "ADMIN",
     campaignId: campaign.id,
-    detail: `Source: ${getSalesforceService().info.label}${unresolved > 0 ? ` · ${unresolved} opportunities need a contact` : ""}`,
+    detail: `Source: ${getSalesforceService().info.label}${unresolved > 0 ? ` · ${unresolved} opportunities need a contact` : ""}${options.resume ? ` · ${(await getUnreachedOpportunityIds(campaign.id)).length} still unreached` : ""}`,
   });
 
   return {
@@ -420,15 +469,37 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
   }
   // Crash orphans: a recipient created but never given items or sent.
   await prisma.checkInRecipient.deleteMany({
-    where: { campaignId, sendStatus: "PENDING", sentAt: null, items: { none: {} } },
+    where: {
+      campaignId,
+      sendStatus: "PENDING",
+      sentAt: null,
+      items: { none: {} },
+      createdAt: { lt: new Date(Date.now() - ORPHAN_GRACE_MS) },
+    },
   });
-  return launchCampaign({
-    opportunityIds: await getUnreachedOpportunityIds(campaignId),
+  const opportunityIds = await getUnreachedOpportunityIds(campaignId);
+  if (opportunityIds.length === 0) {
+    return {
+      campaignId,
+      name: campaign.name,
+      recipients: 0,
+      opportunities: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+      unresolvedOpportunities: await prisma.opportunity.count({
+        where: { isOpen: true, resolutionStatus: "UNRESOLVED" },
+      }),
+      unreachedAfter: 0,
+    };
+  }
+  const result = await launchCampaign({
+    opportunityIds,
     campaignId,
     actor,
     emailCopy: readEmailCopy(campaign),
     resume: true,
   });
+  return { ...result, unreachedAfter: (await getUnreachedOpportunityIds(campaignId)).length };
 }
 
 /**
