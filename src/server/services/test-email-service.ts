@@ -33,7 +33,7 @@ export type TestEmailResult =
   | { ok: true; sentTo: string; opportunityName: string; alreadySent?: boolean }
   | {
       ok: false;
-      reason: "NOT_CONFIGURED" | "RECIPIENT_NOT_FOUND" | "NO_CHECKIN_LINK" | "SEND_FAILED";
+      reason: "NOT_CONFIGURED" | "RECIPIENT_NOT_FOUND" | "NO_CHECKIN_LINK" | "SEND_FAILED" | "SEND_UNCERTAIN";
       message: string;
     };
 
@@ -147,7 +147,7 @@ export async function sendDemoTestEmail(
     summary:
       result.status === "SENT"
         ? `${actor} sent a demo test email to ${deliverTo} for ${opportunityName}`
-        : `${actor} attempted a demo test email to ${deliverTo} — send failed`,
+        : `${actor} attempted a demo test email to ${deliverTo} — ${result.status === "UNCERTAIN" ? "acceptance unresolved" : "send failed"}`,
     actor,
     actorKind: "ADMIN",
     detail: result.error ?? null,
@@ -156,10 +156,10 @@ export async function sendDemoTestEmail(
     accountId: recipient.contact.accountId,
   });
 
-  if (result.status === "FAILED") {
+  if (result.status !== "SENT") {
     return {
       ok: false,
-      reason: "SEND_FAILED",
+      reason: result.status === "UNCERTAIN" ? "SEND_UNCERTAIN" : "SEND_FAILED",
       message: result.error ?? "The email provider rejected the send.",
     };
   }

@@ -27,7 +27,8 @@ it("persists before sending and suppresses identical concurrent requests", async
 it("keeps an uncertain receipt without leaking error text or automatically replaying", async () => {
   const fetcher = vi.fn().mockRejectedValue(new Error("Bearer re_test /checkin/secret-token")); vi.stubGlobal("fetch", fetcher);
   const service = new ResendEmailService();
-  await service.send(message); await service.send(message);
+  expect((await service.send(message)).status).toBe("UNCERTAIN");
+  expect((await service.send(message)).status).toBe("UNCERTAIN");
   expect(fetcher).toHaveBeenCalledTimes(1);
   const row = await prisma.emailMessage.findFirstOrThrow();
   expect(row.status).toBe("UNCERTAIN"); expect(row.error).not.toContain("re_test"); expect(row.error).not.toContain("secret-token");
@@ -39,4 +40,28 @@ it("refuses direct Resend sends from Preview even when the configured provider i
   await expect(new ResendEmailService().send(message)).rejects.toThrow("Refusing");
   expect(fetcher).not.toHaveBeenCalled();
   expect(await prisma.emailMessage.count()).toBe(0);
+});
+
+it("an overlapping duplicate preserves the pending ledger as uncertain", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const fetcher = vi.fn(async () => { entered(); await gate; return Response.json({ id: "pending-receipt" }); });
+  vi.stubGlobal("fetch", fetcher);
+  const service = new ResendEmailService();
+  const first = service.send(message);
+  await ready;
+  try {
+    expect((await service.send(message)).status).toBe("UNCERTAIN");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  } finally { release(); }
+  expect((await first).status).toBe("SENT");
+});
+
+it.each([[400, "FAILED"], [500, "UNCERTAIN"]])("HTTP %s has outcome %s", async (status, expected) => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("secret provider response", { status: Number(status) })));
+  const result = await new ResendEmailService().send(message);
+  expect(result.status).toBe(expected);
+  expect(result.error).not.toContain("secret provider response");
 });

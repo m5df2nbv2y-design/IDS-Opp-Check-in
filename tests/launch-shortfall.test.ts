@@ -83,13 +83,13 @@ describe("launch shortfall", () => {
     expect(campaign.status).toBe("COMPLETE");
   });
 
-  it("a selection whose opportunity is no longer open and resolved is not a shortfall", async () => {
+  it("an ineligible selection stays visible and blocks closure", async () => {
     const { campaignId, token, others } = await launchForOneContact();
     await selectUnsent(campaignId, others[0]);
     await prisma.opportunity.update({ where: { id: others[0] }, data: { isOpen: false } });
-    expect(await getUnreachedOpportunityIds(campaignId)).toEqual([]);
+    expect(await getUnreachedOpportunityIds(campaignId)).toEqual([others[0]]);
     await answerAndComplete(token);
-    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("COMPLETE");
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("IN_PROGRESS");
   });
 
   it("a revoked recipient's items count as reached", async () => {

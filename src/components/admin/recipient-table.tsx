@@ -59,6 +59,7 @@ export function RecipientTable({ recipients }: { recipients: RecipientProgress[]
                 </td>
                 <td className="px-5 py-4">
                   <RecipientStatusBadge status={recipient.status} />
+                  {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
                 </td>
               </tr>
             ))}
@@ -82,6 +83,7 @@ export function RecipientTable({ recipients }: { recipients: RecipientProgress[]
                 </div>
               </div>
               <RecipientStatusBadge status={recipient.status} />
+                  {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
             </div>
             <div className="mt-2 text-[12px] text-muted">{lastActivity(recipient)}</div>
           </li>

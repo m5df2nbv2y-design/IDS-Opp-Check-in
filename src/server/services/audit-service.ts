@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
@@ -10,7 +11,12 @@ export const AUDIT_EVENTS = {
   CAMPAIGN_EMAIL_DRAFTED: "CAMPAIGN_EMAIL_DRAFTED",
   INVITE_SENT: "INVITE_SENT",
   INVITE_FAILED: "INVITE_FAILED",
+  INVITE_UNCERTAIN: "INVITE_UNCERTAIN",
+  REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
+  REMINDER_FAILED: "REMINDER_FAILED",
+  REMINDER_UNCERTAIN: "REMINDER_UNCERTAIN",
+  CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
   CHECKIN_OPENED: "CHECKIN_OPENED",
   RESPONSE_SUBMITTED: "RESPONSE_SUBMITTED",
   RESPONSE_REVISED: "RESPONSE_REVISED",
@@ -46,8 +52,8 @@ export type AuditInput = {
   opportunityId?: string | null;
 };
 
-export async function recordAudit(input: AuditInput) {
-  return prisma.auditEvent.create({
+export async function recordAudit(input: AuditInput, db: Prisma.TransactionClient = prisma) {
+  return db.auditEvent.create({
     data: {
       type: input.type,
       summary: input.summary,

@@ -212,7 +212,9 @@ describe("a provider failure never leaks the API key", () => {
     const { sendDemoTestEmail } = await loadService();
     const result = await sendDemoTestEmail(recipient.id, "admin@ids.invalid");
 
-    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ ok: false, reason: "SEND_UNCERTAIN" });
+    expect(await sendDemoTestEmail(recipient.id, "admin@ids.invalid")).toMatchObject({ ok: false, reason: "SEND_UNCERTAIN" });
+    expect(fetch).toHaveBeenCalledTimes(1);
     const message = result.ok ? "" : result.message;
     expect(message).not.toContain(secret);
     expect(message).toContain("could not be confirmed");

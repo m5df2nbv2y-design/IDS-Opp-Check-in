@@ -4,7 +4,7 @@ export type { EmailRecipient, OutboundEmail } from "@/lib/email-message";
 export type EmailSendResult = {
   /** Provider-side message id when available. */
   id: string;
-  status: "SENT" | "FAILED";
+  status: "SENT" | "FAILED" | "UNCERTAIN";
   error?: string;
 };
 
