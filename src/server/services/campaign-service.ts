@@ -169,9 +169,12 @@ const ORPHAN_GRACE_MS = 2 * 60_000;
 
 /** True only for a unique violation on (campaignId, contactId), not e.g. tokenHash. */
 function isRecipientClaimConflict(error: unknown): boolean {
-  const e = error as { code?: string; meta?: Record<string, any> } | null;
+  type Constraint = { index?: unknown; fields?: unknown };
+  type Meta = { target?: unknown; driverAdapterError?: { cause?: { constraint?: Constraint } } };
+  const e = error as { code?: string; meta?: Meta } | null;
   if (e?.code !== "P2002") return false;
-  const target = e.meta?.target ?? e.meta?.driverAdapterError?.cause?.constraint?.index ?? e.meta?.driverAdapterError?.cause?.constraint?.fields;
+  const constraint = e.meta?.driverAdapterError?.cause?.constraint;
+  const target = e.meta?.target ?? constraint?.index ?? constraint?.fields;
   const text = Array.isArray(target) ? target.join(",") : String(target ?? "");
   return text.includes("campaignId") && text.includes("contactId");
 }

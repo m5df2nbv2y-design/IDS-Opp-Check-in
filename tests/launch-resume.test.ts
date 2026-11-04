@@ -192,7 +192,7 @@ describe("resume a half-sent launch", () => {
       where: { opportunityId: gap.id, recipient: { campaignId } },
     });
     await prisma.checkInOpportunity.delete({ where: { id: gone.id } });
-    const { id: _id, ...row } = gone;
+    const row = { ...gone, id: undefined }; // let the DB mint a fresh id
     const original = prisma.checkInOpportunity.createMany.bind(prisma.checkInOpportunity);
     let rivalRan = false;
     vi.spyOn(prisma.checkInOpportunity, "createMany").mockImplementation((async (args: unknown) => {
