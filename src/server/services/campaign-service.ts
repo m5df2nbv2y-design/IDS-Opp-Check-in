@@ -8,7 +8,7 @@ import {
   buildReminderEmail,
 } from "@/server/integrations/email/templates/check-in-email";
 import { getSalesforceService } from "@/server/integrations/salesforce";
-import { AUDIT_EVENTS, recordAudit } from "./audit-service";
+import { AUDIT_EVENTS, recordAudit, type AuditEventType } from "./audit-service";
 import { recordSnapshot, SNAPSHOT_SOURCES } from "./snapshot-service";
 
 export type RecipientStatus =
@@ -507,7 +507,10 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
  * The token is rotated, which invalidates the previous link — the reminder is
  * always the newest valid entry point.
  */
-export async function sendReminders(campaignId: string, actor = "admin"): Promise<number> {
+export async function sendReminders(
+  campaignId: string,
+  actor = "admin",
+): Promise<{ sent: number; failed: number; skipped: number }> {
   const recipients = await prisma.checkInRecipient.findMany({
     where: { campaignId, completedAt: null, revokedAt: null },
     include: { contact: { include: { account: true } }, campaign: true, items: true },
@@ -515,15 +518,41 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
 
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let sent = 0;
+  let failed = 0;
+  let skipped = 0;
 
   for (const recipient of recipients) {
-    if (recipient.items.length === 0) continue;
+    if (recipient.items.length === 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const who = `${recipient.contact.name} at ${recipient.contact.account.name}`;
+    const audit = (type: AuditEventType, summary: string, detail?: string) =>
+      recordAudit({
+        type,
+        summary,
+        detail,
+        actor,
+        actorKind: "ADMIN",
+        campaignId,
+        contactId: recipient.contactId,
+        accountId: recipient.contact.accountId,
+      });
 
     const token = issueToken();
-    await prisma.checkInRecipient.update({
-      where: { id: recipient.id },
+    // Attempt row first (hint only, never the token) so a crash after rotation is detectable.
+    await audit(AUDIT_EVENTS.REMINDER_ATTEMPTED, `Reminder attempted for ${who}`, `new token hint ${token.hint}`);
+
+    // Compare-and-swap: only rotate the token we read; otherwise another run got there first.
+    const rotated = await prisma.checkInRecipient.updateMany({
+      where: { id: recipient.id, completedAt: null, revokedAt: null, tokenHash: recipient.tokenHash },
       data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt },
     });
+    if (rotated.count === 0) {
+      skipped += 1;
+      continue;
+    }
 
     const result = await getEmailService().send(
       buildReminderEmail({
@@ -543,19 +572,27 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
         where: { id: recipient.id },
         data: { remindedAt: new Date(), reminderCount: { increment: 1 } },
       });
-      await recordAudit({
-        type: AUDIT_EVENTS.REMINDER_SENT,
-        summary: `Reminder sent to ${recipient.contact.name} at ${recipient.contact.account.name}`,
-        actor,
-        actorKind: "ADMIN",
-        campaignId,
-        contactId: recipient.contactId,
-        accountId: recipient.contact.accountId,
+      await audit(AUDIT_EVENTS.REMINDER_SENT, `Reminder sent to ${who}`);
+    } else if (result.status === "FAILED") {
+      failed += 1;
+      // Put the old link back, but only if nobody rotated it again since.
+      await prisma.checkInRecipient.updateMany({
+        where: { id: recipient.id, tokenHash: token.hash },
+        data: { tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt },
       });
+      await audit(AUDIT_EVENTS.REMINDER_FAILED, `Reminder failed for ${who}`, result.error ?? "send failed");
+    } else {
+      // Unknown outcome: the email may have been delivered, so keep the new token and never retry.
+      failed += 1;
+      await audit(
+        AUDIT_EVENTS.REMINDER_FAILED,
+        `Reminder outcome unknown for ${who}`,
+        `Outcome unknown (status ${String(result.status)}); new token kept, not restored`,
+      );
     }
   }
 
-  return sent;
+  return { sent, failed, skipped };
 }
 
 // ---------------------------------------------------------------------------
