@@ -224,6 +224,12 @@ export async function launchCampaign(options: {
     orderBy: { amount: "desc" },
   });
 
+  // Never turn an explicit launch selection into a silent partial send.
+  // Resuming an existing campaign reports persisted shortfalls separately.
+  if ((!options.resume || !options.campaignId) && opportunities.length !== new Set(options.opportunityIds).size) {
+    throw new Error("Some selected opportunities are missing or no longer eligible. Review your selection before launching.");
+  }
+
   const byContact = new Map<string, typeof opportunities>();
   for (const opportunity of opportunities) {
     const list = byContact.get(opportunity.contactId!);
