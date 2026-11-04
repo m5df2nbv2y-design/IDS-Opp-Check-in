@@ -657,6 +657,19 @@ export function readReminderRecovery(value: string | null): { version: 1; attemp
   } catch { return null; }
 }
 
+/**
+ * The line an admin sees for a recipient's send state. Recognised reminder
+ * recovery metadata is always summarised, whatever the invitation's sendStatus,
+ * so the stored JSON (attempt id, previous hash, hint, expiry) is never shown.
+ */
+export function recipientSendNote(recipient: { sendStatus: string; sendError: string | null }): string | null {
+  if (recipient.sendStatus.startsWith("REMINDER_")) {
+    return "Reminder pending or unresolved; reconcile provider records before replacing the link.";
+  }
+  if (readReminderRecovery(recipient.sendError)) return "Reminder rejected; previous link restored.";
+  return recipient.sendError;
+}
+
 export async function getRecoverableOpportunityIds(campaignId: string): Promise<string[]> {
   const [manifest, selections, recipients, missing] = await Promise.all([
     prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
