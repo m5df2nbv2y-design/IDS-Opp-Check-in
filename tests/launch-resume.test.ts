@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import { AUDIT_EVENTS } from "@/server/services/audit-service";
-import { launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
+import { getUnreachedOpportunityIds, launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { resetDatabase } from "./fixtures";
 
@@ -136,15 +136,18 @@ describe("resume a half-sent launch", () => {
     const gap = mine[1];
     await prisma.checkInOpportunity.deleteMany({ where: { opportunityId: gap.id, recipient: { campaignId } } });
     await prisma.opportunity.update({ where: { id: gap.id }, data: { isOpen: false } });
-    expect((await resumeLaunch(campaignId, "test")).unreachedAfter).toBeGreaterThanOrEqual(0);
+    expect((await resumeLaunch(campaignId, "test")).unreachedAfter).toBe(1);
     const reached = () =>
       prisma.checkInOpportunity.count({ where: { opportunityId: gap.id, recipient: { campaignId } } });
     expect(await reached()).toBe(0);
     await prisma.opportunity.update({ where: { id: gap.id }, data: { isOpen: true } });
     const before = (await invites(campaignId)).length;
-    await resumeLaunch(campaignId, "test");
+    const after = await resumeLaunch(campaignId, "test");
     expect(await reached()).toBe(0);
     expect((await invites(campaignId)).length).toBe(before);
+    expect(after.unreachedAfter).toBe(1);
+    expect(await getUnreachedOpportunityIds(campaignId)).toEqual([gap.id]);
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("IN_PROGRESS");
   });
 
   it.each([["completedAt"], ["revokedAt"]])(
@@ -196,6 +199,22 @@ describe("resume a half-sent launch", () => {
     vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(
       Object.assign(new Error("dup"), { code: "P2002", meta: { target: ["tokenHash"] } }),
     );
+    await expect(resumeLaunch(campaignId, "test")).rejects.toThrow("dup");
+  });
+
+  const adapterConflict = (fields: string[]) =>
+    Object.assign(new Error("dup"), { code: "P2002", meta: { driverAdapterError: { cause: { constraint: { fields } } } } });
+
+  it("a unique violation reported only as constraint fields is a claim conflict when it is (campaignId, contactId)", async () => {
+    const { campaignId, otherContacts } = await halfSentCampaign();
+    vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(adapterConflict(["campaignId", "contactId"]));
+    await expect(resumeLaunch(campaignId, "test")).resolves.toBeDefined();
+    expect(await prisma.checkInRecipient.count({ where: { campaignId } })).toBe(otherContacts.size);
+  });
+
+  it("a unique violation reported only as constraint fields is rethrown when it is another target", async () => {
+    const { campaignId } = await halfSentCampaign();
+    vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(adapterConflict(["tokenHash"]));
     await expect(resumeLaunch(campaignId, "test")).rejects.toThrow("dup");
   });
 

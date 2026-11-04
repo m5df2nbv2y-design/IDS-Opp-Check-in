@@ -225,6 +225,42 @@ describe("a provider failure never leaks the API key", () => {
   });
 });
 
+describe("a provider-returned test-email error", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("is stripped of links before it is audited or shown", async () => {
+    vi.stubEnv("DEMO_TEST_EMAIL", DEMO_ADDRESS);
+    vi.stubEnv("RESEND_API_KEY", "test-key");
+    const { recipient } = await launchCampaign();
+    vi.resetModules();
+    vi.doMock("@/server/integrations/email/resend-email-service", () => ({
+      ResendEmailService: class {
+        async send() {
+          return { id: "", status: "FAILED", error: "bad https://x.invalid/checkin/SECRETTOKEN123 and /checkin/SECRETTOKEN456" };
+        }
+      },
+    }));
+    try {
+      const { sendDemoTestEmail } = await import("@/server/services/test-email-service");
+      const result = await sendDemoTestEmail(recipient.id, "admin@ids.invalid");
+      const message = result.ok ? "" : result.message;
+      const event = await prisma.auditEvent.findFirstOrThrow({ where: { type: "TEST_EMAIL_SENT" } });
+      for (const text of [message, event.detail ?? ""]) {
+        expect(text).not.toContain("SECRETTOKEN");
+        expect(text).not.toContain("https://");
+        expect(text).toContain("[link removed]");
+      }
+    } finally {
+      vi.doUnmock("@/server/integrations/email/resend-email-service");
+    }
+  });
+});
+
 describe("the test-email path cannot be aimed by the browser", () => {
   it("takes a recipient id, never an address", () => {
     const service = read("src/server/services/test-email-service.ts");

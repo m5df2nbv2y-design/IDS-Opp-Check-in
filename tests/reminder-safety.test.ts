@@ -134,4 +134,36 @@ describe("reminder safety", () => {
     await resumeLaunch(result.campaignId, "test");
     expect(calls).toBe(callsBefore);
   });
+
+  it("a returned FAILED invite is sanitized, recorded FAILED and not re-sent on resume", async () => {
+    await refreshCatalogFromSalesforce("test");
+    const opps = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    });
+    const two = [...new Map(opps.map((o) => [o.contactId, o])).values()].slice(0, 2);
+    expect(two).toHaveLength(2);
+    let calls = 0;
+    override = async () => {
+      calls += 1;
+      return calls === 1 ? { id: "", status: "FAILED", error: LEAK } : { id: "x", status: "SENT" };
+    };
+    const result = await launchCampaign({ opportunityIds: two.map((o) => o.id), name: "R", period: "T", actor: "test" });
+    expect(result.emailsFailed).toBe(1);
+    const failed = (await prisma.checkInRecipient.findMany({ where: { campaignId: result.campaignId } })).filter(
+      (r) => r.sendStatus === "FAILED",
+    );
+    expect(failed).toHaveLength(1);
+    const [audit] = await audits(result.campaignId, AUDIT_EVENTS.INVITE_FAILED);
+    for (const text of [audit.detail!, failed[0].sendError!]) {
+      expect(text).not.toContain("SECRETTOKEN123");
+      expect(text).not.toContain("https://");
+      expect(text).toContain("[link removed]");
+      expect(text.length).toBeLessThanOrEqual(300);
+    }
+    const all = JSON.stringify(await prisma.auditEvent.findMany({ where: { campaignId: result.campaignId } }));
+    expect(all).not.toContain("SECRETTOKEN123");
+    const callsBefore = calls;
+    await resumeLaunch(result.campaignId, "test");
+    expect(calls).toBe(callsBefore);
+  });
 });

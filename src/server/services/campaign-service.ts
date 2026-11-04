@@ -166,7 +166,8 @@ export type LaunchResult = {
 function isRecipientClaimConflict(error: unknown): boolean {
   const e = error as { code?: string; meta?: Record<string, unknown> } | null;
   if (e?.code !== "P2002") return false;
-  const target = e.meta?.target ?? (e.meta?.driverAdapterError as { cause?: { constraint?: { index?: string; fields?: string[] } } } | undefined)?.cause?.constraint?.index;
+  const constraint = (e.meta?.driverAdapterError as { cause?: { constraint?: { index?: string; fields?: string[] } } } | undefined)?.cause?.constraint;
+  const target = e.meta?.target ?? constraint?.index ?? constraint?.fields;
   const text = Array.isArray(target) ? target.join(",") : String(target ?? "");
   return text.includes("campaignId") && text.includes("contactId");
 }
@@ -415,15 +416,17 @@ export async function launchCampaign(options: {
           accountId: contact.accountId,
         }, tx);
       } else {
-        if (result.status === "FAILED") emailsFailed += 1;
+        // Anything the provider contract does not name as FAILED is unknown, never a rejection.
+        const outcome = result.status === "FAILED" ? "FAILED" : "UNCERTAIN";
+        if (outcome === "FAILED") emailsFailed += 1;
         else emailsUncertain += 1;
         await tx.checkInRecipient.update({
           where: { id: recipient.id },
-          data: { sendStatus: result.status, sendError: sanitizeProviderError(result.error) ?? "Unknown error" },
+          data: { sendStatus: outcome, sendError: sanitizeProviderError(result.error) ?? "Unknown error" },
         });
         await recordAudit({
-          type: result.status === "UNCERTAIN" ? AUDIT_EVENTS.INVITE_UNCERTAIN : AUDIT_EVENTS.INVITE_FAILED,
-          summary: `Check-in email to ${contact.name} ${result.status === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
+          type: outcome === "UNCERTAIN" ? AUDIT_EVENTS.INVITE_UNCERTAIN : AUDIT_EVENTS.INVITE_FAILED,
+          summary: `Check-in email to ${contact.name} ${outcome === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
           actor,
           actorKind: "ADMIN",
           detail: sanitizeProviderError(result.error),
