@@ -71,24 +71,26 @@ describe("reminder safety", () => {
     expect(after.reminderCount).toBe(0);
     const [row] = await audits(campaignId, AUDIT_EVENTS.REMINDER_FAILED);
     expect(row.detail).toMatch(/unknown/i);
+    expect(await audits(campaignId, AUDIT_EVENTS.REMINDER_ATTEMPTED)).toHaveLength(1);
   });
 
   it("a recipient whose token changed since the batch began is skipped, not emailed", async () => {
     const { campaignId, recipient } = await campaignWithRecipient();
     const send = vi.fn(async () => ({ id: "x", status: "SENT" }) as EmailSendResult);
     override = send;
-    const original = prisma.checkInRecipient.updateMany.bind(prisma.checkInRecipient);
+    const original = prisma.$transaction.bind(prisma) as (...a: unknown[]) => Promise<unknown>;
     let rivalRan = false;
-    vi.spyOn(prisma.checkInRecipient, "updateMany").mockImplementation((async (args: Parameters<typeof original>[0]) => {
+    vi.spyOn(prisma, "$transaction").mockImplementation((async (...args: unknown[]) => {
       if (!rivalRan) {
         rivalRan = true;
         await prisma.checkInRecipient.update({ where: { id: recipient.id }, data: { tokenHash: "rival-token" } });
       }
-      return original(args);
-    }) as unknown as typeof prisma.checkInRecipient.updateMany);
+      return original(...args);
+    }) as unknown as typeof prisma.$transaction);
     expect(await sendReminders(campaignId, "test")).toEqual({ sent: 0, failed: 0, skipped: 1 });
     expect(rivalRan).toBe(true);
     expect(send).not.toHaveBeenCalled();
+    expect(await audits(campaignId, AUDIT_EVENTS.REMINDER_ATTEMPTED)).toHaveLength(0);
     expect((await prisma.checkInRecipient.findUniqueOrThrow({ where: { id: recipient.id } })).tokenHash).toBe(
       "rival-token",
     );
@@ -109,5 +111,28 @@ describe("reminder safety", () => {
     const all = JSON.stringify(await prisma.auditEvent.findMany({ where: { campaignId } }));
     expect(all).not.toContain(rawToken);
     expect(all).not.toContain("/checkin/");
+  });
+
+  it("a thrown send restores the token, records REMINDER_FAILED and the batch continues", async () => {
+    await refreshCatalogFromSalesforce("test");
+    const opps = await prisma.opportunity.findMany({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+    });
+    const two = [...new Map(opps.map((o) => [o.contactId, o])).values()].slice(0, 2);
+    expect(two).toHaveLength(2);
+    const { campaignId } = await launchCampaign({ opportunityIds: two.map((o) => o.id), name: "R", period: "T", actor: "test" });
+    const before = await prisma.checkInRecipient.findMany({ where: { campaignId }, orderBy: { id: "asc" } });
+    let calls = 0;
+    override = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("live send refused");
+      return { id: "x", status: "SENT" };
+    };
+    expect(await sendReminders(campaignId, "test")).toEqual({ sent: 1, failed: 1, skipped: 0 });
+    const after = await prisma.checkInRecipient.findMany({ where: { campaignId }, orderBy: { id: "asc" } });
+    expect(after.filter((r, i) => r.tokenHash === before[i].tokenHash)).toHaveLength(1);
+    const [row] = await audits(campaignId, AUDIT_EVENTS.REMINDER_FAILED);
+    expect(row.detail).toMatch(/send threw before an outcome was known/);
+    expect(row.detail).toContain("live send refused");
   });
 });

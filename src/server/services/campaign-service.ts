@@ -541,54 +541,88 @@ export async function sendReminders(
       });
 
     const token = issueToken();
-    // Attempt row first (hint only, never the token) so a crash after rotation is detectable.
-    await audit(AUDIT_EVENTS.REMINDER_ATTEMPTED, `Reminder attempted for ${who}`, `new token hint ${token.hint}`);
-
-    // Compare-and-swap: only rotate the token we read; otherwise another run got there first.
-    const rotated = await prisma.checkInRecipient.updateMany({
-      where: { id: recipient.id, completedAt: null, revokedAt: null, tokenHash: recipient.tokenHash },
-      data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt },
+    // CAS rotation and the attempt row commit together: a lost race leaves no attempt row, a crash
+    // after rotation leaves an attempt with no outcome. Hint only, never the token.
+    const rotated = await prisma.$transaction(async (tx) => {
+      const r = await tx.checkInRecipient.updateMany({
+        where: { id: recipient.id, completedAt: null, revokedAt: null, tokenHash: recipient.tokenHash },
+        data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt },
+      });
+      if (r.count > 0) {
+        await tx.auditEvent.create({
+          data: {
+            type: AUDIT_EVENTS.REMINDER_ATTEMPTED,
+            summary: `Reminder attempted for ${who}`,
+            detail: `new token hint ${token.hint}`,
+            actor,
+            actorKind: "ADMIN",
+            campaignId,
+            contactId: recipient.contactId,
+            accountId: recipient.contact.accountId,
+          },
+        });
+      }
+      return r.count;
     });
-    if (rotated.count === 0) {
+    if (rotated === 0) {
       skipped += 1;
       continue;
     }
 
-    const result = await getEmailService().send(
-      buildReminderEmail({
-        contactName: recipient.contact.name,
-        contactEmail: recipient.contact.email,
-        organizationName: recipient.contact.account.name,
-        opportunityCount: recipient.items.length,
-        checkInUrl: checkInUrl(env.appBaseUrl, token.token),
-        campaignId,
-        contactId: recipient.contactId,
-      }),
-    );
-
-    if (result.status === "SENT") {
-      sent += 1;
-      await prisma.checkInRecipient.update({
-        where: { id: recipient.id },
-        data: { remindedAt: new Date(), reminderCount: { increment: 1 } },
-      });
-      await audit(AUDIT_EVENTS.REMINDER_SENT, `Reminder sent to ${who}`);
-    } else if (result.status === "FAILED") {
-      failed += 1;
-      // Put the old link back, but only if nobody rotated it again since.
-      await prisma.checkInRecipient.updateMany({
+    const restore = () =>
+      prisma.checkInRecipient.updateMany({
         where: { id: recipient.id, tokenHash: token.hash },
         data: { tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt },
       });
-      await audit(AUDIT_EVENTS.REMINDER_FAILED, `Reminder failed for ${who}`, result.error ?? "send failed");
-    } else {
-      // Unknown outcome: the email may have been delivered, so keep the new token and never retry.
-      failed += 1;
-      await audit(
-        AUDIT_EVENTS.REMINDER_FAILED,
-        `Reminder outcome unknown for ${who}`,
-        `Outcome unknown (status ${String(result.status)}); new token kept, not restored`,
+
+    let result: Awaited<ReturnType<ReturnType<typeof getEmailService>["send"]>> | undefined;
+    let thrown: string | undefined;
+    try {
+      result = await getEmailService().send(
+        buildReminderEmail({
+          contactName: recipient.contact.name,
+          contactEmail: recipient.contact.email,
+          organizationName: recipient.contact.account.name,
+          opportunityCount: recipient.items.length,
+          checkInUrl: checkInUrl(env.appBaseUrl, token.token),
+          campaignId,
+          contactId: recipient.contactId,
+        }),
       );
+    } catch (err) {
+      thrown = err instanceof Error ? err.message : "unknown error";
+    }
+
+    // A failure while recording the outcome must not abort the rest of the batch.
+    try {
+      if (result?.status === "SENT") {
+        sent += 1;
+        await prisma.checkInRecipient.update({
+          where: { id: recipient.id },
+          data: { remindedAt: new Date(), reminderCount: { increment: 1 } },
+        });
+        await audit(AUDIT_EVENTS.REMINDER_SENT, `Reminder sent to ${who}`);
+      } else if (thrown !== undefined || result?.status === "FAILED") {
+        failed += 1;
+        await restore();
+        await audit(
+          AUDIT_EVENTS.REMINDER_FAILED,
+          `Reminder failed for ${who}`,
+          thrown !== undefined
+            ? `send threw before an outcome was known: ${thrown}`
+            : (result?.error ?? "send failed"),
+        );
+      } else {
+        // Unknown outcome: the email may have been delivered, so keep the new token and never retry.
+        failed += 1;
+        await audit(
+          AUDIT_EVENTS.REMINDER_FAILED,
+          `Reminder outcome unknown for ${who}`,
+          `Outcome unknown (status ${String(result?.status)}); new token kept, not restored`,
+        );
+      }
+    } catch (err) {
+      console.error(`sendReminders: could not record outcome for recipient ${recipient.id}`, err);
     }
   }
 
