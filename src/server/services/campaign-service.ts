@@ -498,8 +498,33 @@ export type CampaignSummary = {
   pendingCount: number;
   syncErrorCount: number;
   totalValue: number;
+  /** Selected, still-sendable opportunities that no recipient of this campaign received. */
+  unreachedCount: number;
   recipients: RecipientProgress[];
 };
+
+/**
+ * Selections that should have produced a check-in item but did not (a half-sent
+ * launch). Opportunities that are no longer open/resolved cannot be sent, so
+ * they are not a shortfall. A revoked recipient's items still count as reached.
+ */
+export async function getUnreachedOpportunityIds(campaignId: string): Promise<string[]> {
+  const [selections, reached] = await Promise.all([
+    prisma.campaignSelection.findMany({
+      where: {
+        campaignId,
+        opportunity: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } },
+      },
+      select: { opportunityId: true },
+    }),
+    prisma.checkInOpportunity.findMany({
+      where: { recipient: { campaignId } },
+      select: { opportunityId: true },
+    }),
+  ]);
+  const reachedIds = new Set(reached.map((item) => item.opportunityId));
+  return selections.map((s) => s.opportunityId).filter((id) => !reachedIds.has(id));
+}
 
 export async function getCampaignSummary(campaignId: string): Promise<CampaignSummary | null> {
   const campaign = await prisma.campaign.findUnique({
@@ -550,6 +575,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
 
   const items = campaign.recipients.flatMap((recipient) => recipient.items);
+  const unreachedCount = (await getUnreachedOpportunityIds(campaignId)).length;
 
   return {
     id: campaign.id,
@@ -572,6 +598,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     ).length,
     syncErrorCount: recipients.filter((r) => r.status === "SYNC_ERROR").length,
     totalValue: items.reduce((sum, item) => sum + item.amount, 0),
+    unreachedCount,
     recipients,
   };
 }

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
 import { isClosedStage, isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
+import { getUnreachedOpportunityIds } from "./campaign-service";
 import { syncCampaignResponses } from "./sync-service";
 
 export type InviteRejection = "NOT_FOUND" | "EXPIRED" | "REVOKED";
@@ -301,6 +302,8 @@ async function closeCampaignIfDone(campaignId: string): Promise<void> {
     where: { campaignId, completedAt: null, revokedAt: null },
   });
   if (outstanding > 0) return;
+  // A half-sent launch is not finished just because everyone it reached is.
+  if ((await getUnreachedOpportunityIds(campaignId)).length > 0) return;
 
   await prisma.campaign.updateMany({
     where: { id: campaignId, completedAt: null },
