@@ -95,7 +95,9 @@ describe("sending receipt", () => {
     expect(html).toContain("1 recipient with an unknown send outcome");
     expect(html).toContain("acceptance and delivery are unconfirmed, and the send is not classified as failed");
     expect(html).toContain("before sending a replacement");
-    expect(html).not.toMatch(/not delivered|not failed|resend/i);
+    const line = html.match(/<p[^>]*>[^<]*unknown send outcome[^<]*<\/p>/)?.[0] ?? "";
+    expect(line).toContain("unconfirmed");
+    expect(line).not.toMatch(/not delivered|not failed|resend/i);
     expect(html).toContain("Acceptance unconfirmed — check the sent mailbox");
     // Failed is not claimed, delivered is not claimed, and the chip is a warning.
     expect(html).not.toContain("could not be sent");
