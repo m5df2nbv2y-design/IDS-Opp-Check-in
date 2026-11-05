@@ -78,7 +78,7 @@ describe("launch through Graph", () => {
     const summary = (await getCampaignSummary(result.campaignId))!;
     expect(summary).toMatchObject({ emailsSent: 0, emailsFailed: 0, emailsUncertain: 1, unresolvedDeliveryCount: 1 });
 
-    // Resume and a second identical launch step must not put another request on the wire.
+    // resumeLaunch must not put a second sendMail request on the wire for the unknown recipient.
     const resumed = await resumeLaunch(result.campaignId, "test");
     expect(resumed.emailsUncertain).toBe(0);
     expect(graph.state.sendMailTo).toHaveLength(1);
