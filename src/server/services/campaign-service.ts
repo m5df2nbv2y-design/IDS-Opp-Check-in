@@ -657,16 +657,32 @@ export function readReminderRecovery(value: string | null): { version: 1; attemp
   } catch { return null; }
 }
 
+export const REMINDER_REJECTED_NOTE = "Reminder rejected; previous link restored";
+const REMINDER_UNRESOLVED_NOTE = "Reminder pending or unresolved; reconcile provider records before replacing the link.";
+const REMINDER_EVIDENCE_NOTE = "Reminder recovery evidence is on file; reconcile provider records before replacing the link.";
+
+/** True only for the state the rejection branch writes: restored SENT plus a recognised payload with outcome FAILED. */
+function isRejectedReminder(recipient: { sendStatus: string; sendError: string | null }): boolean {
+  const recovery = readReminderRecovery(recipient.sendError) as { outcome?: unknown } | null;
+  return recipient.sendStatus === "SENT" && recovery?.outcome === "FAILED";
+}
+
+/** Anything that looks like reminder recovery metadata, including a payload this version does not recognise. */
+function looksLikeReminderRecovery(value: string | null): boolean {
+  if (readReminderRecovery(value)) return true;
+  try { return JSON.parse(value ?? "null")?.kind === "REMINDER"; } catch { return false; }
+}
+
 /**
- * The line an admin sees for a recipient's send state. Recognised reminder
- * recovery metadata is always summarised, whatever the invitation's sendStatus,
- * so the stored JSON (attempt id, previous hash, hint, expiry) is never shown.
+ * The line an admin sees for a recipient's send state. Reminder recovery
+ * metadata, recognised or not, is always summarised and never printed: the
+ * stored JSON (attempt id, previous hash, hint, expiry, outcome) stays in the
+ * database. "Previous link restored" is only claimed for a definite rejection.
  */
 export function recipientSendNote(recipient: { sendStatus: string; sendError: string | null }): string | null {
-  if (recipient.sendStatus.startsWith("REMINDER_")) {
-    return "Reminder pending or unresolved; reconcile provider records before replacing the link.";
-  }
-  if (readReminderRecovery(recipient.sendError)) return "Reminder rejected; previous link restored.";
+  if (recipient.sendStatus.startsWith("REMINDER_")) return REMINDER_UNRESOLVED_NOTE;
+  if (isRejectedReminder(recipient)) return `${REMINDER_REJECTED_NOTE}.`;
+  if (looksLikeReminderRecovery(recipient.sendError)) return REMINDER_EVIDENCE_NOTE;
   return recipient.sendError;
 }
 
@@ -738,7 +754,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         completedAt: recipient.completedAt,
         reminderCount: recipient.reminderCount,
         tokenHint: recipient.tokenHint,
-        deliveryNote: recipient.sendStatus === "SENT" && readReminderRecovery(recipient.sendError) ? "Reminder rejected; previous link restored" : null,
+        deliveryNote: isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null,
       };
     })
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
