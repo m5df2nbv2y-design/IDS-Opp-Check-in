@@ -101,9 +101,14 @@ For each recipient under "Send outcome unknown" on the campaign page or sending
 results, check the sending mailbox's Sent Items for a message to that address,
 and for an NDR, before anyone resends. No in-app control resolves an unknown
 invitation; a replacement needs an explicitly approved invitation, as for Resend.
-The count is invitation-only: an unresolved reminder stays in the campaign
-page's pending-or-unresolved banner and the recipient's "Delivery unresolved"
-status.
+The count is invitation-only: a recipient still PENDING (not yet attempted, or
+interrupted) and an unresolved reminder stay in the campaign page's
+pending-or-unresolved banner, and a reminder in the recipient's "Delivery
+unresolved" status. Sent, Failed and Unknown therefore do not cover every
+recipient while a launch is pending or interrupted.
+
+Redirects are never followed: a 3xx from the token endpoint is a definite
+pre-send failure, and a 3xx from `sendMail` is an unknown outcome.
 
 Diagnostics are fixed text built from this code's own constants and an HTTP
 status number. A provider or token body, thrown text, bearer link, credential or

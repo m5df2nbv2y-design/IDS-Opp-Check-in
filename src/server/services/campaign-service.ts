@@ -614,9 +614,10 @@ export type CampaignSummary = {
   emailsSent: number;
   emailsFailed: number;
   /**
-   * Invitation-only, one per recipient (sendStatus UNCERTAIN), so Sent / Failed /
-   * Unknown partition recipients by invitation outcome. Unresolved reminders are
-   * not counted here; they stay in `unresolvedDeliveryCount`.
+   * Invitation-only, one per recipient (sendStatus UNCERTAIN). PENDING (not yet
+   * attempted, or interrupted) is outside this count and stays in the
+   * unresolved-delivery banner, as do unresolved reminders
+   * (`unresolvedDeliveryCount`).
    */
   emailsUncertain: number;
   openedCount: number;

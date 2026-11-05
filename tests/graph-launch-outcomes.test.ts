@@ -125,7 +125,7 @@ describe("launch through Graph", () => {
     expect(await prisma.emailMessage.count()).toBe(0);
   });
 
-  it("Sent, Failed and Unknown partition the attempted recipients, and a reminder-unknown recipient stays in Sent", async () => {
+  it("Sent, Failed and Unknown counts for a fully attempted launch, and a reminder-unknown recipient stays in Sent", async () => {
     const opportunities = await opportunitiesForContacts(3);
     const [sent, rejected, unknown] = opportunities.map((o) => o.contact!.email);
     graph.state.sendMail = (to) => (to === sent ? 202 : to === rejected ? 400 : 503);
