@@ -14,8 +14,8 @@ import { resetDatabase } from "./fixtures";
  *
  * The ledger contract is the same and is asserted here too, because it is what
  * stops a retry from mailing a customer twice. The adapter must hand callers the
- * TRUE outcome: launch and reminders treat FAILED as safe to resend, so an
- * unknown send reported as FAILED is a duplicate customer email waiting to
+ * TRUE outcome: launch and reminders treat FAILED as definitely not accepted,
+ * so an unknown send reported as FAILED is a duplicate customer email waiting to
  * happen. No test here touches the network; `fetch` is always stubbed.
  */
 
@@ -113,13 +113,16 @@ describe("classifying Graph's answer", () => {
     expect(missing.error).toMatch(/GRAPH_SENDER_MAILBOX/);
   });
 
-  it("treats throttling as a clean failure that may be resent", () => {
+  it("treats throttling as a clean failure: not accepted, and an identical retry is refused as a duplicate", () => {
     // Graph rejects a throttled request rather than executing it, so this is
     // knowably not-sent. Calling it UNCERTAIN would freeze every throttled
     // message in a campaign for manual checking.
     const throttled = classifyGraphSendResponse(429);
     expect(throttled.status).toBe("FAILED");
-    expect(throttled.error).toMatch(/safe to send this one again/i);
+    expect(throttled.error).toMatch(/did not accept the message/i);
+    expect(throttled.error).toMatch(/refused as a duplicate/i);
+    expect(throttled.error).toMatch(/needs a new send/i);
+    expect(throttled.error).not.toMatch(/safe to send/i);
   });
 
   it("refuses to guess when Graph itself breaks", () => {
@@ -352,6 +355,11 @@ describe("the send path", () => {
       for (const leak of LEAKS) expect(repeat.error ?? "", leak).not.toContain(leak);
       if (expected === "SENT") expect(repeat.error).toBeUndefined();
       else expect(repeat.error).toBeTruthy();
+      if (stored === "FAILED") {
+        expect(repeat.error).toMatch(/was not accepted/i);
+        expect(repeat.error).toMatch(/refused as a duplicate/i);
+        expect(repeat.error).toMatch(/needs a new send/i);
+      }
     });
   });
 

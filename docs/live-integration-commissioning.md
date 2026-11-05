@@ -72,14 +72,17 @@ The adapter returns one of three outcomes and callers act on exactly that:
 
 - SENT: sendMail answered 2xx (in practice 202, empty body, no message id). That
   is acceptance, not delivery.
-- FAILED, safe to resend: only where no sendMail request could have left, or
+- FAILED, not accepted: only where no sendMail request could have left, or
   Graph documented a rejection. That is a deployment refusal (returned, no
   ledger row), a missing `GRAPH_*` value (the variable is named, never a value),
   any failure to obtain a token (non-2xx, malformed body, transport, timeout),
-  and a 4xx or 429 from sendMail.
-- UNCERTAIN, never replayed: a sendMail 5xx, timeout or transport failure; a
-  stored PENDING or UNCERTAIN row for the same request; and a failed final
-  ledger update, which leaves the row PENDING so a repeat cannot send again.
+  and a 4xx (other than 408) or 429 from sendMail. An identical retry of a
+  stored FAILED row is refused with no network call, so a resend needs a new
+  send (a reminder issues a new link).
+- UNCERTAIN, never replayed: a sendMail 5xx, 408, 1xx, unfollowed 3xx, timeout
+  or transport failure; a stored PENDING or UNCERTAIN row for the same request;
+  and a failed final ledger update, which leaves the row PENDING so a repeat
+  cannot send again.
 
 An identical request returns its stored outcome with no network call, and
 concurrent identical calls make exactly one sendMail request. As with Resend,

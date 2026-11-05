@@ -7,7 +7,9 @@ import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } 
 
 const UNCONFIRMED = "Email acceptance could not be confirmed. Check the sent mailbox before sending again.";
 const NOT_RECORDED = "Email acceptance could not be recorded. Check the sent mailbox before sending again.";
-const DUPLICATE_FAILED = "This send was already attempted and was not accepted. Review the record before sending again.";
+const DUPLICATE_FAILED =
+  "This send was already attempted and was not accepted. An identical retry is refused as a duplicate, " +
+  "so a resend needs a new send (a reminder issues a new link).";
 
 /**
  * Sending as a real Microsoft 365 mailbox, through Graph.
@@ -35,11 +37,16 @@ const DUPLICATE_FAILED = "This send was already attempted and was not accepted. 
  * replayed automatically.
  *
  * THE THREE OUTCOMES REACH THE CALLER UNCHANGED. Launch and reminders treat
- * FAILED as "definitely not sent, safe to resend", so FAILED is returned only
- * where no sendMail request could have left: a deployment refusal, missing
- * configuration, or any failure to obtain a token. Once the sendMail request may
- * have left, a 5xx, timeout or transport failure is UNCERTAIN, and so is a
- * stored PENDING/UNCERTAIN row for the same request.
+ * FAILED as "definitely not accepted", so FAILED is returned only where no
+ * sendMail request could have left (a deployment refusal, missing configuration,
+ * or any failure to obtain a token) or Graph documented a rejection (a 4xx).
+ * Once the sendMail request may have left without a definite answer, a 5xx,
+ * 408, 1xx, unfollowed 3xx, timeout or transport failure is UNCERTAIN, and so is
+ * a stored PENDING/UNCERTAIN row for the same request.
+ *
+ * FAILED does not mean an identical call may go again: a stored FAILED row is
+ * returned as FAILED with no request, so a resend needs a new send (a reminder
+ * issues a new link).
  *
  * Every error is a fixed string built from this file's constants and an HTTP
  * status number. Provider bodies, thrown text, tokens, links and configured
@@ -207,8 +214,8 @@ export class GraphEmailService implements EmailService {
  * The three states mean specific things to everything downstream:
  *   SENT      — terminal success. The recipient row is marked sent, and nothing
  *               will try again.
- *   FAILED    — terminal, and safe to retry deliberately: we know Graph did NOT
- *               take it.
+ *   FAILED    — terminal: we know Graph did NOT take it. An identical retry is
+ *               refused as a duplicate, so a resend needs a new send.
  *   UNCERTAIN — Graph may or may not have accepted. Never retried
  *               automatically, because a retry risks a duplicate customer email.
  *               It requires a human to check the sent mailbox.
@@ -250,8 +257,8 @@ export function classifyGraphSendResponse(
 
   /**
    * Throttling. Graph rejects a throttled request rather than executing it and
-   * reporting back, so this is a clean failure that a person can deliberately
-   * resend — which is exactly what FAILED means here.
+   * reporting back, so this is a clean failure: the message was not accepted.
+   * An identical retry is refused as a duplicate, so a resend needs a new send.
    *
    * It is tempting to call this UNCERTAIN on the "never risk a duplicate"
    * principle, but that would freeze every throttled message in a campaign for
@@ -264,7 +271,7 @@ export function classifyGraphSendResponse(
       status: "FAILED",
       error:
         "Microsoft throttled the send (HTTP 429) and did not accept the message. " +
-        "It is safe to send this one again.",
+        "An identical retry is refused as a duplicate, so a resend needs a new send (a reminder issues a new link).",
     };
   }
 
