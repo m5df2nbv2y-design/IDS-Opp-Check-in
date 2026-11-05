@@ -156,7 +156,8 @@ export type LaunchResult = {
   opportunities: number;
   emailsSent: number;
   emailsFailed: number;
-  emailsUncertain?: number;
+  /** Invitations whose acceptance is unknown: not sent, not failed, never replayed. */
+  emailsUncertain: number;
   unresolvedOpportunities: number;
   /** Set only by resumeLaunch: selected opportunities still unreached after the run. */
   unreachedAfter?: number;
@@ -496,6 +497,7 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
       opportunities: 0,
       emailsSent: 0,
       emailsFailed: 0,
+      emailsUncertain: 0,
       unresolvedOpportunities: await prisma.opportunity.count({
         where: { isOpen: true, resolutionStatus: "UNRESOLVED" },
       }),
@@ -611,6 +613,12 @@ export type CampaignSummary = {
   recipientCount: number;
   emailsSent: number;
   emailsFailed: number;
+  /**
+   * Invitation-only, one per recipient (sendStatus UNCERTAIN), so Sent / Failed /
+   * Unknown partition recipients by invitation outcome. Unresolved reminders are
+   * not counted here; they stay in `unresolvedDeliveryCount`.
+   */
+  emailsUncertain: number;
   openedCount: number;
   startedCount: number;
   completedCount: number;
@@ -775,6 +783,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     recipientCount: recipients.length,
     emailsSent: recipients.filter((r) => r.sentAt !== null).length,
     emailsFailed: recipients.filter((r) => r.status === "SEND_FAILED").length,
+    emailsUncertain: campaign.recipients.filter((r) => r.sendStatus === "UNCERTAIN").length,
     openedCount: recipients.filter((r) => r.openedAt !== null).length,
     startedCount: recipients.filter((r) => r.submittedCount > 0).length,
     completedCount: recipients.filter((r) => r.status === "COMPLETE").length,

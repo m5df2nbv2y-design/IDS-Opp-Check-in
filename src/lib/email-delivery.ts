@@ -3,7 +3,10 @@ export type DeliveryRecord = { provider: string; status: string; deliveredAt: Da
 /** SENT means provider acceptance, not inbox delivery. Mock never delivers. */
 export function emailDeliveryLabel(email: DeliveryRecord | null): string {
   if (!email) return "No email record";
-  if (email.status === "UNCERTAIN" || email.status === "PENDING") return "Acceptance unconfirmed — check Resend";
+  if (email.status === "UNCERTAIN" || email.status === "PENDING") {
+    const where = email.provider === "graph" ? "the sent mailbox" : email.provider === "resend" ? "Resend" : "the email provider";
+    return `Acceptance unconfirmed — check ${where}`;
+  }
   if (email.status === "BOUNCED") return "Bounced";
   if (email.status === "COMPLAINED") return "Spam complaint";
   if (email.status === "FAILED") return "Failed";

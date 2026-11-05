@@ -471,6 +471,7 @@ export type SendDraftResult = {
   sent: number;
   recipients: number;
   emailsFailed: number;
+  emailsUncertain: number;
   drifted: DriftedSelection[];
 };
 
@@ -486,7 +487,7 @@ export async function sendDraft(campaignId: string, actor = "admin", expectedEma
   const { sendableOpportunityIds, drifted } = await validateSelection(campaignId);
 
   if (sendableOpportunityIds.length === 0) {
-    return { campaignId, sent: 0, recipients: 0, emailsFailed: 0, drifted };
+    return { campaignId, sent: 0, recipients: 0, emailsFailed: 0, emailsUncertain: 0, drifted };
   }
 
   const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
@@ -521,6 +522,7 @@ export async function sendDraft(campaignId: string, actor = "admin", expectedEma
     sent: result.opportunities,
     recipients: result.recipients,
     emailsFailed: result.emailsFailed,
+    emailsUncertain: result.emailsUncertain,
     drifted,
   };
 }

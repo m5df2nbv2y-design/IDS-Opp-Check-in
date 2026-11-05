@@ -137,7 +137,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Emails sent" value={summary.emailsSent} />
         <StatTile label="Opened" value={summary.openedCount} />
         <StatTile label="Started" value={summary.startedCount} tone="warning" />
@@ -145,6 +145,13 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           label="Send failures"
           value={summary.emailsFailed}
           tone={summary.emailsFailed > 0 ? "danger" : "default"}
+        />
+        {/* Not a failure and not delivered: acceptance is unknown, so it is neither resent nor reported as sent. */}
+        <StatTile
+          label="Send outcome unknown"
+          value={summary.emailsUncertain}
+          tone={summary.emailsUncertain > 0 ? "warning" : "default"}
+          hint={summary.emailsUncertain > 0 ? "Check the sent mailbox or provider before resending." : undefined}
         />
       </div>
 
