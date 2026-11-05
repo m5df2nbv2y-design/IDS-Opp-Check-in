@@ -92,8 +92,10 @@ export async function reconcileUncertainWrite(input: {
         opportunityId: true,
         opportunityName: true,
         customerName: true,
+        previousStatus: true,
         updatedStatus: true,
         recipient: { select: { contactId: true } },
+        opportunity: { select: { accountId: true, internalRepId: true } },
       },
     });
 
@@ -142,7 +144,11 @@ export async function reconcileUncertainWrite(input: {
       actorKind: "ADMIN",
       campaignId: input.campaignId,
       contactId: item.recipient.contactId,
+      accountId: item.opportunity.accountId,
+      repId: item.opportunity.internalRepId,
       opportunityId: item.opportunityId,
+      fromStatus: item.previousStatus,
+      toStatus: item.updatedStatus,
     }, tx);
 
     return { ok: true, outcome: input.observed, nextStatus };

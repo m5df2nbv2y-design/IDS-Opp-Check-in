@@ -39,6 +39,35 @@ beforeEach(async () => {
 
 afterEach(() => vi.restoreAllMocks());
 
+/** An UNCERTAIN item whose recipient had answered, as the write being attested always is. */
+async function anAnsweredUncertainItem(extra: { syncedAt?: Date } = {}) {
+  const { campaignId, item } = await anUncertainItem();
+  const answered = await prisma.checkInOpportunity.update({
+    where: { id: item.id },
+    data: { updatedStatus: "NEGOTIATION", ...extra },
+  });
+  return { campaignId, item: answered };
+}
+
+/** An attestation carries the same account, rep and stage transition as every other SYNC_* event. */
+async function expectFullAuditContext(
+  type: string,
+  item: { id: string; previousStatus: string; updatedStatus: string | null },
+) {
+  const { opportunity } = await prisma.checkInOpportunity.findUniqueOrThrow({
+    where: { id: item.id },
+    select: { opportunity: { select: { accountId: true, internalRepId: true } } },
+  });
+  const event = await prisma.auditEvent.findFirstOrThrow({ where: { type } });
+  expect(item.updatedStatus).toBe("NEGOTIATION");
+  expect(event).toMatchObject({
+    accountId: opportunity.accountId,
+    repId: opportunity.internalRepId,
+    fromStatus: item.previousStatus,
+    toStatus: "NEGOTIATION",
+  });
+}
+
 describe("the only exit from UNCERTAIN", () => {
   it("is not reachable by automatic retry — before or after this feature", async () => {
     const { campaignId, item } = await anUncertainItem();
@@ -88,7 +117,7 @@ describe("reporting that the write DID land", () => {
   });
 
   it("records a HUMAN attestation, not an observed API success", async () => {
-    const { campaignId, item } = await anUncertainItem();
+    const { campaignId, item } = await anAnsweredUncertainItem();
     await reconcileUncertainWrite({
       campaignId,
       itemId: item.id,
@@ -105,6 +134,7 @@ describe("reporting that the write DID land", () => {
     expect(attested.actor).toBe("admin@idsculpture.test");
     expect(attested.actorKind).toBe("ADMIN");
     expect(attested.summary).toContain("Stage and close date both match");
+    await expectFullAuditContext(AUDIT_EVENTS.SYNC_RECONCILED_APPLIED, item);
 
     const claimedAsApiSuccess = await prisma.auditEvent.count({
       where: { type: AUDIT_EVENTS.SYNC_SUCCEEDED, campaignId },
@@ -115,7 +145,8 @@ describe("reporting that the write DID land", () => {
 
 describe("reporting that the write did NOT land", () => {
   it("makes the response approvable again WITHOUT retrying the write itself", async () => {
-    const { campaignId, item } = await anUncertainItem();
+    // A real timestamp to clear, or the null assertion below could not fail.
+    const { campaignId, item } = await anAnsweredUncertainItem({ syncedAt: new Date("2026-01-01T00:00:00Z") });
 
     const result = await reconcileUncertainWrite({
       campaignId,
@@ -139,7 +170,7 @@ describe("reporting that the write did NOT land", () => {
   });
 
   it("writes a distinct audit type from the applied case", async () => {
-    const { campaignId, item } = await anUncertainItem();
+    const { campaignId, item } = await anAnsweredUncertainItem();
     await reconcileUncertainWrite({
       campaignId,
       itemId: item.id,
@@ -153,6 +184,7 @@ describe("reporting that the write did NOT land", () => {
         where: { type: AUDIT_EVENTS.SYNC_RECONCILED_NOT_APPLIED, campaignId },
       }),
     ).toBe(1);
+    await expectFullAuditContext(AUDIT_EVENTS.SYNC_RECONCILED_NOT_APPLIED, item);
     expect(
       await prisma.auditEvent.count({
         where: { type: AUDIT_EVENTS.SYNC_RECONCILED_APPLIED, campaignId },
