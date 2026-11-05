@@ -125,12 +125,14 @@ export const env = {
    * mailbox is explicit rather than derived from emailFromAddress, so a
    * mis-set From cannot silently redirect which mailbox we send as.
    */
+  // Trimmed: a padded value would pass the "is it set" check and then fail every
+  // send as a token 401 or a mailbox 404, and a whitespace-only value is not set.
   graph: {
-    tenantId: process.env.GRAPH_TENANT_ID ?? "",
-    clientId: process.env.GRAPH_CLIENT_ID ?? "",
-    clientSecret: process.env.GRAPH_CLIENT_SECRET ?? "",
+    tenantId: (process.env.GRAPH_TENANT_ID ?? "").trim(),
+    clientId: (process.env.GRAPH_CLIENT_ID ?? "").trim(),
+    clientSecret: (process.env.GRAPH_CLIENT_SECRET ?? "").trim(),
     /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
-    senderMailbox: process.env.GRAPH_SENDER_MAILBOX ?? "",
+    senderMailbox: (process.env.GRAPH_SENDER_MAILBOX ?? "").trim(),
   },
 
   /**

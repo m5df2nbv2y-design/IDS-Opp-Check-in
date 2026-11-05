@@ -426,6 +426,41 @@ describe("the send path", () => {
     for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
   });
 
+  it.each([
+    ["GRAPH_TENANT_ID"],
+    ["GRAPH_CLIENT_ID"],
+    ["GRAPH_CLIENT_SECRET"],
+    ["GRAPH_SENDER_MAILBOX"],
+  ])("counts a whitespace-only %s as not configured: FAILED naming the variable, no network call", async (name) => {
+    vi.stubEnv(name, " \t ");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await (await graphService()).send(MESSAGE);
+
+    expect(result.status).toBe("FAILED");
+    expect(result.error).toBe(`${name} is not configured.`);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("trims padded GRAPH_* values before they reach the token request and the sendMail URL", async () => {
+    vi.stubEnv("GRAPH_TENANT_ID", "  tenant-synthetic\n");
+    vi.stubEnv("GRAPH_CLIENT_ID", " client-synthetic ");
+    vi.stubEnv("GRAPH_CLIENT_SECRET", "\tsecret-synthetic  ");
+    vi.stubEnv("GRAPH_SENDER_MAILBOX", " hello@idsculpture.test ");
+    const fetchMock = graphFetch(202);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await (await graphService()).send(MESSAGE);
+
+    expect(result.status).toBe("SENT");
+    const [tokenUrl, tokenInit] = fetchMock.mock.calls[0] as unknown as [string, { body: URLSearchParams }];
+    expect(String(tokenUrl)).toBe("https://login.microsoftonline.com/tenant-synthetic/oauth2/v2.0/token");
+    expect(tokenInit.body.get("client_id")).toBe("client-synthetic");
+    expect(tokenInit.body.get("client_secret")).toBe("secret-synthetic");
+    expect(String(fetchMock.mock.calls[1][0])).toBe("https://graph.microsoft.com/v1.0/users/hello%40idsculpture.test/sendMail");
+  });
+
   describe("when the final ledger update fails", () => {
     it("returns UNCERTAIN with a fixed message, never throws, and leaves the row PENDING so a repeat cannot replay", async () => {
       const fetchMock = graphFetch(202);
