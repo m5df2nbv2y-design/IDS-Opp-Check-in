@@ -177,3 +177,19 @@ export async function listUncertainWrites(campaignId?: string) {
     },
   });
 }
+
+/**
+ * The by-hand APPLIED attestations recorded for a campaign, oldest first.
+ *
+ * Read-only, and it reads the audit trail on purpose: an APPLIED item is SYNCED
+ * either way, so SYNC_RECONCILED_APPLIED is the only existing record that the
+ * status came from a person rather than from a Salesforce response. The caller
+ * uses it to keep saying so after the UNCERTAIN controls have gone.
+ */
+export async function listAppliedAttestations(campaignId: string) {
+  return prisma.auditEvent.findMany({
+    where: { campaignId, type: AUDIT_EVENTS.SYNC_RECONCILED_APPLIED },
+    orderBy: { createdAt: "asc" },
+    select: { contactId: true, opportunityId: true, actor: true, createdAt: true },
+  });
+}

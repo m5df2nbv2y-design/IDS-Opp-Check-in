@@ -135,6 +135,24 @@ export async function retrySyncAction(campaignId: string) {
 }
 
 /**
+ * What the reconcile control is told. A refusal here is an expected outcome
+ * (two administrators racing, a stale page), so it is returned rather than
+ * thrown — a throw would replace the page with the generic error screen.
+ * `message` is always one of the fixed strings below, never thrown or stored text.
+ */
+export type ReconcileActionResult =
+  | { ok: true }
+  | { ok: false; reason: "STALE" | "NOT_UNCERTAIN" | "NOT_FOUND"; message: string };
+
+const RECONCILE_REFUSALS = {
+  STALE:
+    "This response changed since the page was loaded. Reload, re-check Salesforce, and resolve it again.",
+  NOT_UNCERTAIN:
+    "This response is no longer awaiting reconciliation — someone may have resolved it already.",
+  NOT_FOUND: "This response is no longer part of the campaign.",
+} as const;
+
+/**
  * Resolve a Salesforce write whose outcome we never learned.
  *
  * The administrator has looked in Salesforce and is telling us what they saw.
@@ -150,7 +168,7 @@ export async function reconcileUncertainAction(
   itemId: string,
   revision: string,
   observed: ObservedOutcome,
-) {
+): Promise<ReconcileActionResult> {
   const actor = await requireAdminActor();
   const result = await reconcileUncertainWrite({
     campaignId,
@@ -160,23 +178,15 @@ export async function reconcileUncertainAction(
     actor,
   });
 
-  // A refusal must not look like a click that did nothing. Throwing surfaces
-  // the reason, where returning quietly would leave an administrator pressing
-  // a button against an item that has already moved on.
+  // Nothing was written, so there is nothing to revalidate. Authorization and
+  // validation failures are not refusals: they still throw, above.
   if (!result.ok) {
-    throw new Error(
-      {
-        STALE:
-          "This response changed since the page was loaded. Reload, re-check Salesforce, and resolve it again.",
-        NOT_UNCERTAIN:
-          "This response is no longer awaiting reconciliation — someone may have resolved it already.",
-        NOT_FOUND: "This response is no longer part of the campaign.",
-      }[result.reason],
-    );
+    return { ok: false, reason: result.reason, message: RECONCILE_REFUSALS[result.reason] };
   }
 
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
+  return { ok: true };
 }
 
 export async function refreshCatalogAction() {

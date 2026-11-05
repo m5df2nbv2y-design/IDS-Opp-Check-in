@@ -24,6 +24,15 @@ to PENDING or use retry-all blindly. After a confirmed rejection, an admin may
 review and approve the current response revision again. A changed CRM snapshot
 requires a new reviewed check-in, not an override of conflict checks.
 
+Recording an UNCERTAIN write as "It is in Salesforce" only marks the response
+SYNCED and writes a SYNC_RECONCILED_APPLIED audit event. It never calls
+Salesforce and never touches the cached Opportunity stage or close date, so that
+cache can still show the old values. After any such attestation, run "Refresh
+from Salesforce" on the dashboard as a separate step before preparing another
+campaign. This is an operational requirement, not a gate the system enforces: the
+campaign page keeps a notice saying so for as long as the attestation exists, and
+a later refresh does not clear it.
+
 The dedicated integration user's permissions still require inspection. Grant only
 necessary Opportunity edit/record access and field permissions; no Modify All
 Data or unrelated object editing. Writes must stay disabled until commissioning.

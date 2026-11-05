@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   approveWritebackAction,
@@ -7,6 +8,7 @@ import {
   sendRemindersAction,
 } from "../../actions";
 import { ActionButton } from "@/components/admin/action-button";
+import { ReconcileControls } from "@/components/admin/reconcile-controls";
 import { RecipientTable } from "@/components/admin/recipient-table";
 import { TestEmailPanel } from "@/components/admin/test-email-panel";
 import { ButtonLink } from "@/components/ui/button";
@@ -14,14 +16,38 @@ import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/comp
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import { getCampaignSummary, listResponses } from "@/server/services/campaign-service";
+import { listAppliedAttestations } from "@/server/services/reconcile-service";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
+/** Kept after the UNCERTAIN controls are gone: this SYNCED status came from a person, not from Salesforce. */
+function AttestedNote({ event }: { event?: { actor: string; createdAt: Date } }) {
+  if (!event) return null;
+  return (
+    <p className="mt-2 text-[13px] text-muted">
+      Recorded by hand: {event.actor} confirmed this change in Salesforce on {formatDateTime(event.createdAt)}.
+      That did not refresh the cached Salesforce data in this app.
+    </p>
+  );
+}
+
 export default async function CampaignDetailPage({ params }: PageProps<"/admin/campaigns/[id]">) {
   const { id } = await params;
-  const [summary, responses] = await Promise.all([getCampaignSummary(id), listResponses(id)]);
+  const [summary, responses, attestations] = await Promise.all([
+    getCampaignSummary(id),
+    listResponses(id),
+    listAppliedAttestations(id),
+  ]);
   if (!summary) notFound();
+
+  // The latest by-hand APPLIED attestation per response. Read from the audit
+  // trail so the explanation survives a reload and the UNCERTAIN controls going.
+  const attestationKey = (contactId: string | null, opportunityId: string | null) =>
+    `${contactId}:${opportunityId}`;
+  const attestedByHand = new Map(
+    attestations.map((event) => [attestationKey(event.contactId, event.opportunityId), event]),
+  );
 
   const failed = responses.filter((response) => response.syncStatus === "FAILED");
 
@@ -78,6 +104,21 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
       ) : null}
       {summary.unresolvedDeliveryCount > 0 ? (
         <Card className="p-5"><p role="status">{summary.unresolvedDeliveryCount} invitation or reminder deliveries are pending or unresolved. Automatic replay is blocked. Reconcile provider records before any replacement. An interrupted reminder may have invalidated the previous link; uninterrupted link access cannot be guaranteed.</p></Card>
+      ) : null}
+
+      {attestations.length > 0 ? (
+        <Card className="space-y-2 p-5">
+          <p role="status" className="font-semibold text-ink">
+            {attestations.length === 1 ? "1 response was" : `${attestations.length} responses were`} recorded as synced by hand.
+          </p>
+          <p>
+            Recording that a change is in Salesforce marks the response synced. It does not refresh the cached
+            Salesforce data in this app, so the stage and close date shown here may be out of date. Before you
+            prepare another campaign, run <strong>Refresh from Salesforce</strong> on the{" "}
+            <Link href="/admin" className="font-medium text-brand hover:underline">dashboard</Link>. That is a
+            manual step: nothing in this app checks that it has been done.
+          </p>
+        </Card>
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
@@ -184,36 +225,17 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                       guess and we will not retry on our own. Open the record, check the
                       stage and close date, then tell us what you found.
                     </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <ActionButton
-                        action={reconcileUncertainAction.bind(
-                          null,
-                          summary.id,
-                          response.id,
-                          response.updatedAt.toISOString(),
-                          "APPLIED",
-                        )}
-                        confirm="Confirm the change IS in Salesforce? This marks the write complete and nothing will attempt it again."
-                        pendingLabel="Recording…"
-                      >
-                        It is in Salesforce
-                      </ActionButton>
-                      <ActionButton
-                        action={reconcileUncertainAction.bind(
-                          null,
-                          summary.id,
-                          response.id,
-                          response.updatedAt.toISOString(),
-                          "NOT_APPLIED",
-                        )}
-                        confirm="Confirm the change is NOT in Salesforce? This does not retry — it makes the response approvable again so you can decide."
-                        pendingLabel="Recording…"
-                      >
-                        It is not there
-                      </ActionButton>
-                    </div>
+                    <ReconcileControls
+                      action={reconcileUncertainAction.bind(
+                        null,
+                        summary.id,
+                        response.id,
+                        response.updatedAt.toISOString(),
+                      )}
+                    />
                   </div>
                 ) : null}
+                <AttestedNote event={response.syncStatus === "SYNCED" ? attestedByHand.get(attestationKey(response.recipient.contactId, response.opportunityId)) : undefined} />
                 {response.updatedStatus === "CLOSED_LOST" ? <p className="mt-2 text-sm text-muted">Closed Lost write-back is deferred until its fields and choices are confirmed.</p> : null}
                 {response.repComment ? (
                   <p className="mt-3 rounded-xl bg-canvas px-4 py-2.5 text-[14px] text-body">
