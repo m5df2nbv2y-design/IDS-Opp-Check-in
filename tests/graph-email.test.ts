@@ -132,8 +132,17 @@ describe("classifying Graph's answer", () => {
   });
 
   it("treats any other 4xx as our mistake, not an unknown", () => {
-    for (const code of [400, 413, 422]) {
+    for (const code of [400, 409, 410, 413, 422]) {
       expect(classifyGraphSendResponse(code).status, String(code)).toBe("FAILED");
+    }
+  });
+
+  it("refuses to guess on a status the request may already have been processed under", () => {
+    // A 1xx, an unfollowed 3xx and 408 reached Graph without a definite answer.
+    for (const code of [100, 199, 300, 302, 304, 399, 408]) {
+      const unknown = classifyGraphSendResponse(code);
+      expect(unknown.status, String(code)).toBe("UNCERTAIN");
+      expect(unknown.error, String(code)).toMatch(/check the sent mailbox/i);
     }
   });
 
@@ -212,6 +221,9 @@ describe("the send path", () => {
       ["HTTP 502", () => graphFetch(502)],
       ["HTTP 503 with an echoing body", () => graphFetch(() => new Response(ECHO, { status: 503 }))],
       ["HTTP 504", () => graphFetch(504)],
+      ["HTTP 302 (an unfollowed redirect)", () => graphFetch(302)],
+      ["HTTP 304", () => graphFetch(304)],
+      ["HTTP 408", () => graphFetch(408)],
       ["a timeout", () => graphFetch(() => Promise.reject(timeout()))],
       ["a transport failure echoing secrets", () => graphFetch(() => Promise.reject(new Error(ECHO)))],
     ];

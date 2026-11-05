@@ -268,21 +268,24 @@ export function classifyGraphSendResponse(
     };
   }
 
-  // The request reached Graph and Graph broke. It may have queued the mail
-  // before failing, so we do not know — and must not guess, because the cost
-  // of guessing wrong is a duplicate email to a customer.
-  if (httpStatus >= 500) {
+  // Any other 4xx is our mistake: a malformed payload or an invalid address.
+  // 408 is the exception: a request timeout says nothing about whether Graph
+  // had already begun to process the send.
+  if (httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408) {
     return {
-      status: "UNCERTAIN",
-      error:
-        `Microsoft returned HTTP ${httpStatus} and the outcome is unknown. ` +
-        "Check the sent mailbox before sending this again.",
+      status: "FAILED",
+      error: `Microsoft rejected the request (HTTP ${httpStatus}). The message was not sent.`,
     };
   }
 
-  // Any other 4xx is our mistake: a malformed payload or an invalid address.
+  // Everything else reached Graph without a definite answer: a 5xx, 408, a 1xx,
+  // an unfollowed 3xx, anything unrecognised. Graph may have queued the mail, so
+  // we do not know — and must not guess, because the cost of guessing wrong is a
+  // duplicate email to a customer.
   return {
-    status: "FAILED",
-    error: `Microsoft rejected the request (HTTP ${httpStatus}). The message was not sent.`,
+    status: "UNCERTAIN",
+    error:
+      `Microsoft returned HTTP ${httpStatus} and the outcome is unknown. ` +
+      "Check the sent mailbox before sending this again.",
   };
 }
