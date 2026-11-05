@@ -50,6 +50,13 @@ export type ReconcileResult =
         | "STALE";
     };
 
+const MAX_NOTE_LENGTH = 500;
+
+/**
+ * The state change and its audit record commit in ONE transaction, or neither
+ * does: a failed audit write rolls the item back to UNCERTAIN, so an attestation
+ * can never leave a changed, unaudited state. Never calls Salesforce or email.
+ */
 export async function reconcileUncertainWrite(input: {
   campaignId: string;
   itemId: string;
@@ -60,69 +67,86 @@ export async function reconcileUncertainWrite(input: {
   /** Optional free-text note, e.g. which Salesforce field was checked. */
   note?: string | null;
 }): Promise<ReconcileResult> {
-  const item = await prisma.checkInOpportunity.findFirst({
-    where: { id: input.itemId, recipient: { campaignId: input.campaignId } },
-    select: {
-      id: true,
-      updatedAt: true,
-      syncStatus: true,
-      opportunityId: true,
-      opportunityName: true,
-      customerName: true,
-      updatedStatus: true,
-      recipient: { select: { contactId: true } },
-    },
+  // The server action is an HTTP-addressable endpoint, so the types above do
+  // not constrain what a client posts. Check at runtime, before any query: an
+  // `undefined` id would otherwise silently drop out of a Prisma `where`.
+  if (input.observed !== "APPLIED" && input.observed !== "NOT_APPLIED") {
+    throw new Error("Choose a valid reconciliation outcome.");
+  }
+  for (const value of [input.campaignId, input.itemId, input.revision]) {
+    if (typeof value !== "string" || value === "") {
+      throw new Error("This response could not be identified. Reload the page and try again.");
+    }
+  }
+  if (input.note != null && (typeof input.note !== "string" || input.note.length > MAX_NOTE_LENGTH)) {
+    throw new Error(`The note must be ${MAX_NOTE_LENGTH} characters or fewer.`);
+  }
+
+  return prisma.$transaction(async (tx): Promise<ReconcileResult> => {
+    const item = await tx.checkInOpportunity.findFirst({
+      where: { id: input.itemId, recipient: { campaignId: input.campaignId } },
+      select: {
+        id: true,
+        updatedAt: true,
+        syncStatus: true,
+        opportunityId: true,
+        opportunityName: true,
+        customerName: true,
+        updatedStatus: true,
+        recipient: { select: { contactId: true } },
+      },
+    });
+
+    if (!item) return { ok: false, reason: "NOT_FOUND" };
+    if (item.syncStatus !== "UNCERTAIN") return { ok: false, reason: "NOT_UNCERTAIN" };
+    if (item.updatedAt.toISOString() !== input.revision) return { ok: false, reason: "STALE" };
+
+    /**
+     * APPLIED  → SYNCED. Terminal, and correctly so: the write is done, and
+     *            nothing should attempt it again.
+     * NOT_APPLIED → FAILED, which puts the item back in the claim set so an
+     *            administrator can approve a fresh attempt through the normal
+     *            path. It does NOT re-attempt the write here — reconciling what
+     *            happened and deciding to try again are separate decisions, and
+     *            merging them would make one click do both.
+     */
+    const nextStatus = input.observed === "APPLIED" ? "SYNCED" : "FAILED";
+
+    // Conditional on the revision AND on still being UNCERTAIN, so two
+    // administrators resolving the same item concurrently cannot both win.
+    const claimed = await tx.checkInOpportunity.updateMany({
+      where: { id: item.id, updatedAt: item.updatedAt, syncStatus: "UNCERTAIN" },
+      data: {
+        syncStatus: nextStatus,
+        syncError:
+          input.observed === "APPLIED"
+            ? null
+            : "Reconciled by hand: the write did not reach Salesforce. Approve again to retry.",
+        syncedAt: input.observed === "APPLIED" ? new Date() : null,
+      },
+    });
+
+    if (claimed.count === 0) return { ok: false, reason: "STALE" };
+
+    const applied = input.observed === "APPLIED";
+    await recordAudit({
+      type: applied
+        ? AUDIT_EVENTS.SYNC_RECONCILED_APPLIED
+        : AUDIT_EVENTS.SYNC_RECONCILED_NOT_APPLIED,
+      summary:
+        `${input.actor} reconciled an uncertain Salesforce write for ` +
+        `${item.opportunityName} at ${item.customerName}: reported as ` +
+        `${applied ? "APPLIED in Salesforce" : "NOT applied"}` +
+        (input.note ? ` — ${input.note}` : ""),
+      actor: input.actor,
+      actorKind: "ADMIN",
+      campaignId: input.campaignId,
+      contactId: item.recipient.contactId,
+      opportunityId: item.opportunityId,
+    }, tx);
+
+    return { ok: true, outcome: input.observed, nextStatus };
   });
-
-  if (!item) return { ok: false, reason: "NOT_FOUND" };
-  if (item.syncStatus !== "UNCERTAIN") return { ok: false, reason: "NOT_UNCERTAIN" };
-  if (item.updatedAt.toISOString() !== input.revision) return { ok: false, reason: "STALE" };
-
-  /**
-   * APPLIED  → SYNCED. Terminal, and correctly so: the write is done, and
-   *            nothing should attempt it again.
-   * NOT_APPLIED → FAILED, which puts the item back in the claim set so an
-   *            administrator can approve a fresh attempt through the normal
-   *            path. It does NOT re-attempt the write here — reconciling what
-   *            happened and deciding to try again are separate decisions, and
-   *            merging them would make one click do both.
-   */
-  const nextStatus = input.observed === "APPLIED" ? "SYNCED" : "FAILED";
-
-  // Conditional on the revision AND on still being UNCERTAIN, so two
-  // administrators resolving the same item concurrently cannot both win.
-  const claimed = await prisma.checkInOpportunity.updateMany({
-    where: { id: item.id, updatedAt: item.updatedAt, syncStatus: "UNCERTAIN" },
-    data: {
-      syncStatus: nextStatus,
-      syncError:
-        input.observed === "APPLIED"
-          ? null
-          : "Reconciled by hand: the write did not reach Salesforce. Approve again to retry.",
-      ...(input.observed === "APPLIED" ? { syncedAt: new Date() } : {}),
-    },
-  });
-
-  if (claimed.count === 0) return { ok: false, reason: "STALE" };
-
-  const applied = input.observed === "APPLIED";
-  await recordAudit({
-    type: applied
-      ? AUDIT_EVENTS.SYNC_RECONCILED_APPLIED
-      : AUDIT_EVENTS.SYNC_RECONCILED_NOT_APPLIED,
-    summary:
-      `${input.actor} reconciled an uncertain Salesforce write for ` +
-      `${item.opportunityName} at ${item.customerName}: reported as ` +
-      `${applied ? "APPLIED in Salesforce" : "NOT applied"}` +
-      (input.note ? ` — ${input.note}` : ""),
-    actor: input.actor,
-    actorKind: "ADMIN",
-    campaignId: input.campaignId,
-    contactId: item.recipient.contactId,
-    opportunityId: item.opportunityId,
-  });
-
-  return { ok: true, outcome: input.observed, nextStatus };
 }
 
 /**
