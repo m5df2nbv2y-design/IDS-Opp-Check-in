@@ -121,9 +121,17 @@ describe("the campaign page", () => {
   /** An UNCERTAIN response the contact really submitted, so the page lists it. */
   async function aSubmittedUncertainItem() {
     const ctx = await anUncertainItem();
+    // The fixture picks an arbitrary row, so report a stage that differs from its cached one.
+    const { opportunity } = await prisma.checkInOpportunity.findUniqueOrThrow({
+      where: { id: ctx.item.id },
+      select: { opportunity: { select: { currentStage: true } } },
+    });
     const item = await prisma.checkInOpportunity.update({
       where: { id: ctx.item.id },
-      data: { submittedAt: new Date(), updatedStatus: "NEGOTIATION" },
+      data: {
+        submittedAt: new Date(),
+        updatedStatus: opportunity.currentStage === "NEGOTIATION" ? "PROPOSAL" : "NEGOTIATION",
+      },
     });
     return { campaignId: ctx.campaignId, item };
   }
