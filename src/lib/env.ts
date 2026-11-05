@@ -32,7 +32,7 @@ export const env = {
   /** "mock" | "smartsheet" */
   smartsheetProvider: str("SMARTSHEET_PROVIDER", "mock"),
 
-  /** "mock" | "resend" | "microsoft365" */
+  /** "mock" | "resend" | "graph" */
   emailProvider: str("EMAIL_PROVIDER", "mock"),
   emailFromName: str("EMAIL_FROM_NAME", "IDS Sales Operations"),
   emailFromAddress: str("EMAIL_FROM_ADDRESS", "sales-ops@ids.example.com"),

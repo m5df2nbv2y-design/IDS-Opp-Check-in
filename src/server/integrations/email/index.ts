@@ -9,10 +9,13 @@ let instance: EmailService | null = null;
 /** The single entry point the application uses to send mail. */
 export function getEmailService(): EmailService {
   if (!instance) {
+    // Trimmed and lowercased exactly as liveEmailRefusal reads it, so a value it
+    // guards as live cannot quietly resolve to Mock.
+    const provider = env.emailProvider.trim().toLowerCase();
     instance =
-      env.emailProvider === "graph"
+      provider === "graph"
         ? new GraphEmailService()
-        : env.emailProvider === "resend"
+        : provider === "resend"
           ? new ResendEmailService()
           : new MockEmailService();
   }
