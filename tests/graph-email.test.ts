@@ -503,7 +503,8 @@ describe("the send path", () => {
   });
 
   describe("a redirect is classified, never followed", () => {
-    const redirect = (code: number) => () => new Response(ECHO, { status: code, headers: { location: `https://elsewhere.invalid/${ECHO.replace(/ /g, "-")}` } });
+    const LOCATION = `https://elsewhere.invalid/${ECHO.replace(/ /g, "-")}`;
+    const redirect = (code: number) => () => new Response(ECHO, { status: code, headers: { location: LOCATION } });
 
     it.each([301, 302, 303, 307, 308])("token endpoint HTTP %s is a definite pre-send FAILED", async (code) => {
       const fetchMock = graphFetch(202, redirect(code));
@@ -516,7 +517,7 @@ describe("the send path", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("FAILED");
       const visible = await everythingVisible(result);
-      for (const leak of [...LEAKS, "elsewhere.invalid"]) expect(visible, leak).not.toContain(leak);
+      for (const leak of [...LEAKS, "elsewhere.invalid", LOCATION]) expect(visible, leak).not.toContain(leak);
     });
 
     it.each([301, 302, 303, 307, 308])("sendMail HTTP %s is UNCERTAIN, never SENT, and an identical call makes no request", async (code) => {
@@ -529,7 +530,7 @@ describe("the send path", () => {
       expect(result.status).toBe("UNCERTAIN");
       expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("UNCERTAIN");
       const visible = await everythingVisible(result);
-      for (const leak of [...LEAKS, "elsewhere.invalid"]) expect(visible, leak).not.toContain(leak);
+      for (const leak of [...LEAKS, "elsewhere.invalid", LOCATION]) expect(visible, leak).not.toContain(leak);
 
       const callsBefore = fetchMock.mock.calls.length;
       expect((await service.send(MESSAGE)).status).toBe("UNCERTAIN");
