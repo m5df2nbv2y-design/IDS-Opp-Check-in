@@ -93,7 +93,7 @@ describe("redirects against a real HTTP server", () => {
     expect(sink.seen).toHaveLength(1);
   });
 
-  it.each([302, 307, 308])("sendMail HTTP %s: UNCERTAIN, and the Location target receives no request", async (code) => {
+  it.each([301, 302, 303, 304, 307, 308])("sendMail HTTP %s: UNCERTAIN, and the Location target receives no request", async (code) => {
     const sink = await listen((_r, _b, res) => res.writeHead(202).end());
     const token = await listen(tokenOk);
     const graph = await listen((_r, _b, res) => res.writeHead(code, { location: `${sink.origin}/sink` }).end());
@@ -108,7 +108,7 @@ describe("redirects against a real HTTP server", () => {
     expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("UNCERTAIN");
   });
 
-  it.each([302, 307, 308])("token HTTP %s: FAILED, no sendMail, and neither the secret nor the Location target is contacted", async (code) => {
+  it.each([301, 302, 303, 304, 307, 308])("token HTTP %s: FAILED, no sendMail, and neither the secret nor the Location target is contacted", async (code) => {
     const sink = await listen((_r, _b, res) => res.writeHead(200).end("{}"));
     const token = await listen((_r, _b, res) => res.writeHead(code, { location: `${sink.origin}/sink` }).end());
     const graph = await listen((_r, _b, res) => res.writeHead(202).end());
@@ -119,6 +119,28 @@ describe("redirects against a real HTTP server", () => {
     expect(result.status).toBe("FAILED");
     expect(token.seen).toHaveLength(1);
     expect(sink.seen).toHaveLength(0);
+    expect(graph.seen).toHaveLength(0);
+  });
+
+  it("sendMail 302 with no Location header: UNCERTAIN, no follow", async () => {
+    const token = await listen(tokenOk);
+    const graph = await listen((_r, _b, res) => res.writeHead(302).end());
+    routeGraphTo(token.origin, graph.origin);
+
+    const result = await (await graphService()).send(MESSAGE);
+
+    expect(result.status).toBe("UNCERTAIN");
+    expect(graph.seen).toHaveLength(1);
+  });
+
+  it("token 302 with no Location header: FAILED, no sendMail", async () => {
+    const token = await listen((_r, _b, res) => res.writeHead(302).end());
+    const graph = await listen((_r, _b, res) => res.writeHead(202).end());
+    routeGraphTo(token.origin, graph.origin);
+
+    const result = await (await graphService()).send(MESSAGE);
+
+    expect(result.status).toBe("FAILED");
     expect(graph.seen).toHaveLength(0);
   });
 
