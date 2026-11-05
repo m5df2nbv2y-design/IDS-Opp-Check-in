@@ -218,6 +218,7 @@ describe("the send path", () => {
     expect(init.body.get("client_id")).toBe("client-synthetic");
     expect(init.body.get("client_secret")).toBe("secret-synthetic");
     expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.redirect).toBe("manual");
   });
 
   it("sends to the configured mailbox endpoint with a bearer token and the full message payload", async () => {
@@ -234,6 +235,7 @@ describe("the send path", () => {
     expect(init.headers.Authorization).toBe("Bearer synthetic-access-token");
     expect(init.headers["Content-Type"]).toBe("application/json");
     expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.redirect).toBe("manual");
 
     const body = JSON.parse(init.body);
     expect(body.message.subject).toBe(MESSAGE.subject);
@@ -500,8 +502,44 @@ describe("the send path", () => {
     expect(String(fetchMock.mock.calls[1][0])).toBe("https://graph.microsoft.com/v1.0/users/hello%40idsculpture.test/sendMail");
   });
 
+  describe("a redirect is classified, never followed", () => {
+    const redirect = (code: number) => () => new Response(ECHO, { status: code, headers: { location: `https://elsewhere.invalid/${ECHO.replace(/ /g, "-")}` } });
+
+    it.each([301, 302, 303, 307, 308])("token endpoint HTTP %s is a definite pre-send FAILED", async (code) => {
+      const fetchMock = graphFetch(202, redirect(code));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await (await graphService()).send(MESSAGE);
+
+      expect(result.status).toBe("FAILED");
+      expect(sendMailCalls(fetchMock)).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("FAILED");
+      const visible = await everythingVisible(result);
+      for (const leak of [...LEAKS, "elsewhere.invalid"]) expect(visible, leak).not.toContain(leak);
+    });
+
+    it.each([301, 302, 303, 307, 308])("sendMail HTTP %s is UNCERTAIN, never SENT, and an identical call makes no request", async (code) => {
+      const fetchMock = graphFetch(redirect(code));
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+
+      const result = await service.send(MESSAGE);
+
+      expect(result.status).toBe("UNCERTAIN");
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("UNCERTAIN");
+      const visible = await everythingVisible(result);
+      for (const leak of [...LEAKS, "elsewhere.invalid"]) expect(visible, leak).not.toContain(leak);
+
+      const callsBefore = fetchMock.mock.calls.length;
+      expect((await service.send(MESSAGE)).status).toBe("UNCERTAIN");
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+      expect(sendMailCalls(fetchMock)).toBe(1);
+    });
+  });
+
   describe("when the final ledger update fails", () => {
-    it("returns UNCERTAIN with a fixed message, never throws, and leaves the row PENDING so a repeat cannot replay", async () => {
+    it("returns UNCERTAIN with a fixed message, never throws, and a repeat makes no network call", async () => {
       const fetchMock = graphFetch(202);
       vi.stubGlobal("fetch", fetchMock);
       const service = await graphService();
@@ -524,7 +562,7 @@ describe("the send path", () => {
       expect(sendMailCalls(fetchMock)).toBe(1);
     });
 
-    it("also holds for a definite FAILED, because the PENDING row is what blocks replay", async () => {
+    it("also holds for a definite FAILED: a repeat still makes no network call", async () => {
       vi.stubGlobal("fetch", graphFetch(400));
       const service = await graphService();
       const { prisma: servicePrisma } = await import("@/lib/db");
