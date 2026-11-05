@@ -146,12 +146,12 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           value={summary.emailsFailed}
           tone={summary.emailsFailed > 0 ? "danger" : "default"}
         />
-        {/* Not a failure and not delivered: acceptance is unknown, so it is neither resent nor reported as sent. */}
+        {/* Not classified as failed: acceptance and delivery are unconfirmed, so it is neither reported as sent nor replaced automatically. */}
         <StatTile
           label="Send outcome unknown"
           value={summary.emailsUncertain}
           tone={summary.emailsUncertain > 0 ? "warning" : "default"}
-          hint={summary.emailsUncertain > 0 ? "Check the sent mailbox or provider before resending." : undefined}
+          hint={summary.emailsUncertain > 0 ? "Investigate in the sent mailbox or provider before sending a replacement." : undefined}
         />
       </div>
 
