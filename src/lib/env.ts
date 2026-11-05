@@ -113,11 +113,11 @@ export const env = {
    *
    * Graph needs no DNS records of its own: Microsoft is already authoritative
    * for the domain's mail, which is the whole reason this path exists. What it
-   * needs instead is admin consent for Mail.Send and — importantly — an
-   * Exchange Application Access Policy narrowing that consent to ONE mailbox.
-   * Mail.Send as granted is tenant-wide ("send mail as any user"), so the
-   * policy is what makes it least-privilege rather than a standing ability to
-   * impersonate anyone in the tenant.
+   * needs instead is admin consent for Mail.Send and — importantly — a scoping
+   * mechanism narrowing that consent to ONE mailbox, to be verified against
+   * current official Microsoft guidance (none is asserted here). Application
+   * permission Mail.Send is expected to reach every mailbox in the tenant until
+   * it is scoped, so scoping is what makes it least-privilege.
    *
    * The tenant and client id are reused from the sign-in registration. The
    * mailbox is explicit rather than derived from emailFromAddress, so a

@@ -62,6 +62,58 @@ provider IDs return 503 for provider retries (including callback-before-commit).
 Reconcile a permanently missing receipt manually. Callback payloads are not stored.
 The sending API key and webhook signing secret belong only in Production secrets.
 
+## Microsoft Graph
+
+Preparation only. Implementation and tests use a stubbed `fetch`; nothing has
+called Microsoft, no credential exists in this repository, and `EMAIL_PROVIDER`
+stays `mock` until customer email is deliberately commissioned.
+
+The adapter returns one of three outcomes and callers act on exactly that:
+
+- SENT: sendMail answered 2xx (in practice 202, empty body, no message id). That
+  is acceptance, not delivery.
+- FAILED, safe to resend: only where no sendMail request could have left, or
+  Graph documented a rejection. That is a deployment refusal (returned, no
+  ledger row), a missing `GRAPH_*` value (the variable is named, never a value),
+  any failure to obtain a token (non-2xx, malformed body, transport, timeout),
+  and a 4xx or 429 from sendMail.
+- UNCERTAIN, never replayed: a sendMail 5xx, timeout or transport failure; a
+  stored PENDING or UNCERTAIN row for the same request; and a failed final
+  ledger update, which leaves the row PENDING so a repeat cannot send again.
+
+An identical request returns its stored outcome with no network call, and
+concurrent identical calls make exactly one sendMail request. As with Resend,
+sending identical content again on purpose needs a separately designed request
+identity.
+
+Graph reports no delivery events for mail you send, so `deliveredAt` never
+populates and no screen says "delivered". A bounce comes back as an NDR message
+in the sending mailbox. Every message is saved to that mailbox's Sent Items.
+For each recipient under "Send outcome unknown" on the campaign page or sending
+results, check the sending mailbox's Sent Items for a message to that address,
+and for an NDR, before anyone resends. No in-app control resolves an unknown
+invitation; a replacement needs an explicitly approved invitation, as for Resend.
+The count is invitation-only: an unresolved reminder stays in the campaign
+page's pending-or-unresolved banner and the recipient's "Delivery unresolved"
+status.
+
+Diagnostics are fixed text built from this code's own constants and an HTTP
+status number. A provider or token body, thrown text, bearer link, credential or
+mailbox value is never returned, stored in the ledger or written to an audit
+event.
+
+Still blocked on IT approval, and not verified here:
+
+- Mail.Send application permission with admin consent on the app registration.
+- A mailbox-scoping mechanism limiting that consent to the one sending mailbox.
+  Which mechanism applies is to be verified against current official Microsoft
+  guidance; this repository asserts none.
+- The sending mailbox (`GRAPH_SENDER_MAILBOX`, with `EMAIL_FROM_ADDRESS` set to
+  match) and Production-only `GRAPH_*` secrets.
+- Evidence of a real internal send and its Sent Items entry, and of how a 4xx,
+  429 or 5xx actually presents from the live service. The classification is
+  based on the documented behaviour and has only been exercised against stubs.
+
 ## Confirmed pilot settings
 
 Sender/Reply-To: hello@idsculpture.com. Internal recipients authorized by Josh:
