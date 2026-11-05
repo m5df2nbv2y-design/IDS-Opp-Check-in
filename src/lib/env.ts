@@ -117,9 +117,11 @@ export const env = {
    * mechanism narrowing that consent to ONE mailbox, to be verified against
    * current official Microsoft guidance (none is asserted here). Application
    * permission Mail.Send is expected to reach every mailbox in the tenant until
-   * it is scoped, so scoping is what makes it least-privilege.
+   * it is scoped.
    *
-   * The tenant and client id are reused from the sign-in registration. The
+   * GRAPH_TENANT_ID and GRAPH_CLIENT_ID are read on their own: there is no
+   * fallback to the AUTH_MICROSOFT_ENTRA_ID_* sign-in variables, so both must be
+   * set explicitly. Which app registration to use is decided with IT. The
    * mailbox is explicit rather than derived from emailFromAddress, so a
    * mis-set From cannot silently redirect which mailbox we send as.
    */
