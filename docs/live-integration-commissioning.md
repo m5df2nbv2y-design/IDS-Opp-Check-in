@@ -66,7 +66,9 @@ The sending API key and webhook signing secret belong only in Production secrets
 
 Preparation only. Implementation and tests use a stubbed `fetch`; nothing has
 called Microsoft, no credential exists in this repository, and `EMAIL_PROVIDER`
-stays `mock` until customer email is deliberately commissioned.
+stays `mock` until customer email is deliberately commissioned. Graph does not
+need Resend's DNS proof; sender-domain authentication is a Microsoft 365 tenant
+matter to confirm with IT.
 
 The adapter returns one of three outcomes and callers act on exactly that:
 
@@ -87,11 +89,14 @@ The adapter returns one of three outcomes and callers act on exactly that:
 An identical request returns its stored outcome with no network call, and
 concurrent identical calls make exactly one sendMail request. As with Resend,
 sending identical content again on purpose needs a separately designed request
-identity.
+identity. If the initial PENDING ledger row cannot be written and no row exists
+for the request, the send rethrows, which callers read as an unknown send.
 
 Graph reports no delivery events for mail you send, so `deliveredAt` never
 populates and no screen says "delivered". A bounce comes back as an NDR message
-in the sending mailbox. Every message is saved to that mailbox's Sent Items.
+in the sending mailbox. Every message is saved to that mailbox's Sent Items,
+and that copy holds the full message including the live check-in link; who can
+read that mailbox, and how long it retains the message, are to settle with IT.
 For each recipient under "Send outcome unknown" on the campaign page or sending
 results, check the sending mailbox's Sent Items for a message to that address,
 and for an NDR, before anyone resends. No in-app control resolves an unknown
@@ -117,6 +122,14 @@ Still blocked on IT approval, and not verified here:
 - Evidence of a real internal send and its Sent Items entry, and of how a 4xx,
   429 or 5xx actually presents from the live service. The classification is
   based on the documented behaviour and has only been exercised against stubs.
+
+Before a pilot:
+
+- An owner for the client-secret expiry and rotation.
+- The disable procedure: set `EMAIL_PROVIDER` back to `mock` and redeploy.
+- An owner for watching the sent mailbox for non-delivery reports.
+- Access to the sending mailbox and its retention, settled with IT, since Sent
+  Items holds the full message including the live check-in link.
 
 ## Confirmed pilot settings
 

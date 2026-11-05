@@ -16,9 +16,8 @@ const DUPLICATE_FAILED =
  *
  * WHY THIS EXISTS. The Resend path was blocked on DNS: proving control of
  * idsculpture.com means adding DKIM and CNAME records to an Azure zone nobody
- * could reach. Graph needs no such proof, because Microsoft is already
- * authoritative for that domain's mail — we authenticate as the tenant that
- * owns the mailbox instead of proving ownership to a third party.
+ * could reach. Graph does not need Resend's DNS proof. Sender-domain
+ * authentication is a Microsoft 365 tenant matter to confirm with IT.
  *
  * Replies. The message is sent as GRAPH_SENDER_MAILBOX and the payload sets no
  * `from`. Without EMAIL_REPLY_TO a customer's reply goes to that mailbox; when
@@ -31,10 +30,17 @@ const DUPLICATE_FAILED =
  * So `deliveredAt` does not populate on this path, and that is a deliberate,
  * known trade rather than an oversight.
  *
+ * SENT ITEMS. saveToSentItems is requested, so the sending mailbox keeps the
+ * complete message, including the live check-in link; our own ledger row has the
+ * link redacted. Who may read that mailbox, and how long it retains the message,
+ * are for IT to settle.
+ *
  * The ledger discipline is identical to the Resend path and deliberately so:
  * a redacted PENDING row is committed BEFORE the request, the request key is a
  * digest that never persists the bearer link, and an unknown outcome is never
- * replayed automatically.
+ * replayed automatically. If the initial PENDING row cannot be written and no
+ * row exists for the request, send rethrows; callers read a thrown send as an
+ * unknown send.
  *
  * THE THREE OUTCOMES REACH THE CALLER UNCHANGED. Launch and reminders treat
  * FAILED as "definitely not accepted", so FAILED is returned only where no

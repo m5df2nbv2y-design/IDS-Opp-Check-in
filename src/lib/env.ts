@@ -111,13 +111,17 @@ export const env = {
   /**
    * Microsoft Graph send-as-mailbox.
    *
-   * Graph needs no DNS records of its own: Microsoft is already authoritative
-   * for the domain's mail, which is the whole reason this path exists. What it
-   * needs instead is admin consent for Mail.Send and — importantly — a scoping
+   * Graph does not need Resend's DNS proof; sender-domain authentication is a
+   * Microsoft 365 tenant matter to confirm with IT. It does need admin consent
+   * for Mail.Send and — importantly — a scoping
    * mechanism narrowing that consent to ONE mailbox, to be verified against
    * current official Microsoft guidance (none is asserted here). Application
    * permission Mail.Send is expected to reach every mailbox in the tenant until
    * it is scoped.
+   *
+   * Every message is saved to the sending mailbox's Sent Items, and that copy
+   * holds the full message including the live check-in link. Access to that
+   * mailbox and its retention are to settle with IT.
    *
    * GRAPH_TENANT_ID and GRAPH_CLIENT_ID are read on their own: there is no
    * fallback to the AUTH_MICROSOFT_ENTRA_ID_* sign-in variables, so both must be
