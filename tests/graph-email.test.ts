@@ -13,7 +13,10 @@ import { resetDatabase } from "./fixtures";
  * downstream decision rests on the HTTP status alone.
  *
  * The ledger contract is the same and is asserted here too, because it is what
- * stops a retry from mailing a customer twice.
+ * stops a retry from mailing a customer twice. The adapter must hand callers the
+ * TRUE outcome: launch and reminders treat FAILED as safe to resend, so an
+ * unknown send reported as FAILED is a duplicate customer email waiting to
+ * happen. No test here touches the network; `fetch` is always stubbed.
  */
 
 const BASE_ENV = {
@@ -34,27 +37,50 @@ const MESSAGE = {
   linkUrl: "https://checkin.test/checkin/SECRET-BEARER-TOKEN",
 };
 
+/** Everything a provider body, a thrown error or a config value could echo back. Nothing here may be returned or stored. */
+const LEAKS = [
+  "SECRET-BEARER-TOKEN",
+  "synthetic-access-token",
+  "secret-synthetic",
+  "tenant-synthetic",
+  "client-synthetic",
+  "hello@idsculpture.test",
+  "AADSTS7000215",
+  "socket hang up",
+];
+const ECHO = `AADSTS7000215 socket hang up https://checkin.test/checkin/SECRET-BEARER-TOKEN Bearer synthetic-access-token secret-synthetic tenant-synthetic client-synthetic hello@idsculpture.test`;
+
 /**
  * `env` is read once at module load, so the service must be imported AFTER the
  * environment is stubbed — the same trap the rate-limit tests document.
  */
 async function graphService() {
-  vi.resetModules()
-  const mod = await import("@/server/integrations/email/graph-email-service")
-  return new mod.GraphEmailService()
+  vi.resetModules();
+  const mod = await import("@/server/integrations/email/graph-email-service");
+  return new mod.GraphEmailService();
 }
 
-/** A token response followed by the sendMail response under test. */
-function graphFetch(sendStatus: number) {
-  return vi
-    .fn()
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ access_token: "synthetic-access-token" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    )
-    .mockResolvedValueOnce(new Response(null, { status: sendStatus }));
+const isSendMail = (url: unknown) => String(url).includes("/sendMail");
+const sendMailCalls = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.filter(([url]) => isSendMail(url)).length;
+const tokenOk = () =>
+  new Response(JSON.stringify({ access_token: "synthetic-access-token" }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+const timeout = () => new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+/** Routes by URL, so a test states only the token answer and the sendMail answer it cares about. */
+function graphFetch(sendMail: number | (() => Response | Promise<Response>), token: () => Response | Promise<Response> = tokenOk) {
+  return vi.fn(async (url: unknown) => {
+    if (isSendMail(url)) return typeof sendMail === "number" ? new Response(null, { status: sendMail }) : sendMail();
+    return token();
+  });
+}
+
+/** Strings a caller or an admin could ever see for one send: the result and the whole ledger row. */
+async function everythingVisible(result: { id: string; error?: string }) {
+  const rows = await prisma.emailMessage.findMany();
+  return JSON.stringify({ result, rows });
 }
 
 describe("classifying Graph's answer", () => {
@@ -75,9 +101,10 @@ describe("classifying Graph's answer", () => {
 
     const forbidden = classifyGraphSendResponse(403);
     expect(forbidden.status).toBe("FAILED");
-    // The two real causes, and an admin reading the ledger needs both named.
     expect(forbidden.error).toMatch(/admin consent/i);
-    expect(forbidden.error).toMatch(/Application Access Policy/i);
+    // How the tenant narrows Mail.Send to one mailbox is not established here, so no mechanism is asserted.
+    expect(forbidden.error).not.toMatch(/Application Access Policy/i);
+    expect(forbidden.error).toMatch(/scoping/i);
   });
 
   it("points at the mailbox setting on 404", () => {
@@ -109,6 +136,12 @@ describe("classifying Graph's answer", () => {
       expect(classifyGraphSendResponse(code).status, String(code)).toBe("FAILED");
     }
   });
+
+  it("builds every error from constants and the status number alone", () => {
+    for (const code of [401, 403, 404, 400, 429, 500, 503]) {
+      expect(classifyGraphSendResponse(code).error, String(code)).toMatch(/^[A-Za-z0-9 ().,_;'-]+$/);
+    }
+  });
 });
 
 describe("the send path", () => {
@@ -120,16 +153,22 @@ describe("the send path", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 
   it("commits a PENDING ledger row BEFORE the request, then settles it", async () => {
-    const fetchMock = graphFetch(202);
+    const seen: string[] = [];
+    const fetchMock = graphFetch(async () => {
+      seen.push(...(await prisma.emailMessage.findMany()).map((row) => row.status));
+      return new Response(null, { status: 202 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await (await graphService()).send(MESSAGE);
     expect(result.status).toBe("SENT");
+    expect(seen).toEqual(["PENDING"]);
 
     const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
     expect(row.status).toBe("SENT");
@@ -156,7 +195,7 @@ describe("the send path", () => {
     const [tokenUrl] = fetchMock.mock.calls[0];
     expect(String(tokenUrl)).toContain("login.microsoftonline.com/tenant-synthetic");
 
-    const [sendUrl, init] = fetchMock.mock.calls[1];
+    const [sendUrl, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit & { headers: Record<string, string>; body: string }];
     expect(String(sendUrl)).toBe(
       "https://graph.microsoft.com/v1.0/users/hello%40idsculpture.test/sendMail",
     );
@@ -167,64 +206,240 @@ describe("the send path", () => {
     expect(body.saveToSentItems).toBe(true);
   });
 
-  it("records an unknown outcome when Graph breaks, without claiming failure", async () => {
-    vi.stubGlobal("fetch", graphFetch(503));
-    const result = await (await graphService()).send(MESSAGE);
+  describe("an unknown outcome is returned as UNCERTAIN and never replayed", () => {
+    const unknowns: [string, () => ReturnType<typeof graphFetch>][] = [
+      ["HTTP 500", () => graphFetch(500)],
+      ["HTTP 502", () => graphFetch(502)],
+      ["HTTP 503 with an echoing body", () => graphFetch(() => new Response(ECHO, { status: 503 }))],
+      ["HTTP 504", () => graphFetch(504)],
+      ["a timeout", () => graphFetch(() => Promise.reject(timeout()))],
+      ["a transport failure echoing secrets", () => graphFetch(() => Promise.reject(new Error(ECHO)))],
+    ];
 
-    // The caller sees a non-success, because the interface has two states...
-    expect(result.status).toBe("FAILED");
-    // ...but the ledger keeps the distinction that matters for recovery.
-    const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
-    expect(row.status).toBe("UNCERTAIN");
+    it.each(unknowns)("%s", async (_label, makeFetch) => {
+      const fetchMock = makeFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+
+      const result = await service.send(MESSAGE);
+
+      expect(result.status).toBe("UNCERTAIN");
+      expect(result.error).toMatch(/sent mailbox/i);
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("UNCERTAIN");
+      const visible = await everythingVisible(result);
+      for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
+
+      const callsBefore = fetchMock.mock.calls.length;
+      const repeat = await service.send(MESSAGE);
+      expect(repeat.status).toBe("UNCERTAIN");
+      expect(repeat.id).toBe(result.id);
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+      expect(sendMailCalls(fetchMock)).toBe(1);
+    });
   });
 
-  it("treats a transport failure as unknown, not as a clean failure", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: "t" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }),
-        )
-        .mockRejectedValueOnce(new Error("socket hang up")),
-    );
+  describe("a definite rejection is FAILED with fixed text", () => {
+    it.each([400, 401, 403, 404, 413, 422, 429])("HTTP %s", async (code) => {
+      const fetchMock = graphFetch(() => new Response(ECHO, { status: code }));
+      vi.stubGlobal("fetch", fetchMock);
 
-    const result = await (await graphService()).send(MESSAGE);
-    const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
-    expect(row.status).toBe("UNCERTAIN");
+      const result = await (await graphService()).send(MESSAGE);
+
+      expect(result.status).toBe("FAILED");
+      expect(result.error).toContain(String(code));
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("FAILED");
+      const visible = await everythingVisible(result);
+      for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
+    });
   });
 
-  it("refuses before any network call when configuration is missing, and says which", async () => {
-    vi.stubEnv("GRAPH_SENDER_MAILBOX", "");
-    vi.resetModules();
+  describe("a duplicate", () => {
+    it("arriving while the first is in flight returns UNCERTAIN, makes no second sendMail request, and the first completes SENT", async () => {
+      let release!: () => void;
+      let entered!: () => void;
+      const ready = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fetchMock = graphFetch(async () => {
+        entered();
+        await gate;
+        return new Response(null, { status: 202 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+
+      const first = service.send(MESSAGE);
+      await ready;
+      let second;
+      try {
+        second = await service.send(MESSAGE);
+      } finally {
+        release();
+      }
+      expect(second.status).toBe("UNCERTAIN");
+      expect(sendMailCalls(fetchMock)).toBe(1);
+
+      const done = await first;
+      expect(done.status).toBe("SENT");
+      expect(second.id).toBe(done.id);
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: done.id } })).status).toBe("SENT");
+      expect(sendMailCalls(fetchMock)).toBe(1);
+      // Once settled, the same request is reported SENT and still not replayed.
+      expect((await service.send(MESSAGE)).status).toBe("SENT");
+      expect(sendMailCalls(fetchMock)).toBe(1);
+    });
+
+    it("identical concurrent calls make exactly one sendMail request", async () => {
+      const fetchMock = graphFetch(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return new Response(null, { status: 202 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+
+      const results = await Promise.all([service.send(MESSAGE), service.send(MESSAGE), service.send(MESSAGE)]);
+
+      expect(sendMailCalls(fetchMock)).toBe(1);
+      expect(results.filter((result) => result.status === "SENT")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "UNCERTAIN")).toHaveLength(2);
+      expect(await prisma.emailMessage.count()).toBe(1);
+    });
+
+    it.each([
+      ["SENT", "SENT"],
+      ["FAILED", "FAILED"],
+      ["UNCERTAIN", "UNCERTAIN"],
+      ["PENDING", "UNCERTAIN"],
+    ])("of a stored %s row returns %s with no network request and fixed text, not the stored text", async (stored, expected) => {
+      const fetchMock = graphFetch(202);
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+      const original = await service.send(MESSAGE);
+      await prisma.emailMessage.update({
+        where: { id: original.id },
+        data: { status: stored, error: `stored text ${ECHO}` },
+      });
+      const callsBefore = fetchMock.mock.calls.length;
+
+      const repeat = await service.send(MESSAGE);
+
+      expect(repeat.status).toBe(expected);
+      expect(repeat.id).toBe(original.id);
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+      expect(repeat.error ?? "").not.toContain("stored text");
+      for (const leak of LEAKS) expect(repeat.error ?? "", leak).not.toContain(leak);
+      if (expected === "SENT") expect(repeat.error).toBeUndefined();
+      else expect(repeat.error).toBeTruthy();
+    });
+  });
+
+  it("returns a deployment refusal as FAILED — no request, no ledger row, nothing thrown", async () => {
+    vi.stubEnv("VERCEL_ENV", "preview");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await (await graphService()).send(MESSAGE);
 
     expect(result.status).toBe("FAILED");
-    expect(result.error).toMatch(/GRAPH_SENDER_MAILBOX is not configured/);
+    expect(result.error).toMatch(/Refusing/);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(await prisma.emailMessage.count()).toBe(0);
+    for (const leak of LEAKS) expect(JSON.stringify(result), leak).not.toContain(leak);
   });
 
-  it("does not leak the token response body into the ledger when auth fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(JSON.stringify({ error_description: "AADSTS7000215 secret is invalid" }), {
-          status: 401,
-          headers: { "content-type": "application/json" },
-        }),
-      ),
-    );
+  describe("any failure before sendMail is FAILED and no sendMail request is made", () => {
+    const stages: [string, () => ReturnType<typeof graphFetch>][] = [
+      ["token HTTP 401 with an echoing body", () => graphFetch(202, () => new Response(ECHO, { status: 401 }))],
+      ["token HTTP 500", () => graphFetch(202, () => new Response(ECHO, { status: 500 }))],
+      ["token body that is not JSON", () => graphFetch(202, () => new Response(ECHO, { status: 200 }))],
+      ["token body without an access token", () => graphFetch(202, () => Response.json({ error_description: ECHO }))],
+      ["token body with an empty access token", () => graphFetch(202, () => Response.json({ access_token: "" }))],
+      ["a token transport failure echoing secrets", () => graphFetch(202, () => Promise.reject(new Error(ECHO)))],
+      ["a token timeout", () => graphFetch(202, () => Promise.reject(timeout()))],
+    ];
+
+    it.each(stages)("%s", async (_label, makeFetch) => {
+      const fetchMock = makeFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+
+      const result = await service.send(MESSAGE);
+
+      expect(result.status).toBe("FAILED");
+      expect(sendMailCalls(fetchMock)).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
+      expect(row.status).toBe("FAILED");
+      expect(row.error).toBeTruthy();
+      const visible = await everythingVisible(result);
+      for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
+    });
+  });
+
+  it.each([
+    ["GRAPH_TENANT_ID"],
+    ["GRAPH_CLIENT_ID"],
+    ["GRAPH_CLIENT_SECRET"],
+    ["GRAPH_SENDER_MAILBOX"],
+  ])("refuses before any network call when %s is missing, and names only the variable", async (name) => {
+    vi.stubEnv(name, "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
 
     const result = await (await graphService()).send(MESSAGE);
-    const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
 
-    expect(row.status).toBe("UNCERTAIN");
-    expect(JSON.stringify(row)).not.toContain("AADSTS7000215");
+    expect(result.status).toBe("FAILED");
+    expect(result.error).toBe(`${name} is not configured.`);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The other three values are still configured and must not appear anywhere.
+    const visible = await everythingVisible(result);
+    for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
+  });
+
+  describe("when the final ledger update fails", () => {
+    it("returns UNCERTAIN with a fixed message, never throws, and leaves the row PENDING so a repeat cannot replay", async () => {
+      const fetchMock = graphFetch(202);
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+      const { prisma: servicePrisma } = await import("@/lib/db");
+      vi.spyOn(servicePrisma.emailMessage, "update").mockRejectedValueOnce(new Error(`db down ${ECHO}`));
+
+      const result = await service.send(MESSAGE);
+
+      expect(result.status).toBe("UNCERTAIN");
+      expect(result.error).toMatch(/sent mailbox/i);
+      const row = await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } });
+      expect(row.status).toBe("PENDING");
+      const visible = await everythingVisible(result);
+      for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);
+
+      const callsBefore = fetchMock.mock.calls.length;
+      const repeat = await service.send(MESSAGE);
+      expect(repeat.status).toBe("UNCERTAIN");
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+      expect(sendMailCalls(fetchMock)).toBe(1);
+    });
+
+    it("also holds for a definite FAILED, because the PENDING row is what blocks replay", async () => {
+      vi.stubGlobal("fetch", graphFetch(400));
+      const service = await graphService();
+      const { prisma: servicePrisma } = await import("@/lib/db");
+      vi.spyOn(servicePrisma.emailMessage, "update").mockRejectedValueOnce(new Error("db down"));
+
+      const result = await service.send(MESSAGE);
+
+      expect(result.status).toBe("UNCERTAIN");
+      expect((await prisma.emailMessage.findUniqueOrThrow({ where: { id: result.id } })).status).toBe("PENDING");
+    });
+  });
+
+  it("rethrows when the initial PENDING row cannot be written and no row exists", async () => {
+    const fetchMock = graphFetch(202);
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await graphService();
+    const { prisma: servicePrisma } = await import("@/lib/db");
+    vi.spyOn(servicePrisma.emailMessage, "create").mockRejectedValueOnce(new Error("db down"));
+
+    await expect(service.send(MESSAGE)).rejects.toThrow("db down");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

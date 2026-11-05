@@ -18,6 +18,16 @@ describe("honest email receipts", () => {
     expect(emailDeliveryLabel(null)).toBe("No email record");
     expect(emailDeliveryLabel({ provider: "resend", status: "PENDING", deliveredAt: null })).toBe("Acceptance unconfirmed — check Resend");
   });
+  it("points an unconfirmed send at the place that can settle it for that provider", () => {
+    for (const status of ["UNCERTAIN", "PENDING"]) {
+      expect(emailDeliveryLabel({ provider: "resend", status, deliveredAt: null })).toBe("Acceptance unconfirmed — check Resend");
+      expect(emailDeliveryLabel({ provider: "graph", status, deliveredAt: null })).toBe("Acceptance unconfirmed — check the sent mailbox");
+      expect(emailDeliveryLabel({ provider: "some-other-provider", status, deliveredAt: null })).toBe("Acceptance unconfirmed — check the email provider");
+    }
+  });
+  it("does not call an accepted Graph send delivered, because Graph reports no delivery events", () => {
+    expect(emailDeliveryLabel({ provider: "graph", status: "SENT", deliveredAt: null })).toBe("Accepted by email provider");
+  });
 });
 
 describe("recipient preview boundary", () => {
