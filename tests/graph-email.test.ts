@@ -289,18 +289,29 @@ describe("the send path", () => {
     });
 
     it("identical concurrent calls make exactly one sendMail request", async () => {
+      let release!: () => void;
+      let entered!: () => void;
+      const ready = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
       const fetchMock = graphFetch(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        entered();
+        await gate;
         return new Response(null, { status: 202 });
       });
       vi.stubGlobal("fetch", fetchMock);
       const service = await graphService();
 
-      const results = await Promise.all([service.send(MESSAGE), service.send(MESSAGE), service.send(MESSAGE)]);
+      // Started together; the two that lose the race must settle while the winner is still waiting on Graph.
+      const settledEarly: string[] = [];
+      const calls = [1, 2, 3].map(() => service.send(MESSAGE).then((result) => { settledEarly.push(result.status); return result; }));
+      await ready;
+      await vi.waitFor(() => expect(settledEarly).toHaveLength(2));
+      expect(settledEarly).toEqual(["UNCERTAIN", "UNCERTAIN"]);
+      release();
+      const results = await Promise.all(calls);
 
       expect(sendMailCalls(fetchMock)).toBe(1);
       expect(results.filter((result) => result.status === "SENT")).toHaveLength(1);
-      expect(results.filter((result) => result.status === "UNCERTAIN")).toHaveLength(2);
       expect(await prisma.emailMessage.count()).toBe(1);
     });
 

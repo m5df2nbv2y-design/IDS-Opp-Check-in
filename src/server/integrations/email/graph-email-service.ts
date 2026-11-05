@@ -5,6 +5,10 @@ import { env } from "@/lib/env";
 import { recordOutboundEmail } from "./outbox";
 import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } from "./types";
 
+const UNCONFIRMED = "Email acceptance could not be confirmed. Check the sent mailbox before sending again.";
+const NOT_RECORDED = "Email acceptance could not be recorded. Check the sent mailbox before sending again.";
+const DUPLICATE_FAILED = "This send was already attempted and was not accepted. Review the record before sending again.";
+
 /**
  * Sending as a real Microsoft 365 mailbox, through Graph.
  *
@@ -29,13 +33,27 @@ import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } 
  * a redacted PENDING row is committed BEFORE the request, the request key is a
  * digest that never persists the bearer link, and an unknown outcome is never
  * replayed automatically.
+ *
+ * THE THREE OUTCOMES REACH THE CALLER UNCHANGED. Launch and reminders treat
+ * FAILED as "definitely not sent, safe to resend", so FAILED is returned only
+ * where no sendMail request could have left: a deployment refusal, missing
+ * configuration, or any failure to obtain a token. Once the sendMail request may
+ * have left, a 5xx, timeout or transport failure is UNCERTAIN, and so is a
+ * stored PENDING/UNCERTAIN row for the same request.
+ *
+ * Every error is a fixed string built from this file's constants and an HTTP
+ * status number. Provider bodies, thrown text, tokens, links and configured
+ * values are never returned, stored or audited — a Graph error body can echo the
+ * request, and the request carries the recipient's bearer link.
  */
 export class GraphEmailService implements EmailService {
   readonly info: EmailProviderInfo = { id: "graph", label: "Microsoft Graph", simulated: false };
 
   async send(message: OutboundEmail): Promise<EmailSendResult> {
     const refusal = liveEmailRefusal({ ...process.env, EMAIL_PROVIDER: "graph" });
-    if (refusal) throw new Error(refusal);
+    // Returned, not thrown: nothing has left, so this is a definite FAILED. A
+    // throw is read by callers as an unknown send.
+    if (refusal) return { id: "", status: "FAILED", error: refusal };
 
     const payload = JSON.stringify({
       message: {
@@ -61,48 +79,16 @@ export class GraphEmailService implements EmailService {
     } catch (caught) {
       const existing = await prisma.emailMessage.findUnique({ where: { requestKey } });
       if (!existing) throw caught;
-      return {
-        id: existing.id,
-        status: existing.status === "SENT" ? "SENT" : "FAILED",
-        error:
-          existing.status === "SENT"
-            ? undefined
-            : existing.error ??
-              "This send is already recorded. Verify its status before sending again.",
-      };
+      // Fixed text, never the stored text. PENDING means another call is in
+      // flight or was interrupted: unknown, exactly like UNCERTAIN.
+      return existing.status === "SENT"
+        ? { id: existing.id, status: "SENT" }
+        : existing.status === "FAILED"
+          ? { id: existing.id, status: "FAILED", error: DUPLICATE_FAILED }
+          : { id: existing.id, status: "UNCERTAIN", error: UNCONFIRMED };
     }
 
-    let status: "SENT" | "FAILED" | "UNCERTAIN" = "FAILED";
-    let error: string | undefined;
-
-    const missing = this.missingConfiguration();
-    if (missing) {
-      error = `${missing} is not configured.`;
-    } else {
-      try {
-        const token = await this.accessToken();
-        const response = await fetch(
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(env.graph.senderMailbox)}/sendMail`,
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: payload,
-            signal: AbortSignal.timeout(15_000),
-          },
-        );
-
-        const outcome = classifyGraphSendResponse(response.status);
-        status = outcome.status;
-        // Never persist provider bodies: a Graph error payload can echo the
-        // request, and the request contains the recipient's bearer link.
-        error = outcome.error;
-      } catch {
-        // A timeout or transport failure after the request left us. Graph may
-        // have accepted it, so this is not a clean failure.
-        status = "UNCERTAIN";
-        error = "Email acceptance could not be confirmed. Check the sent mailbox before sending again.";
-      }
-    }
+    const outcome = await this.attempt(payload);
 
     /**
      * No providerMessageId is stored. Graph's sendMail answers 202 with an
@@ -110,9 +96,45 @@ export class GraphEmailService implements EmailService {
      * would put a value in a column whose whole purpose is to match a provider
      * callback that this provider never sends.
      */
-    await prisma.emailMessage.update({ where: { id: row.id }, data: { status, error } });
+    try {
+      await prisma.emailMessage.update({ where: { id: row.id }, data: { status: outcome.status, error: outcome.error } });
+    } catch {
+      // The row is still PENDING, and that is what blocks a replay. Report the
+      // state the ledger is actually in; never SENT or FAILED, and never throw.
+      return { id: row.id, status: "UNCERTAIN", error: NOT_RECORDED };
+    }
 
-    return { id: row.id, status: status === "SENT" ? "SENT" : "FAILED", error };
+    return { id: row.id, ...outcome };
+  }
+
+  /** Everything between the PENDING row and the ledger update. Never throws. */
+  private async attempt(payload: string): Promise<Pick<EmailSendResult, "status" | "error">> {
+    const missing = this.missingConfiguration();
+    if (missing) return { status: "FAILED", error: `${missing} is not configured.` };
+
+    // Token stage: no sendMail request exists yet, so any failure here is a
+    // definite FAILED.
+    const token = await this.accessToken();
+    if ("error" in token) return { status: "FAILED", error: token.error };
+
+    try {
+      const response = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(env.graph.senderMailbox)}/sendMail`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token.value}`, "Content-Type": "application/json" },
+          body: payload,
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      // Never persist provider bodies: a Graph error payload can echo the
+      // request, and the request contains the recipient's bearer link.
+      return classifyGraphSendResponse(response.status);
+    } catch {
+      // A timeout or transport failure after the request left us. Graph may
+      // have accepted it, so this is not a clean failure.
+      return { status: "UNCERTAIN", error: UNCONFIRMED };
+    }
   }
 
   /** Named so the ledger error says which value is absent, without printing any. */
@@ -130,40 +152,46 @@ export class GraphEmailService implements EmailService {
    * Deliberately not cached: a cache would need invalidation on tenant or
    * secret rotation, and the send path is already dominated by the send itself.
    * Correctness first; cache later if measurement says it matters.
+   *
+   * Returns a fixed error instead of throwing. The token body carries AADSTS
+   * detail that can name the tenant and app, and a thrown transport error can
+   * carry anything, so neither is ever read into a message: the HTTP status
+   * alone is enough to act on.
    */
-  private async accessToken(): Promise<string> {
-    const response = await fetch(
-      `https://login.microsoftonline.com/${encodeURIComponent(env.graph.tenantId)}/oauth2/v2.0/token`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: env.graph.clientId,
-          client_secret: env.graph.clientSecret,
-          scope: "https://graph.microsoft.com/.default",
-          grant_type: "client_credentials",
-        }),
-        signal: AbortSignal.timeout(15_000),
-      },
-    );
+  private async accessToken(): Promise<{ value: string } | { error: string }> {
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://login.microsoftonline.com/${encodeURIComponent(env.graph.tenantId)}/oauth2/v2.0/token`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: env.graph.clientId,
+            client_secret: env.graph.clientSecret,
+            scope: "https://graph.microsoft.com/.default",
+            grant_type: "client_credentials",
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch {
+      return { error: "Microsoft token request did not complete. No email was sent." };
+    }
 
     if (!response.ok) {
-      // The body carries AADSTS detail that can name the tenant and app; the
-      // status alone is enough to act on.
-      throw new Error(`Microsoft token request failed with HTTP ${response.status}.`);
+      return { error: `Microsoft token request failed (HTTP ${response.status}). No email was sent.` };
     }
 
-    const data: unknown = await response.json();
-    if (
-      typeof data !== "object" ||
-      !data ||
-      !("access_token" in data) ||
-      typeof data.access_token !== "string" ||
-      !data.access_token
-    ) {
-      throw new Error("Microsoft token response contained no access token.");
+    try {
+      const data: unknown = await response.json();
+      if (typeof data === "object" && data && "access_token" in data && typeof data.access_token === "string" && data.access_token) {
+        return { value: data.access_token };
+      }
+    } catch {
+      // Falls through to the same fixed message as a body without a token.
     }
-    return data.access_token;
+    return { error: "Microsoft token response contained no access token. No email was sent." };
   }
 }
 
@@ -208,8 +236,8 @@ export function classifyGraphSendResponse(
     return {
       status: "FAILED",
       error:
-        "Microsoft refused the send (HTTP 403). Either admin consent for Mail.Send has not been " +
-        "granted, or the Exchange Application Access Policy does not include this mailbox.",
+        "Microsoft refused the send (HTTP 403). Check that admin consent for Mail.Send has been " +
+        "granted and that the mailbox scoping applied to this app includes this mailbox.",
     };
   }
   if (httpStatus === 404) {
