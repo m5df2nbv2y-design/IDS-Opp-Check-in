@@ -20,10 +20,10 @@ const DUPLICATE_FAILED =
  * authoritative for that domain's mail — we authenticate as the tenant that
  * owns the mailbox instead of proving ownership to a third party.
  *
- * It also fixes replies by construction. Sending AS hello@idsculpture.com means
- * a customer's reply lands in that existing mailbox with no Reply-To
- * indirection and no MX change. The app still implements no inbound reader;
- * it no longer needs to pretend otherwise.
+ * Replies. The message is sent as GRAPH_SENDER_MAILBOX and the payload sets no
+ * `from`. Without EMAIL_REPLY_TO a customer's reply goes to that mailbox; when
+ * EMAIL_REPLY_TO is set the payload adds it as Reply-To and replies go there.
+ * The app still implements no inbound reader.
  *
  * WHAT IT GIVES UP. Graph has no delivery-event webhook for mail you send.
  * There is no delivered/bounced/complained callback — a bounce returns as an

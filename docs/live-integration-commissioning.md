@@ -111,8 +111,9 @@ Still blocked on IT approval, and not verified here:
 - A mailbox-scoping mechanism limiting that consent to the one sending mailbox.
   Which mechanism applies is to be verified against current official Microsoft
   guidance; this repository asserts none.
-- The sending mailbox (`GRAPH_SENDER_MAILBOX`, with `EMAIL_FROM_ADDRESS` set to
-  match) and Production-only `GRAPH_*` secrets.
+- The sending mailbox (`GRAPH_SENDER_MAILBOX`; the Graph payload sets no `from`,
+  so `EMAIL_FROM_ADDRESS` has no effect on this path) and Production-only
+  `GRAPH_*` secrets.
 - Evidence of a real internal send and its Sent Items entry, and of how a 4xx,
   429 or 5xx actually presents from the live service. The classification is
   based on the documented behaviour and has only been exercised against stubs.
