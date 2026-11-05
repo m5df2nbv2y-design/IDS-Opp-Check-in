@@ -112,8 +112,10 @@ export class GraphEmailService implements EmailService {
     try {
       await prisma.emailMessage.update({ where: { id: row.id }, data: { status: outcome.status, error: outcome.error } });
     } catch {
-      // The row is still PENDING, and that is what blocks a replay. Report the
-      // state the ledger is actually in; never SENT or FAILED, and never throw.
+      // The update failed, but the commit may still have landed with a lost
+      // acknowledgment, so the row's state is not known here. Either way a repeat
+      // makes no network call: PENDING or a stored status returns UNCERTAIN or
+      // that status. Report UNCERTAIN, never SENT or FAILED, and never throw.
       return { id: row.id, status: "UNCERTAIN", error: NOT_RECORDED };
     }
 
@@ -137,6 +139,8 @@ export class GraphEmailService implements EmailService {
           method: "POST",
           headers: { Authorization: `Bearer ${token.value}`, "Content-Type": "application/json" },
           body: payload,
+          // A redirect must be classified, not followed: it could turn the POST into a GET or forward the message and bearer link.
+          redirect: "manual",
           signal: AbortSignal.timeout(15_000),
         },
       );
@@ -185,6 +189,8 @@ export class GraphEmailService implements EmailService {
             scope: "https://graph.microsoft.com/.default",
             grant_type: "client_credentials",
           }),
+          // Never forward the client secret to a redirect target; a 3xx takes the non-ok path below.
+          redirect: "manual",
           signal: AbortSignal.timeout(15_000),
         },
       );
