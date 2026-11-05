@@ -87,14 +87,15 @@ describe("campaign page", () => {
 });
 
 describe("sending receipt", () => {
-  it("reports an unknown Graph send as unknown — not delivered, not failed — with a label naming the sent mailbox", async () => {
+  it("reports an unknown Graph send as unconfirmed — not classified as failed — with a label naming the sent mailbox", async () => {
     const campaignId = await launchContacts(1, [unknownWithEcho]);
 
     const html = await receiptPage(campaignId);
 
     expect(html).toContain("1 recipient with an unknown send outcome");
-    expect(html).toContain("not delivered and not failed");
-    expect(html).toMatch(/before resending/i);
+    expect(html).toContain("acceptance and delivery are unconfirmed, and the send is not classified as failed");
+    expect(html).toContain("before sending a replacement");
+    expect(html).not.toMatch(/not delivered|not failed|resend/i);
     expect(html).toContain("Acceptance unconfirmed — check the sent mailbox");
     // Failed is not claimed, delivered is not claimed, and the chip is a warning.
     expect(html).not.toContain("could not be sent");

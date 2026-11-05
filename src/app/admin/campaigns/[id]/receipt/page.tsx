@@ -26,7 +26,7 @@ export default async function SendingReceipt({ params }: PageProps<"/admin/campa
       <div><h1 className="text-3xl font-semibold tracking-tight text-ink">Sending results</h1><p className="mt-2 text-sm text-muted">{campaign.name} · {opportunities} opportunities · {rows.length} contacts</p></div>
       <Card className="space-y-2 p-5">
         {captured > 0 ? <p className="font-semibold text-brand">{captured} {pluralize(captured, "email")} captured in Outbox — not delivered.</p> : null}
-        {unknown > 0 ? <p className="font-semibold text-warning">{unknown} {pluralize(unknown, "recipient")} with an unknown send outcome: not delivered and not failed. Check the sent mailbox or email provider before resending.</p> : null}
+        {unknown > 0 ? <p className="font-semibold text-warning">{unknown} {pluralize(unknown, "recipient")} with an unknown send outcome: acceptance and delivery are unconfirmed, and the send is not classified as failed. Check the sent mailbox or email provider before sending a replacement.</p> : null}
         <p className="text-sm text-body">{failed > 0 ? `${failed} ${pluralize(failed, "recipient")} could not be sent. Review the record below.` : "Review each recipient’s recorded email and status below."}</p>
         <p className="text-xs text-muted">Provider acceptance is distinct from confirmed delivery. Opening a recipient link can record activity; viewing the email record does not.</p>
       </Card>
