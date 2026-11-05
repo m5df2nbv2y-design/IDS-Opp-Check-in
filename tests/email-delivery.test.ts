@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emailDeliveryLabel } from "@/lib/email-delivery";
+import { emailDeliveryLabel, isUnconfirmedDelivery } from "@/lib/email-delivery";
 import { readFileSync } from "node:fs";
 import { completeCheckIn, postCheckInResponse } from "@/lib/check-in-transport";
 
@@ -27,6 +27,22 @@ describe("honest email receipts", () => {
   });
   it("does not call an accepted Graph send delivered, because Graph reports no delivery events", () => {
     expect(emailDeliveryLabel({ provider: "graph", status: "SENT", deliveredAt: null })).toBe("Accepted by email provider");
+  });
+});
+
+describe("warning tone for an unconfirmed send", () => {
+  const ledger = (status: string) => ({ status });
+  it("covers every unconfirmed invitation or reminder state, from the recipient or the ledger", () => {
+    for (const sendStatus of ["UNCERTAIN", "PENDING", "REMINDER_PENDING", "REMINDER_UNCERTAIN"]) {
+      expect(isUnconfirmedDelivery({ sendStatus }, null), sendStatus).toBe(true);
+    }
+    for (const status of ["UNCERTAIN", "PENDING"]) expect(isUnconfirmedDelivery({ sendStatus: "SENT" }, ledger(status)), status).toBe(true);
+  });
+  it("is quiet for a settled send, and never applies once a failure is recorded", () => {
+    expect(isUnconfirmedDelivery({ sendStatus: "SENT" }, ledger("SENT"))).toBe(false);
+    expect(isUnconfirmedDelivery({ sendStatus: "SENT" }, null)).toBe(false);
+    expect(isUnconfirmedDelivery({ sendStatus: "FAILED" }, ledger("UNCERTAIN"))).toBe(false);
+    expect(isUnconfirmedDelivery({ sendStatus: "UNCERTAIN" }, ledger("FAILED"))).toBe(false);
   });
 });
 

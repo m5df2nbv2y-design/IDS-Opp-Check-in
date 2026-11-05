@@ -1,10 +1,10 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { emailDeliveryLabel } from "@/lib/email-delivery";
+import { emailDeliveryLabel, isUnconfirmedDelivery } from "@/lib/email-delivery";
 import { formatDateTime, pluralize } from "@/lib/format";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/primitives";
-import { recipientSendNote } from "@/server/services/campaign-service";
+import { isUnknownInvitation, recipientSendNote } from "@/server/services/campaign-service";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +18,8 @@ export default async function SendingReceipt({ params }: PageProps<"/admin/campa
   const rows = campaign.recipients.map((recipient) => ({ recipient, email: emails.find((email) => email.contactId === recipient.contactId) ?? null }));
   const captured = rows.filter(({ email }) => email?.provider === "mock" && email.status === "SENT").length;
   const failed = rows.filter(({ recipient, email }) => email?.status === "FAILED" || (!email && recipient.sendStatus === "FAILED")).length;
-  // Acceptance unknown: neither delivered nor failed, and never to be resent until someone has checked.
-  const isUnknown = ({ recipient, email }: (typeof rows)[number]) =>
-    email?.status !== "FAILED" && recipient.sendStatus !== "FAILED" &&
-    (email?.status === "UNCERTAIN" || email?.status === "PENDING" || recipient.sendStatus === "UNCERTAIN");
-  const unknown = rows.filter(isUnknown).length;
+  // Acceptance unknown: neither delivered nor failed. Counted by the same rule as the campaign tile.
+  const unknown = rows.filter(({ recipient }) => isUnknownInvitation(recipient)).length;
   const opportunities = rows.reduce((sum, { recipient }) => sum + recipient.items.length, 0);
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -37,11 +34,11 @@ export default async function SendingReceipt({ params }: PageProps<"/admin/campa
         <Card key={recipient.id} className="space-y-3 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 break-words"><h2 className="font-semibold text-ink">{email?.toName ?? recipient.contact.name}</h2><p className="text-sm text-muted">{email?.toEmail ?? recipient.contact.email}</p><p className="mt-1 text-sm text-body">{recipient.contact.account.name}</p></div>
-            <span className={`rounded-full px-3 py-2 text-xs font-semibold ${email?.status === "FAILED" || recipient.sendStatus === "FAILED" ? "bg-danger-soft text-danger" : isUnknown({ recipient, email }) ? "bg-warning-soft text-warning" : "bg-brand-soft text-brand"}`}>{!email && recipient.sendStatus === "FAILED" ? "Failed — no email record" : emailDeliveryLabel(email)}</span>
+            <span className={`rounded-full px-3 py-2 text-xs font-semibold ${email?.status === "FAILED" || recipient.sendStatus === "FAILED" ? "bg-danger-soft text-danger" : isUnconfirmedDelivery(recipient, email) ? "bg-warning-soft text-warning" : "bg-brand-soft text-brand"}`}>{!email && recipient.sendStatus === "FAILED" ? "Failed — no email record" : emailDeliveryLabel(email)}</span>
           </div>
           <ul className="list-inside list-disc space-y-1 text-sm text-body">{recipient.items.map((item) => <li key={item.id}>{item.opportunityName}</li>)}</ul>
           {email ? <><p className="break-words text-sm font-medium text-ink">{email.subject}</p><p className="text-xs text-muted">Recorded {formatDateTime(email.createdAt)}</p><ButtonLink href={`/admin/outbox/${email.id}`} variant="secondary" size="sm">{["FAILED", "UNCERTAIN", "PENDING"].includes(email.status) ? "View email record" : "View sent email"}</ButtonLink></> : null}
-          {email?.error || recipient.sendError ? <p className={`break-words text-sm ${isUnknown({ recipient, email }) ? "text-warning" : "text-danger"}`}>{email?.error ?? recipientSendNote(recipient)}</p> : null}
+          {email?.error || recipient.sendError ? <p className={`break-words text-sm ${isUnconfirmedDelivery(recipient, email) ? "text-warning" : "text-danger"}`}>{email?.error ?? recipientSendNote(recipient)}</p> : null}
         </Card>
       ))}
       <div className="flex flex-wrap gap-3"><ButtonLink href={`/admin/campaigns/${id}`} variant="secondary">Campaign activity</ButtonLink><ButtonLink href="/admin/outbox" variant="ghost">Outbox</ButtonLink><ButtonLink href="/admin" variant="ghost">Dashboard</ButtonLink></div>

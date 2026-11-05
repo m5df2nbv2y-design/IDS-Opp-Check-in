@@ -15,3 +15,17 @@ export function emailDeliveryLabel(email: DeliveryRecord | null): string {
   if (email.status === "SENT") return "Accepted by email provider";
   return "Delivery not confirmed";
 }
+
+const UNCONFIRMED_SEND_STATUSES = ["UNCERTAIN", "PENDING", "REMINDER_PENDING", "REMINDER_UNCERTAIN"];
+
+/**
+ * Whether acceptance is unconfirmed, so the sending results show a warning rather
+ * than a failure or a success. This is a TONE rule only. It is wider than the
+ * unknown-invitation count (`isUnknownInvitation`), which is what the totals use:
+ * an interrupted send or an unresolved reminder is shown as a warning but is not
+ * counted as an unknown invitation. Never true once a definite failure is recorded.
+ */
+export function isUnconfirmedDelivery(recipient: { sendStatus: string }, email: { status: string } | null): boolean {
+  if (recipient.sendStatus === "FAILED" || email?.status === "FAILED") return false;
+  return UNCONFIRMED_SEND_STATUSES.includes(recipient.sendStatus) || email?.status === "UNCERTAIN" || email?.status === "PENDING";
+}

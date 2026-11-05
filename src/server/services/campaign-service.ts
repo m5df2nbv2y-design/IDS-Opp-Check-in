@@ -718,6 +718,14 @@ export async function getRecoverableOpportunityIds(campaignId: string): Promise<
     missingSet.has(o.id) && o.contactId && routes[o.id] === o.contactId && o.isOpen && o.resolutionStatus === "RESOLVED" && !existing.has(o.contactId) && !unsafe.has(o.contactId) ? [o.id] : []);
 }
 
+/**
+ * The ONE rule for "send outcome unknown" on an invitation. The campaign tile
+ * and the sending results both count with it, so they cannot disagree. A PENDING
+ * invitation (an interrupted send) and an unresolved reminder are deliberately
+ * not counted; both stay in `unresolvedDeliveryCount`.
+ */
+export const isUnknownInvitation = (recipient: { sendStatus: string }): boolean => recipient.sendStatus === "UNCERTAIN";
+
 export async function getCampaignSummary(campaignId: string): Promise<CampaignSummary | null> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
@@ -783,7 +791,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     recipientCount: recipients.length,
     emailsSent: recipients.filter((r) => r.sentAt !== null).length,
     emailsFailed: recipients.filter((r) => r.status === "SEND_FAILED").length,
-    emailsUncertain: campaign.recipients.filter((r) => r.sendStatus === "UNCERTAIN").length,
+    emailsUncertain: campaign.recipients.filter(isUnknownInvitation).length,
     openedCount: recipients.filter((r) => r.openedAt !== null).length,
     startedCount: recipients.filter((r) => r.submittedCount > 0).length,
     completedCount: recipients.filter((r) => r.status === "COMPLETE").length,
