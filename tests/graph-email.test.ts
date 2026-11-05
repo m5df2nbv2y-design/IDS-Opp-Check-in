@@ -199,23 +199,62 @@ describe("the send path", () => {
     expect(stored).not.toContain("SECRET-BEARER-TOKEN");
   });
 
-  it("sends to the configured mailbox endpoint with a bearer token", async () => {
+  type SendMailInit = RequestInit & { headers: Record<string, string>; body: string };
+  const sendMailCall = (fetchMock: ReturnType<typeof graphFetch>) =>
+    fetchMock.mock.calls[1] as unknown as [string, SendMailInit];
+
+  it("requests an app-only token with the client credentials grant", async () => {
     const fetchMock = graphFetch(202);
     vi.stubGlobal("fetch", fetchMock);
     await (await graphService()).send(MESSAGE);
 
-    const [tokenUrl] = fetchMock.mock.calls[0];
-    expect(String(tokenUrl)).toContain("login.microsoftonline.com/tenant-synthetic");
+    const [tokenUrl, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit & { headers: Record<string, string>; body: URLSearchParams }];
+    expect(String(tokenUrl)).toBe("https://login.microsoftonline.com/tenant-synthetic/oauth2/v2.0/token");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    expect(init.body).toBeInstanceOf(URLSearchParams);
+    expect(init.body.get("grant_type")).toBe("client_credentials");
+    expect(init.body.get("scope")).toBe("https://graph.microsoft.com/.default");
+    expect(init.body.get("client_id")).toBe("client-synthetic");
+    expect(init.body.get("client_secret")).toBe("secret-synthetic");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
 
-    const [sendUrl, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit & { headers: Record<string, string>; body: string }];
+  it("sends to the configured mailbox endpoint with a bearer token and the full message payload", async () => {
+    vi.stubEnv("EMAIL_REPLY_TO", "");
+    const fetchMock = graphFetch(202);
+    vi.stubGlobal("fetch", fetchMock);
+    await (await graphService()).send(MESSAGE);
+
+    const [sendUrl, init] = sendMailCall(fetchMock);
     expect(String(sendUrl)).toBe(
       "https://graph.microsoft.com/v1.0/users/hello%40idsculpture.test/sendMail",
     );
+    expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer synthetic-access-token");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
 
     const body = JSON.parse(init.body);
-    expect(body.message.toRecipients[0].emailAddress.address).toBe("recipient@example.invalid");
+    expect(body.message.subject).toBe(MESSAGE.subject);
+    expect(body.message.body).toEqual({ contentType: "HTML", content: MESSAGE.html });
+    expect(body.message.toRecipients).toEqual([
+      { emailAddress: { address: "recipient@example.invalid", name: "Pat Recipient" } },
+    ]);
+    expect(body.message).not.toHaveProperty("replyTo");
+    expect(body.message).not.toHaveProperty("from");
     expect(body.saveToSentItems).toBe(true);
+  });
+
+  it("adds Reply-To only when EMAIL_REPLY_TO is set", async () => {
+    vi.stubEnv("EMAIL_REPLY_TO", "replies@idsculpture.test");
+    const fetchMock = graphFetch(202);
+    vi.stubGlobal("fetch", fetchMock);
+    await (await graphService()).send(MESSAGE);
+
+    const body = JSON.parse(sendMailCall(fetchMock)[1].body);
+    expect(body.message.replyTo).toEqual([{ emailAddress: { address: "replies@idsculpture.test" } }]);
+    expect(body.message).not.toHaveProperty("from");
   });
 
   describe("an unknown outcome is returned as UNCERTAIN and never replayed", () => {
