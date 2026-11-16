@@ -52,9 +52,14 @@
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "@prisma/engines@7.10.0": true,
-    "prisma@7.10.0": true,
+    "@prisma/engines@7.10.1": true,
+    "prisma@7.10.1": true,
     "esbuild@0.28.2": true,
     "unrs-resolver@1.12.2": true
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }
