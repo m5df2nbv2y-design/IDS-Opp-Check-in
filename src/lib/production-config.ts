@@ -55,8 +55,9 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
   const violations: string[] = [];
 
   // --- Database ---------------------------------------------------------
-  // Without this, env.databaseUrl falls back to a local SQLite file and the
-  // application serves an empty database as though nothing were wrong.
+  // Checked here too so startup lists every problem at once; db.ts refuses a
+  // missing or non-PostgreSQL URL on first use. A SQLite URL is named explicitly
+  // because the application once fell back to one.
   if (!isSet(env.DATABASE_URL)) {
     violations.push("DATABASE_URL is not set. Production must not fall back to local SQLite.");
   } else if (env.DATABASE_URL!.startsWith("file:")) {

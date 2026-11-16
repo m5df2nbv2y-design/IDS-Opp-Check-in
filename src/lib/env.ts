@@ -16,7 +16,8 @@ function int(key: string, fallback: number): number {
 }
 
 export const env = {
-  databaseUrl: str("DATABASE_URL", "file:./dev.db"),
+  // No default: a missing database must fail loudly in db.ts, never fall back.
+  databaseUrl: str("DATABASE_URL", ""),
 
   /** Public origin used to build check-in links inside emails. */
   appBaseUrl: str(
