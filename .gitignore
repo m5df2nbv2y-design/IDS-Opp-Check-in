@@ -54,3 +54,9 @@ next-env.d.ts
 
 # Pre-PostgreSQL SQLite database, kept locally for reference only.
 /dev.db.sqlite-backup
+
+# BMad (installed locally per machine) and local agent plans — not part of the repo.
+/_bmad/
+/_bmad-output/
+/.claude/skills/
+/docs/superpowers/
