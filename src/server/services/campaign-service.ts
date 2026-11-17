@@ -404,7 +404,8 @@ export async function launchCampaign(options: {
         const manifest = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } });
         const routes = readManifest(manifest?.detail)?.routes ?? {};
         const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
-        const approved = selected.filter(s => routes[s.opportunityId] === contactId);
+        const excludedByAdmin = new Set((await adminExclusions(tx, campaign.id)).map(e => e.opportunityId));
+        const approved = selected.filter(s => routes[s.opportunityId] === contactId && !excludedByAdmin.has(s.opportunityId));
         const itemIds = new Set(items.map(o => o.id));
         if (approved.length !== items.length || approved.some(({ opportunity: o }) => !itemIds.has(o.id) || o.contactId !== contactId || !o.isOpen || o.resolutionStatus !== "RESOLVED")) return null;
         const row = await tx.checkInRecipient.create({
@@ -538,16 +539,43 @@ function readManifest(detail: string | null | undefined): { routes: Record<strin
   } catch { return null; }
 }
 
+/** Why a shortfall opportunity cannot resume, as the admin sees it. */
+export const SHORTFALL_REASONS = {
+  ALREADY_INVITED: "Contact already has an invitation",
+  NO_ELIGIBLE_CONTACT: "No eligible contact",
+  CONTACT_CHANGED: "Contact changed since launch",
+  HELD_BACK: "Waiting on another opportunity for this contact",
+} as const;
+export type ShortfallReason = keyof typeof SHORTFALL_REASONS;
+const isShortfallReason = (value: unknown): value is ShortfallReason =>
+  typeof value === "string" && Object.hasOwn(SHORTFALL_REASONS, value);
+
+/** The exclusions admins recorded from the shortfall card, oldest first. Unrecognised rows are ignored. */
+async function adminExclusions(db: Prisma.TransactionClient, campaignId: string) {
+  const rows = await db.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.SELECTION_EXCLUDED }, orderBy: { createdAt: "asc" } });
+  return rows.flatMap((row) => {
+    try {
+      const data = JSON.parse(row.detail ?? "null");
+      if (data?.version !== 1 || typeof data.opportunityId !== "string" || !isShortfallReason(data.reason)) return [];
+      const text = (value: unknown) => (typeof value === "string" ? value : null);
+      return [{ opportunityId: data.opportunityId as string, reason: data.reason as ShortfallReason, customerName: text(data.customerName), opportunityName: text(data.opportunityName), actor: row.actor, at: row.createdAt }];
+    } catch { return []; }
+  });
+}
+
 /**
  * The selections that are approved work for this campaign: every selection except
- * those the routing manifest records as excluded at send, which were reported then.
+ * those the routing manifest records as excluded at send, which were reported then,
+ * and those an admin later excluded from the shortfall.
  */
 async function approvedSelectionIds(db: Prisma.TransactionClient, campaignId: string): Promise<string[]> {
-  const [manifest, selections] = await Promise.all([
+  const [manifest, selections, exclusions] = await Promise.all([
     db.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
     db.campaignSelection.findMany({ where: { campaignId }, select: { opportunityId: true } }),
+    adminExclusions(db, campaignId),
   ]);
   const excluded = readManifest(manifest?.detail)?.excluded ?? new Set<string>();
+  for (const e of exclusions) excluded.add(e.opportunityId);
   return selections.map((s) => s.opportunityId).filter((id) => !excluded.has(id));
 }
 
@@ -745,6 +773,10 @@ export type CampaignSummary = {
   /** All approved opportunities without invitation items, including unsafe drift. */
   unreachedCount: number;
   recoverableCount: number;
+  /** Unreached opportunities Resume cannot send, with why. Empty without a routing record. */
+  needsReview: ShortfallRow[];
+  /** Opportunities an admin excluded from the shortfall, oldest first. */
+  excluded: (ShortfallRow & { actor: string; at: Date })[];
   unresolvedDeliveryCount: number;
   reminderEligibleCount: number;
   recipients: RecipientProgress[];
@@ -755,10 +787,10 @@ export type CampaignSummary = {
  * routing and eligibility drift after launch that requires review. Revoked items
  * count as reached. A selection excluded at send was reported then and is not approved work.
  */
-export async function getUnreachedOpportunityIds(campaignId: string): Promise<string[]> {
+export async function getUnreachedOpportunityIds(campaignId: string, db: Prisma.TransactionClient = prisma): Promise<string[]> {
   const [approved, reached] = await Promise.all([
-    approvedSelectionIds(prisma, campaignId),
-    prisma.checkInOpportunity.findMany({
+    approvedSelectionIds(db, campaignId),
+    db.checkInOpportunity.findMany({
       where: { recipient: { campaignId } },
       select: { opportunityId: true },
     }),
@@ -812,23 +844,95 @@ export function recipientSendNote(recipient: { sendStatus: string; sendError: st
  * this campaign, in this request and with nothing sent since, skip a second scan.
  */
 export async function getRecoverableOpportunityIds(campaignId: string, unreached?: string[]): Promise<string[]> {
-  const [manifest, selections, recipients, missing] = await Promise.all([
-    prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
-    prisma.campaignSelection.findMany({ where: { campaignId }, include: { opportunity: true } }),
-    prisma.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
-    unreached ?? getUnreachedOpportunityIds(campaignId),
+  return (await readShortfall(prisma, campaignId, unreached)).recoverable;
+}
+
+export type ShortfallRow = { opportunityId: string; opportunityName: string; customerName: string; reason: ShortfallReason };
+
+/**
+ * Splits the unreached work: recoverable (Resume can send it) and needs review
+ * (everything else, with why). Both empty when there is no routing record.
+ */
+async function readShortfall(db: Prisma.TransactionClient, campaignId: string, unreached?: string[]): Promise<{ recoverable: string[]; needsReview: ShortfallRow[] }> {
+  const [manifest, selections, recipients, missing, exclusions] = await Promise.all([
+    db.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
+    db.campaignSelection.findMany({ where: { campaignId }, include: { opportunity: true } }),
+    db.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
+    unreached ?? getUnreachedOpportunityIds(campaignId, db),
+    adminExclusions(db, campaignId),
   ]);
   const routes = readManifest(manifest?.detail)?.routes;
-  if (!routes) return [];
+  if (!routes) return { recoverable: [], needsReview: [] };
   const existing = new Set(recipients.map(r => r.contactId));
   const missingSet = new Set(missing);
+  const excludedByAdmin = new Set(exclusions.map(e => e.opportunityId));
   const unsafe = new Set<string>();
   for (const { opportunity: o } of selections) {
+    // An excluded opportunity no longer holds back its original contact.
+    if (excludedByAdmin.has(o.id)) continue;
     const original = routes[o.id];
     if (typeof original === "string" && (!o.isOpen || o.resolutionStatus !== "RESOLVED" || o.contactId !== original)) unsafe.add(original);
   }
-  return selections.flatMap(({ opportunity: o }) =>
-    missingSet.has(o.id) && o.contactId && routes[o.id] === o.contactId && o.isOpen && o.resolutionStatus === "RESOLVED" && !existing.has(o.contactId) && !unsafe.has(o.contactId) ? [o.id] : []);
+  const recoverable: string[] = [];
+  const needsReview: ShortfallRow[] = [];
+  for (const { opportunity: o } of selections) {
+    if (!missingSet.has(o.id)) continue;
+    const eligible = o.contactId !== null && o.isOpen && o.resolutionStatus === "RESOLVED";
+    if (eligible && routes[o.id] === o.contactId && !existing.has(o.contactId!) && !unsafe.has(o.contactId!)) {
+      recoverable.push(o.id);
+      continue;
+    }
+    const reason: ShortfallReason = !eligible ? "NO_ELIGIBLE_CONTACT" : existing.has(o.contactId!) ? "ALREADY_INVITED"
+      : routes[o.id] !== o.contactId ? "CONTACT_CHANGED" : "HELD_BACK";
+    needsReview.push({ opportunityId: o.id, opportunityName: o.projectName ?? o.opportunityName, customerName: o.customerName, reason });
+  }
+  return { recoverable, needsReview };
+}
+
+export const SHORTFALL_EXCLUDE_REFUSALS = {
+  NOT_IN_PROGRESS: "Only an in-progress campaign can exclude shortfall opportunities.",
+  NO_ROUTING: "Approve this campaign's routing first.",
+  RECOVERABLE: "This opportunity can still be resumed. Use Resume instead.",
+  GONE: "This opportunity is no longer in the shortfall. Reload the page.",
+  CHANGED: "This opportunity changed since the page was loaded. Reload and check again.",
+} as const;
+
+/**
+ * Exclude one unreached opportunity that cannot resume, with the reason the admin
+ * saw. Final: it stops counting as approved work, so the campaign may close. Sends
+ * nothing, issues no link, never rewrites the routing record or deletes the selection.
+ */
+export async function excludeShortfallOpportunity(
+  campaignId: string,
+  opportunityId: string,
+  shownReason: ShortfallReason,
+  actor: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (typeof campaignId !== "string" || typeof opportunityId !== "string" || !isShortfallReason(shownReason)) {
+    throw new Error("Invalid shortfall exclusion input");
+  }
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS") return { ok: false as const, message: SHORTFALL_EXCLUDE_REFUSALS.NOT_IN_PROGRESS };
+    if (!(await tx.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } }))) {
+      return { ok: false as const, message: SHORTFALL_EXCLUDE_REFUSALS.NO_ROUTING };
+    }
+    const { recoverable, needsReview } = await readShortfall(tx, campaignId);
+    if (recoverable.includes(opportunityId)) return { ok: false as const, message: SHORTFALL_EXCLUDE_REFUSALS.RECOVERABLE };
+    const row = needsReview.find((r) => r.opportunityId === opportunityId);
+    if (!row) return { ok: false as const, message: SHORTFALL_EXCLUDE_REFUSALS.GONE };
+    if (row.reason !== shownReason) return { ok: false as const, message: SHORTFALL_EXCLUDE_REFUSALS.CHANGED };
+    await recordAudit({
+      type: AUDIT_EVENTS.SELECTION_EXCLUDED,
+      summary: `Excluded ${row.customerName} · ${row.opportunityName} from this campaign: ${SHORTFALL_REASONS[row.reason].toLowerCase()}`,
+      actor, actorKind: "ADMIN", campaignId, opportunityId,
+      detail: JSON.stringify({ version: 1, opportunityId, reason: row.reason, customerName: row.customerName, opportunityName: row.opportunityName }),
+    }, tx);
+    return { ok: true as const };
+  });
+  if (result.ok) await closeCampaignIfDone(campaignId);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -993,6 +1097,10 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   const items = campaign.recipients.flatMap((recipient) => recipient.items);
   const unreached = await getUnreachedOpportunityIds(campaignId);
   const unreachedCount = unreached.length;
+  const [shortfall, exclusions] = await Promise.all([readShortfall(prisma, campaignId, unreached), adminExclusions(prisma, campaignId)]);
+  const excludedOpportunities = new Map(exclusions.length === 0 ? [] : (await prisma.opportunity.findMany({
+    where: { id: { in: exclusions.map((e) => e.opportunityId) } },
+  })).map((o) => [o.id, o]));
 
   return {
     id: campaign.id,
@@ -1017,7 +1125,12 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     syncErrorCount: recipients.filter((r) => r.status === "SYNC_ERROR").length,
     totalValue: items.reduce((sum, item) => sum + item.amount, 0),
     unreachedCount,
-    recoverableCount: (await getRecoverableOpportunityIds(campaignId, unreached)).length,
+    recoverableCount: shortfall.recoverable.length,
+    needsReview: shortfall.needsReview,
+    excluded: exclusions.map((e) => {
+      const o = excludedOpportunities.get(e.opportunityId);
+      return { ...e, opportunityName: o ? o.projectName ?? o.opportunityName : e.opportunityName ?? e.opportunityId, customerName: o?.customerName ?? e.customerName ?? "Unknown opportunity" };
+    }),
     reminderEligibleCount: campaign.recipients.filter(r => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0).length,
     unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,

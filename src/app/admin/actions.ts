@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, resumeLaunch, sendReminders } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, excludeShortfallOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -124,6 +124,16 @@ export async function approveLegacyRoutingAction(campaignId: string, shownRoutes
   const result = await approveLegacyRouting(campaignId, shownRoutes, actor);
   // Revalidate on refusal too, so a stale preview and button leave the screen.
   revalidatePath(`/admin/campaigns/${campaignId}`);
+  if (!result.ok) return { error: result.message };
+}
+
+/** Exclude one shortfall opportunity that cannot resume, with the reason shown. Refusals are returned, not thrown. */
+export async function excludeShortfallAction(campaignId: string, opportunityId: string, shownReason: ShortfallReason): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await excludeShortfallOpportunity(campaignId, opportunityId, shownReason, actor);
+  // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
   if (!result.ok) return { error: result.message };
 }
 

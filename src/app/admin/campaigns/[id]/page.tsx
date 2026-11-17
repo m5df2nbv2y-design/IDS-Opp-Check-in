@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import {
   approveLegacyRoutingAction,
   approveWritebackAction,
+  excludeShortfallAction,
   reconcileInvitationAction,
   reconcileUncertainAction,
   retrySyncAction,
@@ -17,7 +18,7 @@ import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/components/ui/primitives";
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
-import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses } from "@/server/services/campaign-service";
+import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses, SHORTFALL_REASONS } from "@/server/services/campaign-service";
 import { listAppliedAttestations } from "@/server/services/reconcile-service";
 import { env } from "@/lib/env";
 
@@ -103,6 +104,26 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           <p role="status">{summary.unreachedCount} approved opportunities have no invitation items. This campaign cannot close until the shortfall is reviewed.</p>
           <p>{summary.recoverableCount} can safely resume for contacts never provisioned. Remaining work needs review of routing, eligibility or an existing invitation; issued links are never expanded.</p>
           {summary.status === "IN_PROGRESS" && summary.recoverableCount > 0 ? <ActionButton action={resumeLaunchAction.bind(null, summary.id)} pendingLabel="Resuming…" confirm="Resume only approved opportunities for eligible contacts with no existing invitation?">Resume unsent invitations</ActionButton> : null}
+          {summary.needsReview.length > 0 ? (
+            <div className="space-y-2">
+              <p className="font-semibold text-ink">Needs review</p>
+              <ul className="space-y-2 text-[14px]">
+                {summary.needsReview.map((row) => (
+                  <li key={row.opportunityId} className="flex flex-wrap items-center justify-between gap-2">
+                    <span>{row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]}</span>
+                    {summary.status === "IN_PROGRESS" ? (
+                      <ActionButton
+                        action={excludeShortfallAction.bind(null, summary.id, row.opportunityId, row.reason)}
+                        pendingLabel="Excluding…"
+                        size="sm"
+                        confirm={`Exclude ${row.customerName} · ${row.opportunityName} from this campaign? Reason: ${SHORTFALL_REASONS[row.reason]}. Nothing is sent. This cannot be undone.`}
+                      >Exclude from this campaign</ActionButton>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           {legacyRouting && legacyRouting.length > 0 ? (
             <div className="space-y-2">
               <p>This campaign was launched before routing was recorded. Review where each unsent opportunity would go today, then approve to allow resume. Contacts already invited are never re-sent.</p>
@@ -122,6 +143,18 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
               >Approve routing</ActionButton>
             </div>
           ) : null}
+        </Card>
+      ) : null}
+      {summary.excluded.length > 0 ? (
+        <Card className="space-y-2 p-5">
+          <p className="font-semibold text-ink">Excluded from this campaign</p>
+          <ul className="list-disc pl-5 text-[14px]">
+            {summary.excluded.map((row) => (
+              <li key={row.opportunityId}>
+                {row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]} · excluded by {row.actor} on {formatDateTime(row.at)}
+              </li>
+            ))}
+          </ul>
         </Card>
       ) : null}
       {summary.unresolvedDeliveryCount > 0 ? (
