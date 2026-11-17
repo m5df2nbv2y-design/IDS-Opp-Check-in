@@ -422,44 +422,68 @@ export async function launchCampaign(options: {
       }),
     ).catch(() => ({ id: "", status: "UNCERTAIN" as const, error: "Invitation acceptance is unresolved. Reconcile before sending again." }));
 
-    await prisma.$transaction(async (tx) => {
-      if (result.status === "SENT") {
-        emailsSent += 1;
-        await tx.checkInRecipient.update({
-          where: { id: recipient.id },
-          data: { sentAt: new Date(), sendStatus: "SENT" },
-        });
-        await recordAudit({
-          type: AUDIT_EVENTS.INVITE_SENT,
-          summary: `Check-in sent to ${contact.name} at ${contact.account.name}`,
-          actor,
-          actorKind: "ADMIN",
-          detail: `${items.length} opportunities · internal reps: ${[...new Set(items.map((i) => i.internalRep.name))].join(", ")}`,
-          campaignId: campaign.id,
-          contactId,
-          accountId: contact.accountId,
-        }, tx);
-      } else {
-        // Anything the provider contract does not name as FAILED is unknown, never a rejection.
-        const outcome = result.status === "FAILED" ? "FAILED" : "UNCERTAIN";
-        if (outcome === "FAILED") emailsFailed += 1;
+    // Counted only after the outcome commits. A failed recording costs this one
+    // recipient's certainty, never the rest of the launch.
+    const outcome: "SENT" | "FAILED" | "UNCERTAIN" = result.status === "SENT" ? "SENT" : result.status === "FAILED" ? "FAILED" : "UNCERTAIN";
+    try {
+      await prisma.$transaction(async (tx) => {
+        if (outcome === "SENT") {
+          await tx.checkInRecipient.update({
+            where: { id: recipient.id },
+            data: { sentAt: new Date(), sendStatus: "SENT" },
+          });
+          await recordAudit({
+            type: AUDIT_EVENTS.INVITE_SENT,
+            summary: `Check-in sent to ${contact.name} at ${contact.account.name}`,
+            actor,
+            actorKind: "ADMIN",
+            detail: `${items.length} opportunities · internal reps: ${[...new Set(items.map((i) => i.internalRep.name))].join(", ")}`,
+            campaignId: campaign.id,
+            contactId,
+            accountId: contact.accountId,
+          }, tx);
+        } else {
+          // Anything the provider contract does not name as FAILED is unknown, never a rejection.
+          await tx.checkInRecipient.update({
+            where: { id: recipient.id },
+            data: { sendStatus: outcome, sendError: sanitizeProviderError(result.error) ?? "Unknown error" },
+          });
+          await recordAudit({
+            type: outcome === "UNCERTAIN" ? AUDIT_EVENTS.INVITE_UNCERTAIN : AUDIT_EVENTS.INVITE_FAILED,
+            summary: `Check-in email to ${contact.name} ${outcome === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
+            actor,
+            actorKind: "ADMIN",
+            detail: sanitizeProviderError(result.error),
+            campaignId: campaign.id,
+            contactId,
+            accountId: contact.accountId,
+          }, tx);
+        }
+      });
+    } catch {
+      // A confirmed rejection stays FAILED; otherwise the provider may have accepted
+      // it, so it is unknown. Best effort: if this also fails the row stays PENDING,
+      // which the unresolved-delivery banner shows, and is not counted here.
+      const fallback = outcome === "FAILED" ? "FAILED" : "UNCERTAIN";
+      const marked = await prisma.checkInRecipient.updateMany({
+        where: { id: recipient.id, sendStatus: "PENDING" },
+        data: { sendStatus: fallback, sendError: `Invitation outcome (${outcome}) was not recorded. Reconcile before sending again.` },
+      }).catch(() => ({ count: 0 }));
+      if (marked.count === 1) {
+        if (fallback === "FAILED") emailsFailed += 1;
         else emailsUncertain += 1;
-        await tx.checkInRecipient.update({
-          where: { id: recipient.id },
-          data: { sendStatus: outcome, sendError: sanitizeProviderError(result.error) ?? "Unknown error" },
-        });
-        await recordAudit({
-          type: outcome === "UNCERTAIN" ? AUDIT_EVENTS.INVITE_UNCERTAIN : AUDIT_EVENTS.INVITE_FAILED,
-          summary: `Check-in email to ${contact.name} ${outcome === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
-          actor,
-          actorKind: "ADMIN",
-          detail: sanitizeProviderError(result.error),
-          campaignId: campaign.id,
-          contactId,
-          accountId: contact.accountId,
-        }, tx);
       }
-    });
+      await recordAudit({
+        type: fallback === "FAILED" ? AUDIT_EVENTS.INVITE_FAILED : AUDIT_EVENTS.INVITE_UNCERTAIN,
+        summary: `Check-in email to ${contact.name}: provider outcome ${outcome} was not recorded; reconcile before sending again`,
+        actor, actorKind: "ADMIN", campaignId: campaign.id, contactId, accountId: contact.accountId,
+        detail: JSON.stringify({ outcome, recorded: false }),
+      }).catch(() => undefined);
+      continue;
+    }
+    if (outcome === "SENT") emailsSent += 1;
+    else if (outcome === "FAILED") emailsFailed += 1;
+    else emailsUncertain += 1;
   }
 
   const unresolved = await prisma.opportunity.count({
@@ -570,6 +594,9 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
  * The durable claim rotates the token before sending. A confirmed rejection
  * restores the prior link; unknown acceptance retains recovery evidence and
  * blocks another send. A crash cannot guarantee uninterrupted old-link access.
+ * If the claim changed mid-send, the row is left as found and the send is audited
+ * but not counted; if recording fails, the row stays REMINDER_PENDING. Either way
+ * the batch carries on. Returns reminders sent and recorded on their recipient.
  */
 export async function sendReminders(campaignId: string, actor = "admin"): Promise<number> {
   const recipients = await prisma.checkInRecipient.findMany({
@@ -604,24 +631,42 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
       checkInUrl: checkInUrl(env.appBaseUrl, token.token), campaignId, contactId: recipient.contactId,
     })).catch((): EmailSendResult => ({ id: "", status: "UNCERTAIN" }));
     const safeError = sanitizeProviderError(result.error);
-    await prisma.$transaction(async (tx) => {
-      const finalized = await tx.checkInRecipient.updateMany({
-        where: { id: recipient.id, tokenHash: token.hash, sendStatus: "REMINDER_PENDING", sendError: metadata },
-        data: result.status === "SENT"
-          ? { sendStatus: "SENT", sendError: null, remindedAt: new Date(), reminderCount: { increment: 1 } }
-          : result.status === "FAILED"
-            ? { sendStatus: "SENT", sendError: JSON.stringify({ ...JSON.parse(metadata), outcome: "FAILED", ...(safeError ? { error: safeError } : {}) }), tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt }
-            : { sendStatus: "REMINDER_UNCERTAIN" },
+    const attempt = JSON.parse(metadata).attempt;
+    let recorded = false;
+    try {
+      const finalized = await prisma.$transaction(async (tx) => {
+        const claim = await tx.checkInRecipient.updateMany({
+          where: { id: recipient.id, tokenHash: token.hash, sendStatus: "REMINDER_PENDING", sendError: metadata },
+          data: result.status === "SENT"
+            ? { sendStatus: "SENT", sendError: null, remindedAt: new Date(), reminderCount: { increment: 1 } }
+            : result.status === "FAILED"
+              ? { sendStatus: "SENT", sendError: JSON.stringify({ ...JSON.parse(metadata), outcome: "FAILED", ...(safeError ? { error: safeError } : {}) }), tokenHash: recipient.tokenHash, tokenHint: recipient.tokenHint, expiresAt: recipient.expiresAt }
+              : { sendStatus: "REMINDER_UNCERTAIN" },
+        });
+        // The claim changed mid-send (link replaced, recipient reconciled): the row now
+        // belongs to someone else, so leave it alone, but still record what was sent.
+        const claimChanged = claim.count !== 1;
+        await recordAudit({
+          type: result.status === "SENT" ? AUDIT_EVENTS.REMINDER_SENT : result.status === "FAILED" ? AUDIT_EVENTS.REMINDER_FAILED : AUDIT_EVENTS.REMINDER_UNCERTAIN,
+          summary: (result.status === "SENT" ? `Reminder sent to ${recipient.contact.name}` : result.status === "FAILED" ? `Reminder rejected for ${recipient.contact.name}${claimChanged ? "" : "; prior link restored"}` : `Reminder acceptance unresolved for ${recipient.contact.name}; manual reconciliation required`)
+            + (claimChanged ? "; reminder claim changed during send, recipient left as found" : ""),
+          actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+          detail: JSON.stringify({ attempt, outcome: result.status, ...(claimChanged ? { claimChanged: true } : {}), ...(safeError ? { error: safeError } : {}) }),
+        }, tx);
+        return !claimChanged;
       });
-      if (finalized.count !== 1) throw new Error("Reminder claim changed; reconciliation required.");
+      recorded = finalized;
+    } catch {
+      // Outcome not recorded: the row stays REMINDER_PENDING (shown as unresolved).
+      // Best-effort audit, then carry on with the batch.
       await recordAudit({
-        type: result.status === "SENT" ? AUDIT_EVENTS.REMINDER_SENT : result.status === "FAILED" ? AUDIT_EVENTS.REMINDER_FAILED : AUDIT_EVENTS.REMINDER_UNCERTAIN,
-        summary: result.status === "SENT" ? `Reminder sent to ${recipient.contact.name}` : result.status === "FAILED" ? `Reminder rejected for ${recipient.contact.name}; prior link restored` : `Reminder acceptance unresolved for ${recipient.contact.name}; manual reconciliation required`,
+        type: AUDIT_EVENTS.REMINDER_UNCERTAIN,
+        summary: `Reminder outcome for ${recipient.contact.name} was not recorded; manual reconciliation required`,
         actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
-        detail: JSON.stringify({ attempt: JSON.parse(metadata).attempt, outcome: result.status, ...(safeError ? { error: safeError } : {}) }),
-      }, tx);
-    });
-    if (result.status === "SENT") sent += 1;
+        detail: JSON.stringify({ attempt, outcome: result.status, recorded: false, ...(safeError ? { error: safeError } : {}) }),
+      }).catch(() => undefined);
+    }
+    if (recorded && result.status === "SENT") sent += 1;
   }
 
   return sent;

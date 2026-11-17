@@ -63,14 +63,16 @@ describe("durable reminder recovery", () => {
     expect(await recipient()).toMatchObject({ sendStatus: "SENT", reminderCount: 1, sendError: null });
   });
 
-  it.each(["SENT", "FAILED"] as const)("%s finalization rolls back when audit fails, retaining recovery evidence", async status => {
+  it.each(["SENT", "FAILED"] as const)("%s finalization rolls back when audit fails, retaining recovery evidence, without aborting the batch", async status => {
     vi.spyOn(getEmailService(), "send").mockResolvedValue({ id: "result", status });
     const original = audit.recordAudit;
     vi.spyOn(audit, "recordAudit").mockImplementation(async (input, db) => {
       if (input.type === audit.AUDIT_EVENTS.REMINDER_SENT || input.type === audit.AUDIT_EVENTS.REMINDER_FAILED) throw new Error("audit unavailable");
       return original(input, db);
     });
-    await expect(sendReminders(campaignId)).rejects.toThrow("audit unavailable");
+    // Not counted: the outcome was never recorded. The batch still returns.
+    expect(await sendReminders(campaignId)).toBe(0);
+    expect(await prisma.auditEvent.count({ where: { campaignId, type: audit.AUDIT_EVENTS.REMINDER_UNCERTAIN } })).toBe(1);
     const row = await recipient();
     expect(row).toMatchObject({ sendStatus: "REMINDER_PENDING", reminderCount: 0 });
     expect(readReminderRecovery(row.sendError)).not.toBeNull();
