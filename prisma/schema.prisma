@@ -188,6 +188,8 @@ model CheckInRecipient {
   sendError   String?
   remindedAt  DateTime?
   reminderCount Int     @default(0)
+  /// When the current invitation attempt started: reset by a re-send. Read by
+  /// isSettleableInvitation and the "It was sent" attestation (sentAt = createdAt).
   createdAt   DateTime  @default(now())
 
   campaign Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)

@@ -716,6 +716,112 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
   return sent;
 }
 
+/** Fixed messages for the re-send control; never provider or stored text. */
+export const RESEND_INVITATION_MESSAGES = {
+  STALE: "This invitation changed since the page was loaded. Reload and check again.",
+  NOT_ELIGIBLE: "This invitation can no longer be re-sent.",
+  FAILED: "The provider rejected the re-send. Nothing was sent.",
+  UNKNOWN: "The outcome of this re-send is unknown. Check the sending mailbox's Sent Items before doing anything else.",
+} as const;
+
+/** FAILED, still open, with items, in an IN_PROGRESS campaign: an admin may re-send it with a fresh link. */
+const canResend = (recipient: { sendStatus: string; completedAt: Date | null; revokedAt: Date | null; items: unknown[] }, campaignStatus: string) =>
+  campaignStatus === "IN_PROGRESS" && recipient.sendStatus === "FAILED" && !recipient.completedAt && !recipient.revokedAt && recipient.items.length > 0;
+
+/**
+ * Re-send ONE failed invitation with a fresh link and the campaign's own copy.
+ * The claim is bound to the shown `tokenHint`; it rotates the token (the old link
+ * stops working), sets PENDING and resets `createdAt` (the current attempt) in one
+ * audited transaction. The outcome is recorded only while the row still holds the
+ * new token and PENDING; if recording fails, the row stays PENDING (unresolved).
+ */
+export async function resendInvitation(input: {
+  campaignId: string;
+  recipientId: string;
+  shownTokenHint: string;
+  actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { campaignId, recipientId, shownTokenHint, actor } = input;
+  if (typeof campaignId !== "string" || typeof recipientId !== "string" || typeof shownTokenHint !== "string") {
+    throw new Error("Invalid re-send input");
+  }
+  // Resolved before the claim: an unusable provider must not leave a PENDING row.
+  const email = getEmailService();
+  const token = issueToken();
+  const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
+
+  const claim = await prisma.$transaction(async (tx) => {
+    const recipient = await tx.checkInRecipient.findFirst({
+      where: { id: recipientId, campaignId },
+      include: { campaign: true, items: true, contact: { include: { account: true } } },
+    });
+    if (!recipient) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE };
+    if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.STALE };
+    if (!canResend(recipient, recipient.campaign.status)) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE };
+    const claimed = await tx.checkInRecipient.updateMany({
+      where: { id: recipient.id, campaignId, sendStatus: "FAILED", tokenHint: shownTokenHint, tokenHash: recipient.tokenHash, completedAt: null, revokedAt: null },
+      data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt, sendStatus: "PENDING", sendError: null, createdAt: new Date() },
+    });
+    if (claimed.count !== 1) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.STALE };
+    await recordAudit({
+      type: AUDIT_EVENTS.INVITE_RESEND_STARTED,
+      summary: `Invitation re-send started for ${recipient.contact.name} with a fresh link; the previous link no longer opens`,
+      actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+      detail: JSON.stringify({ recipientId: recipient.id, previousTokenHint: shownTokenHint, tokenHint: token.hint, previousSendError: recipient.sendError }),
+    }, tx);
+    return { ok: true as const, recipient };
+  });
+  if (!claim.ok) return claim;
+  const { recipient } = claim;
+  const contact = recipient.contact;
+
+  const result = await email.send(buildInviteEmail({
+    contactName: contact.name,
+    contactEmail: contact.email,
+    organizationName: contact.account.name,
+    opportunityCount: recipient.items.length,
+    checkInUrl: checkInUrl(env.appBaseUrl, token.token),
+    campaignId,
+    contactId: recipient.contactId,
+    copy: readEmailCopy(recipient.campaign),
+  })).catch((): EmailSendResult => ({ id: "", status: "UNCERTAIN", error: "Invitation acceptance is unresolved. Reconcile before sending again." }));
+
+  // Anything the provider contract does not name as FAILED is unknown, never a rejection.
+  const outcome: "SENT" | "FAILED" | "UNCERTAIN" = result.status === "SENT" ? "SENT" : result.status === "FAILED" ? "FAILED" : "UNCERTAIN";
+  const safeError = sanitizeProviderError(result.error);
+  try {
+    await prisma.$transaction(async (tx) => {
+      const finalized = await tx.checkInRecipient.updateMany({
+        where: { id: recipient.id, tokenHash: token.hash, sendStatus: "PENDING" },
+        data: outcome === "SENT"
+          ? { sendStatus: "SENT", sentAt: new Date(), sendError: null }
+          : { sendStatus: outcome, sendError: safeError ?? "Unknown error" },
+      });
+      // The claim changed mid-send: leave the row as found; the catch audits it.
+      if (finalized.count !== 1) throw new Error("Re-send claim changed during send");
+      await recordAudit({
+        type: outcome === "SENT" ? AUDIT_EVENTS.INVITE_SENT : outcome === "FAILED" ? AUDIT_EVENTS.INVITE_FAILED : AUDIT_EVENTS.INVITE_UNCERTAIN,
+        summary: outcome === "SENT"
+          ? `Check-in re-sent to ${contact.name} at ${contact.account.name}`
+          : `Re-sent check-in email to ${contact.name} ${outcome === "UNCERTAIN" ? "has unresolved acceptance" : "failed"}`,
+        actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: contact.accountId,
+        detail: JSON.stringify({ resend: true, recipientId: recipient.id, tokenHint: token.hint, outcome, ...(safeError ? { error: safeError } : {}) }),
+      }, tx);
+    });
+  } catch {
+    // Outcome not recorded: the row stays PENDING (shown as unresolved). Best-effort audit.
+    await recordAudit({
+      type: outcome === "FAILED" ? AUDIT_EVENTS.INVITE_FAILED : AUDIT_EVENTS.INVITE_UNCERTAIN,
+      summary: `Re-sent check-in email to ${contact.name}: provider outcome ${outcome} was not recorded; reconcile before sending again`,
+      actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: contact.accountId,
+      detail: JSON.stringify({ resend: true, recipientId: recipient.id, tokenHint: token.hint, outcome, recorded: false, ...(safeError ? { error: safeError } : {}) }),
+    }).catch(() => undefined);
+    return { ok: false, message: RESEND_INVITATION_MESSAGES.UNKNOWN };
+  }
+  if (outcome === "SENT") return { ok: true };
+  return { ok: false, message: outcome === "FAILED" ? RESEND_INVITATION_MESSAGES.FAILED : RESEND_INVITATION_MESSAGES.UNKNOWN };
+}
+
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------
@@ -742,6 +848,8 @@ export type RecipientProgress = {
   sendStatus: string;
   /** UNCERTAIN, or PENDING long enough to be interrupted: an admin may record the outcome by hand. */
   canReconcileInvitation: boolean;
+  /** FAILED, not completed or revoked, with items, campaign IN_PROGRESS: an admin may re-send it with a fresh link. */
+  canResendInvitation: boolean;
   deliveryNote?: string | null;
 };
 
@@ -1090,6 +1198,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         tokenHint: recipient.tokenHint,
         sendStatus: recipient.sendStatus,
         canReconcileInvitation: isSettleableInvitation(recipient),
+        canResendInvitation: canResend(recipient, campaign.status),
         deliveryNote: isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null,
       };
     })

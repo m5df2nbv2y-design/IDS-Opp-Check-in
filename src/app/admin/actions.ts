@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, excludeShortfallOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, excludeShortfallOpportunity, resendInvitation, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -266,6 +266,20 @@ export async function reconcileInvitationAction(
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
   return { ok: true };
+}
+
+/**
+ * Re-send ONE failed invitation with a fresh link, bound to the `tokenHint` that
+ * was on screen. Refusals and non-SENT outcomes are returned as fixed messages.
+ */
+export async function resendInvitationAction(campaignId: string, recipientId: string, shownTokenHint: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await resendInvitation({ campaignId, recipientId, shownTokenHint, actor });
+  // Refresh either way, so a stale row, the new state and the outbox are shown.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  revalidatePath("/admin/outbox");
+  if (!result.ok) return { error: result.message };
 }
 
 export async function refreshCatalogAction() {

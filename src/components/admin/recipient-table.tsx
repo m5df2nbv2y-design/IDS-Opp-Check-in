@@ -2,11 +2,13 @@ import { AccountTypeBadge, Card, RecipientStatusBadge, Tick } from "@/components
 import { accountTypeLabel } from "@/lib/account-types";
 import { formatDateTime, pluralize } from "@/lib/format";
 import type { ReconcileActionResult } from "@/app/admin/actions";
+import { ActionButton } from "@/components/admin/action-button";
 import { ReconcileControls, type ReconcileChoice } from "@/components/admin/reconcile-controls";
 import type { RecipientProgress } from "@/server/services/campaign-service";
 import type { InvitationObservedOutcome } from "@/server/services/reconcile-service";
 
 type InvitationAction = (observed: InvitationObservedOutcome) => Promise<ReconcileActionResult>;
+type ResendAction = () => Promise<void | { error: string }>;
 
 // Defined here, not in the client module: a server component cannot read a client module's plain exports.
 const INVITATION_CHOICES: ReconcileChoice<InvitationObservedOutcome>[] = [
@@ -50,6 +52,29 @@ function InvitationReconcile({
   );
 }
 
+/** Shown only for a FAILED invitation that can still be re-sent. */
+function InvitationResend({
+  recipient,
+  action,
+}: {
+  recipient: RecipientProgress;
+  action?: (recipient: RecipientProgress) => ResendAction;
+}) {
+  if (!action || !recipient.canResendInvitation) return null;
+  return (
+    <div className="mt-2">
+      <ActionButton
+        action={action(recipient)}
+        size="sm"
+        pendingLabel="Re-sending…"
+        confirm={`Re-send the invitation to ${recipient.contactName}? A fresh link is sent with the campaign's email; the previous link stops working.`}
+      >
+        Re-send invitation
+      </ActionButton>
+    </div>
+  );
+}
+
 /**
  * The campaign's core table: one row per EXTERNAL CONTACT, not per IDS rep.
  * The internal reps behind each row are shown as supporting context only.
@@ -57,10 +82,13 @@ function InvitationReconcile({
 export function RecipientTable({
   recipients,
   reconcileInvitation,
+  resendInvitation,
 }: {
   recipients: RecipientProgress[];
   /** Binds the invitation reconcile action to one recipient's shown state. */
   reconcileInvitation?: (recipient: RecipientProgress) => InvitationAction;
+  /** Binds the re-send action to one recipient's shown link. */
+  resendInvitation?: (recipient: RecipientProgress) => ResendAction;
 }) {
   return (
     <Card className="overflow-hidden">
@@ -115,6 +143,7 @@ export function RecipientTable({
                   <RecipientStatusBadge status={recipient.status} />
                   {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
                   <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
+                  <InvitationResend recipient={recipient} action={resendInvitation} />
                 </td>
               </tr>
             ))}
@@ -142,6 +171,7 @@ export function RecipientTable({
             </div>
             <div className="mt-2 text-[12px] text-muted">{lastActivity(recipient)}</div>
             <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
+            <InvitationResend recipient={recipient} action={resendInvitation} />
           </li>
         ))}
       </ul>

@@ -6,6 +6,7 @@ import {
   excludeShortfallAction,
   reconcileInvitationAction,
   reconcileUncertainAction,
+  resendInvitationAction,
   retrySyncAction,
   resumeLaunchAction,
   sendRemindersAction,
@@ -222,6 +223,9 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
               recipient.sendStatus,
               recipient.tokenHint,
             )
+          }
+          resendInvitation={(recipient) =>
+            resendInvitationAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint)
           }
         />
         {testRecipient ? (
