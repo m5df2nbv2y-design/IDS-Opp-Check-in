@@ -113,15 +113,14 @@ describe("classifying Graph's answer", () => {
     expect(missing.error).toMatch(/GRAPH_SENDER_MAILBOX/);
   });
 
-  it("treats throttling as a clean failure: not accepted, and an identical retry is refused as a duplicate", () => {
+  it("treats throttling as a clean failure: not accepted, and safe to retry", () => {
     // Graph rejects a throttled request rather than executing it, so this is
     // knowably not-sent. Calling it UNCERTAIN would freeze every throttled
     // message in a campaign for manual checking.
     const throttled = classifyGraphSendResponse(429);
     expect(throttled.status).toBe("FAILED");
     expect(throttled.error).toMatch(/did not accept the message/i);
-    expect(throttled.error).toMatch(/refused as a duplicate/i);
-    expect(throttled.error).toMatch(/needs a new send/i);
+    expect(throttled.error).not.toMatch(/refused as a duplicate/i);
     expect(throttled.error).not.toMatch(/safe to send/i);
   });
 
@@ -373,7 +372,6 @@ describe("the send path", () => {
 
     it.each([
       ["SENT", "SENT"],
-      ["FAILED", "FAILED"],
       ["UNCERTAIN", "UNCERTAIN"],
       ["PENDING", "UNCERTAIN"],
     ])("of a stored %s row returns %s with no network request and fixed text, not the stored text", async (stored, expected) => {
@@ -396,11 +394,46 @@ describe("the send path", () => {
       for (const leak of LEAKS) expect(repeat.error ?? "", leak).not.toContain(leak);
       if (expected === "SENT") expect(repeat.error).toBeUndefined();
       else expect(repeat.error).toBeTruthy();
-      if (stored === "FAILED") {
-        expect(repeat.error).toMatch(/was not accepted/i);
-        expect(repeat.error).toMatch(/refused as a duplicate/i);
-        expect(repeat.error).toMatch(/needs a new send/i);
+    });
+
+    it("of a definite FAILED (nothing went out) is retried on the same ledger row", async () => {
+      const fetchMock = graphFetch(400);
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+      const first = await service.send(MESSAGE);
+      expect(first.status).toBe("FAILED");
+
+      vi.stubGlobal("fetch", graphFetch(202));
+      const retry = await service.send(MESSAGE);
+
+      expect(retry).toMatchObject({ id: first.id, status: "SENT" });
+      expect(await prisma.emailMessage.count()).toBe(1);
+      expect(await prisma.emailMessage.findUniqueOrThrow({ where: { id: first.id } })).toMatchObject({ status: "SENT", error: null });
+    });
+
+    it("concurrent retries of a definite FAILED make exactly one sendMail request", async () => {
+      vi.stubGlobal("fetch", graphFetch(400));
+      const service = await graphService();
+      const first = await service.send(MESSAGE);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fetchMock = graphFetch(async () => { await gate; return new Response(null, { status: 202 }); });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const calls = [1, 2, 3].map(() => service.send(MESSAGE));
+      await vi.waitFor(() => expect(sendMailCalls(fetchMock)).toBe(1));
+      release();
+      const results = await Promise.all(calls);
+
+      expect(sendMailCalls(fetchMock)).toBe(1);
+      expect(results.filter((r) => r.status === "SENT")).toHaveLength(1);
+      expect(results.every((r) => r.id === first.id)).toBe(true);
+      for (const r of results.filter((r) => r.status !== "SENT")) {
+        expect(r).toMatchObject({ status: "UNCERTAIN" });
+        for (const leak of LEAKS) expect(r.error ?? "", leak).not.toContain(leak);
       }
+      // Once the winner has settled, a later loser-path read reports SENT.
+      expect((await service.send(MESSAGE)).status).toBe("SENT");
     });
   });
 

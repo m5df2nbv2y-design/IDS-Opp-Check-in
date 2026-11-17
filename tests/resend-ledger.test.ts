@@ -65,3 +65,53 @@ it.each([[400, "FAILED"], [500, "UNCERTAIN"]])("HTTP %s has outcome %s", async (
   expect(result.status).toBe(expected);
   expect(result.error).not.toContain("secret provider response");
 });
+
+it("a definite rejection may be retried: the row is reclaimed and a fresh idempotency key is sent", async () => {
+  const keys: string[] = [];
+  const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    keys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+    return keys.length === 1 ? new Response(null, { status: 400 }) : Response.json({ id: "provider-two" });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const service = new ResendEmailService();
+  const first = await service.send(message);
+  expect(first.status).toBe("FAILED");
+  const retry = await service.send(message);
+  expect(retry).toMatchObject({ id: first.id, status: "SENT" });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(keys[1]).not.toBe(keys[0]);
+  expect(keys[1].startsWith(keys[0])).toBe(true);
+  expect(await prisma.emailMessage.count()).toBe(1);
+  // Once SENT it is never replayed.
+  expect((await service.send(message)).status).toBe("SENT");
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it("concurrent retries of a rejection make one request; the others are UNCERTAIN without the stale rejection text", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 400 })));
+  const service = new ResendEmailService();
+  expect((await service.send(message)).status).toBe("FAILED");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetcher = vi.fn(async () => { await gate; return Response.json({ id: "provider-three" }); });
+  vi.stubGlobal("fetch", fetcher);
+  const calls = [1, 2, 3].map(() => service.send(message));
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+  release();
+  const results = await Promise.all(calls);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(results.filter((r) => r.status === "SENT")).toHaveLength(1);
+  for (const r of results.filter((r) => r.status !== "SENT")) {
+    expect(r.status).toBe("UNCERTAIN");
+    expect(r.error).not.toMatch(/rejected/);
+  }
+});
+
+it.each([408, 409])("HTTP %s is UNCERTAIN, so it is never retried automatically", async (status) => {
+  const fetcher = vi.fn(async () => new Response(null, { status }));
+  vi.stubGlobal("fetch", fetcher);
+  const service = new ResendEmailService();
+  expect((await service.send(message)).status).toBe("UNCERTAIN");
+  expect((await service.send(message)).status).toBe("UNCERTAIN");
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});

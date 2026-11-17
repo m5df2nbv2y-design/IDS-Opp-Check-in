@@ -78,9 +78,9 @@ The adapter returns one of three outcomes and callers act on exactly that:
   Graph documented a rejection. That is a deployment refusal (returned, no
   ledger row), a missing `GRAPH_*` value (the variable is named, never a value),
   any failure to obtain a token (non-2xx, malformed body, transport, timeout),
-  and a 4xx (other than 408) or 429 from sendMail. An identical retry of a
-  stored FAILED row is refused with no network call, so a resend needs a new
-  send (a reminder issues a new link).
+  and a 4xx (other than 408) or 429 from sendMail. Nothing went out, so an
+  identical later call retries it on the same ledger row (one concurrent caller
+  wins the retry; the others get UNCERTAIN).
 - UNCERTAIN, never replayed: a sendMail 5xx, 408, 1xx, unfollowed 3xx, timeout
   or transport failure; a stored PENDING or UNCERTAIN row for the same request;
   and a failed final ledger update, which leaves the row PENDING so a repeat

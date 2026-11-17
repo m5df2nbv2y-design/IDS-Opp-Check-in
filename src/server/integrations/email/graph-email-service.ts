@@ -7,9 +7,6 @@ import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } 
 
 const UNCONFIRMED = "Email acceptance could not be confirmed. Check the sent mailbox before sending again.";
 const NOT_RECORDED = "Email acceptance could not be recorded. Check the sent mailbox before sending again.";
-const DUPLICATE_FAILED =
-  "This send was already attempted and was not accepted. An identical retry is refused as a duplicate, " +
-  "so a resend needs a new send (a reminder issues a new link).";
 
 /**
  * Sending as a real Microsoft 365 mailbox, through Graph.
@@ -50,9 +47,8 @@ const DUPLICATE_FAILED =
  * 408, 1xx, unfollowed 3xx, timeout or transport failure is UNCERTAIN, and so is
  * a stored PENDING/UNCERTAIN row for the same request.
  *
- * FAILED does not mean an identical call may go again: a stored FAILED row is
- * returned as FAILED with no request, so a resend needs a new send (a reminder
- * issues a new link).
+ * FAILED means nothing went out, so an identical call may go again: the stored
+ * FAILED row is reclaimed as PENDING (one caller wins) and the send is retried.
  *
  * Every error is a fixed string built from this file's constants and an HTTP
  * status number. Provider bodies, thrown text, tokens, links and configured
@@ -96,13 +92,21 @@ export class GraphEmailService implements EmailService {
     } catch (caught) {
       const existing = await prisma.emailMessage.findUnique({ where: { requestKey } });
       if (!existing) throw caught;
-      // Fixed text, never the stored text. PENDING means another call is in
-      // flight or was interrupted: unknown, exactly like UNCERTAIN.
-      return existing.status === "SENT"
-        ? { id: existing.id, status: "SENT" }
-        : existing.status === "FAILED"
-          ? { id: existing.id, status: "FAILED", error: DUPLICATE_FAILED }
+      // A definite rejection sent nothing, so it may be retried. The conditional
+      // update is the claim: only one concurrent caller turns FAILED into PENDING.
+      const reclaimed = existing.status === "FAILED"
+        ? (await prisma.emailMessage.updateMany({ where: { id: existing.id, status: "FAILED" }, data: { status: "PENDING", error: null } })).count === 1
+        : false;
+      if (!reclaimed) {
+        // Re-read: a concurrent retry may have won the claim and settled it.
+        // Fixed text, never the stored text. PENDING means another call is in
+        // flight or was interrupted: unknown, exactly like UNCERTAIN.
+        const current = existing.status === "FAILED" ? await prisma.emailMessage.findUnique({ where: { id: existing.id } }) : existing;
+        return current?.status === "SENT"
+          ? { id: existing.id, status: "SENT" }
           : { id: existing.id, status: "UNCERTAIN", error: UNCONFIRMED };
+      }
+      row = existing;
     }
 
     const outcome = await this.attempt(payload);
@@ -227,8 +231,8 @@ export class GraphEmailService implements EmailService {
  * The three states mean specific things to everything downstream:
  *   SENT      — terminal success. The recipient row is marked sent, and nothing
  *               will try again.
- *   FAILED    — terminal: we know Graph did NOT take it. An identical retry is
- *               refused as a duplicate, so a resend needs a new send.
+ *   FAILED    — we know Graph did NOT take it. An identical call later retries
+ *               it on the same ledger row.
  *   UNCERTAIN — Graph may or may not have accepted. Never retried
  *               automatically, because a retry risks a duplicate customer email.
  *               It requires a human to check the sent mailbox.
@@ -271,7 +275,7 @@ export function classifyGraphSendResponse(
   /**
    * Throttling. Graph rejects a throttled request rather than executing it and
    * reporting back, so this is a clean failure: the message was not accepted.
-   * An identical retry is refused as a duplicate, so a resend needs a new send.
+   * An identical call later may retry it.
    *
    * It is tempting to call this UNCERTAIN on the "never risk a duplicate"
    * principle, but that would freeze every throttled message in a campaign for
@@ -283,8 +287,7 @@ export function classifyGraphSendResponse(
     return {
       status: "FAILED",
       error:
-        "Microsoft throttled the send (HTTP 429) and did not accept the message. " +
-        "An identical retry is refused as a duplicate, so a resend needs a new send (a reminder issues a new link).",
+        "Microsoft throttled the send (HTTP 429) and did not accept the message. Nothing was sent.",
     };
   }
 
