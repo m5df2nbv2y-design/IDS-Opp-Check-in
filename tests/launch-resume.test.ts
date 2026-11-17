@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { approveLegacyRoutingAction } from "@/app/admin/actions";
+import { approveLegacyRoutingAction, resumeLaunchAction, sendDraftAction } from "@/app/admin/actions";
+import { getOrCreateDraft, setSelection } from "@/server/services/campaign-draft-service";
 import CampaignDetailPage from "@/app/admin/campaigns/[id]/page";
 import { prisma } from "@/lib/db";
 import { AUDIT_EVENTS } from "@/server/services/audit-service";
-import { approveLegacyRouting, getLegacyRoutingPreview, getUnreachedOpportunityIds, legacyShownRoutes, launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, getLegacyRoutingPreview, getUnreachedOpportunityIds, legacyShownRoutes, launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
+import { getEmailService } from "@/server/integrations/email";
 import { resetDatabase } from "./fixtures";
 
 const session = vi.hoisted(() => ({ current: null as unknown, revalidated: [] as string[] }));
@@ -408,5 +410,68 @@ describe("resume a half-sent launch", () => {
     const result = await resumeLaunch(campaignId, "test");
     expect(result.unreachedAfter).toBeGreaterThan(0);
     expect(await status(campaignId)).toBe("IN_PROGRESS");
+  });
+
+  describe("resumeLaunchAction", () => {
+    beforeEach(() => {
+      vi.stubEnv("AUTH_REQUIRED_APP_ROLE", "SalesOps.Admin");
+      session.current = { user: { id: "u1", name: "Josh Young", email: "josh@idsculpture.com", roles: ["SalesOps.Admin"], oid: "entra-oid-1" } };
+      session.revalidated.length = 0;
+    });
+    afterEach(() => { vi.unstubAllEnvs(); session.current = null; });
+
+    it("a campaign that closed before the click returns a message, not the error page, and refreshes", async () => {
+      const { campaignId } = await halfSentCampaign();
+      await prisma.campaign.update({ where: { id: campaignId }, data: { status: "COMPLETE" } });
+      const before = (await invites(campaignId)).length;
+      expect(await resumeLaunchAction(campaignId)).toEqual({ error: "Only an IN_PROGRESS campaign can be resumed." });
+      expect(session.revalidated).toEqual(expect.arrayContaining([`/admin/campaigns/${campaignId}`, "/admin/outbox"]));
+      expect((await invites(campaignId)).length).toBe(before);
+    });
+
+    it("a campaign closed while invitations are going out stops the rest and returns a message", async () => {
+      const { campaignId, otherContacts } = await halfSentCampaign();
+      expect(otherContacts.size).toBeGreaterThan(1);
+      const before = (await invites(campaignId)).length;
+      const original = getEmailService().send.bind(getEmailService());
+      vi.spyOn(getEmailService(), "send").mockImplementation(async (message) => {
+        const result = await original(message);
+        await prisma.campaign.update({ where: { id: campaignId }, data: { status: "COMPLETE" } });
+        return result;
+      });
+      const result = await resumeLaunchAction(campaignId);
+      expect(result).toEqual({ error: expect.stringMatching(/no longer in progress/) });
+      expect((await invites(campaignId)).length).toBe(before + 1);
+      expect(session.revalidated).toEqual(expect.arrayContaining([`/admin/campaigns/${campaignId}`, "/admin/outbox"]));
+    });
+
+    it("sendDraftAction returns the same refusal when the campaign closes mid-send", async () => {
+      await refreshCatalogFromSalesforce("test");
+      const all = await prisma.opportunity.findMany({ where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } }, select: { id: true, contactId: true } });
+      expect(new Set(all.map((o) => o.contactId)).size).toBeGreaterThan(1);
+      const draft = await getOrCreateDraft("josh");
+      await setSelection({ campaignId: draft.id, opportunityIds: all.map((o) => o.id), selected: true });
+      const original = getEmailService().send.bind(getEmailService());
+      vi.spyOn(getEmailService(), "send").mockImplementation(async (message) => {
+        const result = await original(message);
+        await prisma.campaign.update({ where: { id: draft.id }, data: { status: "COMPLETE" } });
+        return result;
+      });
+      const { emailRevision } = await prisma.campaign.findUniqueOrThrow({ where: { id: draft.id } });
+      expect(await sendDraftAction(draft.id, emailRevision)).toEqual({ error: expect.stringMatching(/no longer in progress/) });
+      expect((await invites(draft.id)).length).toBe(1);
+    });
+
+    it("an unexpected error still throws", async () => {
+      const thrown = await resumeLaunchAction("no-such-campaign").catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(CampaignChangedError);
+    });
+
+    it("a successful resume returns nothing", async () => {
+      const { campaignId } = await halfSentCampaign();
+      expect(await resumeLaunchAction(campaignId)).toBeUndefined();
+      expect(session.revalidated).toContain(`/admin/campaigns/${campaignId}`);
+    });
   });
 });

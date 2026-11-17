@@ -174,6 +174,18 @@ function isRecipientClaimConflict(error: unknown): boolean {
 }
 
 /**
+ * An expected refusal: the campaign changed between page load and click (closed,
+ * no longer in progress, or its routing needs review). Actions show the message
+ * instead of the error page; any other error is unexpected and still throws.
+ */
+export class CampaignChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CampaignChangedError";
+  }
+}
+
+/**
  * Group the given opportunities by external contact, create one recipient per
  * contact, mint a token, and send one personalized email each. A contact
  * responsible for opportunities belonging to three different IDS reps receives
@@ -249,7 +261,7 @@ export async function launchCampaign(options: {
   }
 
   const previousCampaign = options.campaignId ? await prisma.campaign.findUniqueOrThrow({ where: { id: options.campaignId } }) : null;
-  if (previousCampaign && !["DRAFT", "IN_PROGRESS"].includes(previousCampaign.status)) throw new Error("Only draft or in-progress campaigns can launch.");
+  if (previousCampaign && !["DRAFT", "IN_PROGRESS"].includes(previousCampaign.status)) throw new CampaignChangedError("Only draft or in-progress campaigns can launch.");
   if (!options.resume && options.campaignId && (previousCampaign?.status === "DRAFT" || options.expectedEmailRevision !== undefined)) {
     const claimed = await prisma.campaign.updateMany({
       where: { id: options.campaignId, status: "DRAFT", ...(options.expectedEmailRevision !== undefined ? { emailRevision: options.expectedEmailRevision } : {}) },
@@ -288,7 +300,7 @@ export async function launchCampaign(options: {
 
   const existingRouting = await prisma.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
   if (previousCampaign?.status === "IN_PROGRESS" && (!existingRouting || newSelections.length > 0)) {
-    throw new Error("Existing campaign selections and routing require review; launch cannot expand approved work.");
+    throw new CampaignChangedError("Existing campaign selections and routing require review; launch cannot expand approved work.");
   }
   if (newSelections.length > 0) {
     await prisma.campaignSelection.createMany({
@@ -387,7 +399,7 @@ export async function launchCampaign(options: {
         // externally visible until this recipient's complete item set commits.
         await tx.campaign.update({ where: { id: campaign.id }, data: { id: campaign.id } });
         const current = await tx.campaign.findUniqueOrThrow({ where: { id: campaign.id } });
-        if (current.status !== "IN_PROGRESS") throw new Error("Campaign is no longer in progress.");
+        if (current.status !== "IN_PROGRESS") throw new CampaignChangedError("Campaign is no longer in progress. Invitations already sent stay sent; reload to see where it stopped.");
         const manifest = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } });
         const routes = readManifest(manifest?.detail)?.routes ?? {};
         const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
@@ -559,7 +571,7 @@ export async function closeCampaignIfDone(campaignId: string): Promise<void> {
 export async function resumeLaunch(campaignId: string, actor = "admin"): Promise<LaunchResult> {
   const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
   if (campaign.status !== "IN_PROGRESS") {
-    throw new Error("Only an IN_PROGRESS campaign can be resumed.");
+    throw new CampaignChangedError("Only an IN_PROGRESS campaign can be resumed.");
   }
   const opportunityIds = await getRecoverableOpportunityIds(campaignId);
   if (opportunityIds.length === 0) {

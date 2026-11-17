@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, resumeLaunch, sendReminders } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, resumeLaunch, sendReminders } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -81,7 +81,7 @@ export async function sendDraftAction(campaignId: string, emailRevision: number)
   let result;
   try { result = await sendDraft(draft.id, actor, revision); }
   catch (e) {
-    if (e instanceof DraftEmailConflictError) return { error: e.message };
+    if (e instanceof DraftEmailConflictError || e instanceof CampaignChangedError) return { error: e.message };
     throw e;
   }
   revalidatePath("/admin");
@@ -98,14 +98,22 @@ export async function clearSelectionsAction() {
   revalidatePath("/admin/campaigns/review");
 }
 
-export async function resumeLaunchAction(campaignId: string): Promise<void> {
-  const actor = await requireAdminActor();
-  await resumeLaunch(campaignId, actor);
-  revalidatePath(`/admin/campaigns/${campaignId}`);
-  revalidatePath("/admin/outbox");
-}
-
 type ActionRefusal = { error: string };
+
+/** Resume unsent invitations. A campaign that changed since the page loaded is a returned refusal, not the error page. */
+export async function resumeLaunchAction(campaignId: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  try {
+    await resumeLaunch(campaignId, actor);
+  } catch (error) {
+    if (!(error instanceof CampaignChangedError)) throw error;
+    return { error: error.message };
+  } finally {
+    // Refresh either way: some invitations may have gone out before a refusal.
+    revalidatePath(`/admin/campaigns/${campaignId}`);
+    revalidatePath("/admin/outbox");
+  }
+}
 
 /** Approve the routing shown for a campaign launched before routing records. Refusals are returned, not thrown. */
 export async function approveLegacyRoutingAction(campaignId: string, shownRoutes: Record<string, string | null>): Promise<void | ActionRefusal> {
