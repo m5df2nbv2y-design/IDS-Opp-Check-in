@@ -43,7 +43,7 @@ const recipientRow = (ctx: Ctx) => prisma.checkInRecipient.findUniqueOrThrow({ w
 const status = async (campaignId: string) => (await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status;
 const render = async (campaignId: string) =>
   renderToStaticMarkup(await CampaignDetailPage({ params: Promise.resolve({ id: campaignId }) } as never));
-const service = (ctx: Ctx, hint = ctx.row.tokenHint, note = ctx.row.heldBackNote!) =>
+const service = (ctx: Ctx, hint = ctx.row.tokenHint, note = ctx.row.closeOutReason!) =>
   closeOutContact({ campaignId: ctx.campaignId, recipientId: ctx.target.id, shownTokenHint: hint, shownNote: note, actor: "josh" });
 
 async function expectUntouched(ctx: Ctx) {
@@ -93,6 +93,7 @@ describe("close out a held-back contact", () => {
     const ctx = await heldBack();
     expect(ctx.row.canCloseOut).toBe(true);
     expect(ctx.row.heldBackNote).toContain("closed since launch");
+    expect(ctx.row.closeOutReason).toBe(ctx.row.heldBackNote);
     expect(await buttonsByLayout(ctx.campaignId)).toEqual({ desktop: 1, mobile: 1 });
 
     expect(await (await boundCloseOut(ctx.campaignId, ctx.target.id))()).toBeUndefined();
@@ -102,14 +103,14 @@ describe("close out a held-back contact", () => {
 
     const [audit] = await closeOuts(ctx.campaignId);
     expect(audit).toMatchObject({ actor: "josh@idsculpture.com", actorKind: "ADMIN", contactId: ctx.target.contactId });
-    expect(JSON.parse(audit.detail!)).toEqual({ version: 1, recipientId: ctx.target.id, tokenHint: ctx.row.tokenHint, reason: ctx.row.heldBackNote });
+    expect(JSON.parse(audit.detail!)).toEqual({ version: 1, recipientId: ctx.target.id, tokenHint: ctx.row.tokenHint, reason: ctx.row.closeOutReason });
     expect(session.revalidated).toEqual([`/admin/campaigns/${ctx.campaignId}`, "/admin"]);
     // No email sent.
     expect(await prisma.emailMessage.count({ where: { contactId: ctx.target.contactId, kind: { not: "INVITE" } } })).toBe(0);
 
     const row = (await getCampaignSummary(ctx.campaignId))!.recipients.find((r) => r.recipientId === ctx.target.id)!;
     expect(row).toMatchObject({ status: "REVOKED", canCloseOut: false, canResendInvitation: false, canReconcileInvitation: false });
-    expect(row.deliveryNote).toBe(`Link revoked — ${ctx.row.heldBackNote}`);
+    expect(row.deliveryNote).toBe(`Link revoked — ${ctx.row.closeOutReason}`);
     const html = await render(ctx.campaignId);
     expect(html).toContain("Link revoked");
     expect(await buttons(ctx.campaignId)).toBe(0);
@@ -191,7 +192,7 @@ describe("close out a held-back contact", () => {
   ])("throws for %s", async (_label, current, expected) => {
     const ctx = await heldBack();
     session.current = current;
-    await expect(call(ctx.campaignId, ctx.target.id, ctx.row.tokenHint, ctx.row.heldBackNote)).rejects.toThrow(expected);
+    await expect(call(ctx.campaignId, ctx.target.id, ctx.row.tokenHint, ctx.row.closeOutReason)).rejects.toThrow(expected);
     await expectUntouched(ctx);
     expect(session.revalidated).toEqual([]);
   });

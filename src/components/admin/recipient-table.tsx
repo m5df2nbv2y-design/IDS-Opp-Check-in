@@ -75,7 +75,7 @@ function InvitationResend({
   );
 }
 
-/** Shown only for a held-back contact in an IN_PROGRESS campaign. */
+/** Shown only when the contact has a close-out reason (held back, not delivered, or no response after a reminder). */
 function CloseOut({
   recipient,
   action,
@@ -83,14 +83,14 @@ function CloseOut({
   recipient: RecipientProgress;
   action?: (recipient: RecipientProgress) => ResendAction;
 }) {
-  if (!action || !recipient.canCloseOut) return null;
+  if (!action || !recipient.canCloseOut || !recipient.closeOutReason) return null;
   return (
     <div className="mt-2">
       <ActionButton
         action={action(recipient)}
         size="sm"
         pendingLabel="Closing out…"
-        confirm={`Revoke ${recipient.contactName}'s check-in link? It stops opening, no email is sent, and this contact no longer holds the campaign open. Answers already submitted are kept. This cannot be undone.`}
+        confirm={`Close out ${recipient.contactName}? Reason: ${recipient.closeOutReason.replace(/\.$/, "")}. Their check-in link stops opening, no email is sent, and this contact no longer holds the campaign open. Answers already submitted are kept. This cannot be undone.`}
       >
         Close out this contact
       </ActionButton>
@@ -113,7 +113,7 @@ export function RecipientTable({
   reconcileInvitation?: (recipient: RecipientProgress) => InvitationAction;
   /** Binds the re-send action to one recipient's shown link. */
   resendInvitation?: (recipient: RecipientProgress) => ResendAction;
-  /** Binds the close-out action to one recipient's shown link and held-back note. */
+  /** Binds the close-out action to one recipient's shown link and close-out reason. */
   closeOutContact?: (recipient: RecipientProgress) => ResendAction;
 }) {
   return (

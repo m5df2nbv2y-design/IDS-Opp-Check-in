@@ -766,17 +766,37 @@ const heldBackNote = (recipient: { contactId: string; sendStatus: string; comple
     ? staleOpportunityNote(recipient)
     : null;
 
+/**
+ * Why an admin may close this contact out, or null: the held-back note first, then
+ * "Invitation not delivered" (FAILED), "Reminder not delivered" (rejected reminder), then
+ * "Not finished" / "No response" (SENT and reminded at least once, with / without answers).
+ * In-flight or unknown states (PENDING, UNCERTAIN, REMINDER_*) are settled by reconcile first.
+ */
+export const closeOutReason = (
+  recipient: { contactId: string; sendStatus: string; sendError: string | null; reminderCount: number; completedAt: Date | null; revokedAt: Date | null; items: ItemOpportunity[] },
+  campaignStatus: string,
+): string | null => {
+  if (campaignStatus !== "IN_PROGRESS" || recipient.completedAt || recipient.revokedAt) return null;
+  return heldBackNote(recipient, campaignStatus)
+    ?? (canResend(recipient, campaignStatus) ? "Invitation not delivered"
+      // A rejected reminder restores SENT with the previous count, so it may still be 0.
+      : isRejectedReminder(recipient) ? "Reminder not delivered"
+      : recipient.sendStatus === "SENT" && recipient.reminderCount >= 1
+        ? (recipient.items.some((i) => i.submittedAt) ? "Not finished" : "No response")
+      : null);
+};
+
 /** Fixed messages for the close-out control; never stored text. */
 export const CLOSE_OUT_MESSAGES = {
   NOT_IN_PROGRESS: "Only an in-progress campaign can close out a contact.",
-  NOT_HELD_BACK: "This contact is no longer held back. Reload the page.",
+  NOT_HELD_BACK: "This contact can't be closed out right now. Reload the page.",
   CHANGED: "This contact changed since the page was loaded. Reload and check again.",
   FINISHED: "This contact is already closed out or finished.",
 } as const;
 
 /**
- * Close out ONE held-back contact: revoke their link, audited with the held-back
- * note the admin saw, then close the campaign if nothing else is outstanding.
+ * Close out ONE contact (see `closeOutReason`): revoke their link, audited with the
+ * reason the admin saw, then close the campaign if nothing else is outstanding.
  * Sends nothing; submitted answers and their sync are untouched. No undo.
  */
 export async function closeOutContact(input: {
@@ -799,7 +819,7 @@ export async function closeOutContact(input: {
     if (!recipient) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
     if (recipient.completedAt || recipient.revokedAt) return { ok: false as const, message: CLOSE_OUT_MESSAGES.FINISHED };
     if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
-    const note = heldBackNote(recipient, campaign.status);
+    const note = closeOutReason(recipient, campaign.status);
     if (!note) return { ok: false as const, message: CLOSE_OUT_MESSAGES.NOT_HELD_BACK };
     if (note !== shownNote) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
     const revoked = await tx.checkInRecipient.updateMany({
@@ -942,9 +962,11 @@ export type RecipientProgress = {
   canReconcileInvitation: boolean;
   /** FAILED, not completed or revoked, with items, campaign IN_PROGRESS: an admin may re-send it with a fresh link. */
   canResendInvitation: boolean;
-  /** The held-back note shown on the row; with `tokenHint`, what a close-out binds. */
+  /** The held-back note shown on the row. */
   heldBackNote: string | null;
-  /** Held back, not completed or revoked, campaign IN_PROGRESS: an admin may close the contact out. */
+  /** Why an admin may close this contact out (see `closeOutReason`); with `tokenHint`, what a close-out binds. */
+  closeOutReason: string | null;
+  /** `closeOutReason` is set: an admin may close the contact out. */
   canCloseOut: boolean;
   deliveryNote?: string | null;
 };
@@ -1308,7 +1330,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         canReconcileInvitation: !recipient.revokedAt && isSettleableInvitation(recipient),
         canResendInvitation: canResend(recipient, campaign.status) && !heldBack(recipient),
         heldBackNote: heldBack(recipient),
-        canCloseOut: campaign.status === "IN_PROGRESS" && heldBack(recipient) !== null,
+        closeOutReason: closeOutReason(recipient, campaign.status),
+        canCloseOut: closeOutReason(recipient, campaign.status) !== null,
         deliveryNote: recipient.revokedAt
           ? ["Link revoked", closeOutReasons.get(recipient.id)].filter(Boolean).join(" — ")
           : [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,
