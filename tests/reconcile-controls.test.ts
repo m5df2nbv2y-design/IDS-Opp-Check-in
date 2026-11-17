@@ -200,3 +200,12 @@ describe("the campaign page", () => {
     expect(await refreshes()).toBe(refreshesBefore);
   });
 });
+
+describe("runReconcile with a caller's failure message", () => {
+  it("shows that message instead of the Salesforce wording when the action throws", async () => {
+    const notice = await runReconcile(async () => {
+      throw new Error("secret detail");
+    }, "Check the mailbox.");
+    expect(notice).toBe("Check the mailbox.");
+  });
+});

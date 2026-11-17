@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import {
   approveLegacyRoutingAction,
   approveWritebackAction,
+  reconcileInvitationAction,
   reconcileUncertainAction,
   retrySyncAction,
   resumeLaunchAction,
@@ -178,7 +179,18 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
 
       <section className="space-y-3">
         <h2 className="text-[17px] font-semibold tracking-tight text-ink">Recipients</h2>
-        <RecipientTable recipients={summary.recipients} />
+        <RecipientTable
+          recipients={summary.recipients}
+          reconcileInvitation={(recipient) =>
+            reconcileInvitationAction.bind(
+              null,
+              summary.id,
+              recipient.recipientId,
+              recipient.sendStatus,
+              recipient.tokenHint,
+            )
+          }
+        />
         {testRecipient ? (
           <TestEmailPanel
             recipientId={testRecipient.recipientId}

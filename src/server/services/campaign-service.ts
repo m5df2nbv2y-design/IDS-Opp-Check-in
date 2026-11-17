@@ -12,6 +12,7 @@ import {
 } from "@/server/integrations/email/templates/check-in-email";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit, sanitizeProviderError } from "./audit-service";
+import { isSettleableInvitation } from "./reconcile-service";
 import { recordSnapshot, SNAPSHOT_SOURCES } from "./snapshot-service";
 
 export type RecipientStatus =
@@ -708,6 +709,10 @@ export type RecipientProgress = {
   completedAt: Date | null;
   reminderCount: number;
   tokenHint: string;
+  /** Raw invitation/reminder state; with `tokenHint`, the revision a reconcile control binds. */
+  sendStatus: string;
+  /** UNCERTAIN, or PENDING long enough to be interrupted: an admin may record the outcome by hand. */
+  canReconcileInvitation: boolean;
   deliveryNote?: string | null;
 };
 
@@ -978,6 +983,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         completedAt: recipient.completedAt,
         reminderCount: recipient.reminderCount,
         tokenHint: recipient.tokenHint,
+        sendStatus: recipient.sendStatus,
+        canReconcileInvitation: isSettleableInvitation(recipient),
         deliveryNote: isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null,
       };
     })

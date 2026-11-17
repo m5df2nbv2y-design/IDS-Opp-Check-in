@@ -1,13 +1,67 @@
 import { AccountTypeBadge, Card, RecipientStatusBadge, Tick } from "@/components/ui/primitives";
 import { accountTypeLabel } from "@/lib/account-types";
 import { formatDateTime, pluralize } from "@/lib/format";
+import type { ReconcileActionResult } from "@/app/admin/actions";
+import { ReconcileControls, type ReconcileChoice } from "@/components/admin/reconcile-controls";
 import type { RecipientProgress } from "@/server/services/campaign-service";
+import type { InvitationObservedOutcome } from "@/server/services/reconcile-service";
+
+type InvitationAction = (observed: InvitationObservedOutcome) => Promise<ReconcileActionResult>;
+
+// Defined here, not in the client module: a server component cannot read a client module's plain exports.
+const INVITATION_CHOICES: ReconcileChoice<InvitationObservedOutcome>[] = [
+  {
+    outcome: "SENT",
+    label: "It was sent",
+    confirm:
+      "Confirm this invitation IS in the sending mailbox's Sent Items? It will be marked sent and included in reminders. Nothing is sent now.",
+  },
+  {
+    outcome: "NOT_SENT",
+    label: "It was not sent",
+    confirm:
+      "Confirm this invitation is NOT in the sending mailbox? It will be marked failed. Nothing is re-sent and the link is not revoked.",
+  },
+];
+
+const INVITATION_FAILED_MESSAGE =
+  "Could not record this. Reload the page, re-check the sending mailbox, and try again.";
+
+/** Shown only for an invitation whose outcome is unknown (UNCERTAIN, or an interrupted PENDING). */
+function InvitationReconcile({
+  recipient,
+  action,
+}: {
+  recipient: RecipientProgress;
+  action?: (recipient: RecipientProgress) => InvitationAction;
+}) {
+  if (!action || !recipient.canReconcileInvitation) return null;
+  return (
+    <div className="mt-2">
+      <p className="text-xs text-body">
+        Check the sending mailbox&apos;s Sent Items, then record what you found.
+      </p>
+      <ReconcileControls
+        action={action(recipient)}
+        choices={INVITATION_CHOICES}
+        failedMessage={INVITATION_FAILED_MESSAGE}
+      />
+    </div>
+  );
+}
 
 /**
  * The campaign's core table: one row per EXTERNAL CONTACT, not per IDS rep.
  * The internal reps behind each row are shown as supporting context only.
  */
-export function RecipientTable({ recipients }: { recipients: RecipientProgress[] }) {
+export function RecipientTable({
+  recipients,
+  reconcileInvitation,
+}: {
+  recipients: RecipientProgress[];
+  /** Binds the invitation reconcile action to one recipient's shown state. */
+  reconcileInvitation?: (recipient: RecipientProgress) => InvitationAction;
+}) {
   return (
     <Card className="overflow-hidden">
       <div className="hidden overflow-x-auto md:block">
@@ -60,6 +114,7 @@ export function RecipientTable({ recipients }: { recipients: RecipientProgress[]
                 <td className="px-5 py-4">
                   <RecipientStatusBadge status={recipient.status} />
                   {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
+                  <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
                 </td>
               </tr>
             ))}
@@ -86,6 +141,7 @@ export function RecipientTable({ recipients }: { recipients: RecipientProgress[]
                   {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
             </div>
             <div className="mt-2 text-[12px] text-muted">{lastActivity(recipient)}</div>
+            <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
           </li>
         ))}
       </ul>

@@ -193,3 +193,141 @@ export async function listAppliedAttestations(campaignId: string) {
     select: { contactId: true, opportunityId: true, actor: true, createdAt: true },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Invitations whose send outcome is unknown
+// ---------------------------------------------------------------------------
+
+/** A PENDING invitation younger than this may still be sending, so it cannot be settled yet. */
+export const INTERRUPTED_INVITATION_AGE_MS = 15 * 60 * 1000;
+
+/**
+ * Whether an administrator may settle this invitation by hand: its provider
+ * outcome is UNCERTAIN, or it is PENDING and old enough that the send was
+ * interrupted rather than still in flight. Reminder states are not covered.
+ */
+export function isSettleableInvitation(
+  recipient: { sendStatus: string; createdAt: Date },
+  now = new Date(),
+): boolean {
+  if (recipient.sendStatus === "UNCERTAIN") return true;
+  return (
+    recipient.sendStatus === "PENDING" &&
+    now.getTime() - recipient.createdAt.getTime() > INTERRUPTED_INVITATION_AGE_MS
+  );
+}
+
+/** What the administrator found in the sending mailbox. */
+export type InvitationObservedOutcome = "SENT" | "NOT_SENT";
+
+export type InvitationReconcileResult =
+  | { ok: true; outcome: InvitationObservedOutcome; nextStatus: "SENT" | "FAILED" }
+  | {
+      ok: false;
+      reason:
+        /** No such recipient in this campaign. */
+        | "NOT_FOUND"
+        /** Not UNCERTAIN and not an interrupted PENDING: nothing to settle. */
+        | "NOT_UNRESOLVED"
+        /** PENDING, but young enough that the send may still be in flight. */
+        | "STILL_SENDING"
+        /** Status or token changed since the page was rendered. */
+        | "STALE"
+        /** "Not sent" refused: the recipient opened the link, so it was delivered. */
+        | "OPENED";
+    };
+
+export const INVITATION_NOT_SENT_NOTE =
+  "Reconciled by hand: the invitation was not found in the sending mailbox.";
+
+/**
+ * Settle an invitation whose send outcome is unknown, from an administrator's
+ * attestation. Same shape as `reconcileUncertainWrite`: runtime input checks,
+ * one transaction, a conditional update on the shown `sendStatus` + `tokenHint`,
+ * and a distinct audit event. Never sends email, calls a provider, or touches
+ * the `EmailMessage` ledger. "Not sent" marks FAILED only; nothing is re-sent
+ * and the link is not revoked.
+ */
+export async function reconcileUnknownInvitation(input: {
+  campaignId: string;
+  recipientId: string;
+  shownStatus: string;
+  shownTokenHint: string;
+  observed: InvitationObservedOutcome;
+  actor: string;
+}): Promise<InvitationReconcileResult> {
+  if (input.observed !== "SENT" && input.observed !== "NOT_SENT") {
+    throw new Error("Choose a valid reconciliation outcome.");
+  }
+  for (const value of [input.campaignId, input.recipientId, input.shownStatus, input.shownTokenHint]) {
+    if (typeof value !== "string" || value === "") {
+      throw new Error("This invitation could not be identified. Reload the page and try again.");
+    }
+  }
+
+  return prisma.$transaction(async (tx): Promise<InvitationReconcileResult> => {
+    const recipient = await tx.checkInRecipient.findFirst({
+      where: { id: input.recipientId, campaignId: input.campaignId },
+      select: {
+        id: true,
+        sendStatus: true,
+        tokenHint: true,
+        createdAt: true,
+        openedAt: true,
+        completedAt: true,
+        sendError: true,
+        contactId: true,
+        contact: { select: { name: true, accountId: true } },
+      },
+    });
+
+    if (!recipient) return { ok: false, reason: "NOT_FOUND" };
+    if (recipient.sendStatus !== "UNCERTAIN" && recipient.sendStatus !== "PENDING") {
+      return { ok: false, reason: "NOT_UNRESOLVED" };
+    }
+    if (!isSettleableInvitation(recipient)) return { ok: false, reason: "STILL_SENDING" };
+    if (recipient.sendStatus !== input.shownStatus || recipient.tokenHint !== input.shownTokenHint) {
+      return { ok: false, reason: "STALE" };
+    }
+
+    const sent = input.observed === "SENT";
+    // Opening the link proves delivery, so "not sent" would contradict it.
+    if (!sent && (recipient.openedAt || recipient.completedAt)) return { ok: false, reason: "OPENED" };
+    // Conditional on the shown state, so two administrators cannot both win.
+    const claimed = await tx.checkInRecipient.updateMany({
+      where: {
+        id: recipient.id,
+        campaignId: input.campaignId,
+        sendStatus: input.shownStatus,
+        tokenHint: input.shownTokenHint,
+        ...(sent ? {} : { openedAt: null, completedAt: null }),
+      },
+      data: sent
+        ? { sendStatus: "SENT", sendError: null, sentAt: recipient.createdAt }
+        : { sendStatus: "FAILED", sendError: INVITATION_NOT_SENT_NOTE },
+    });
+    if (claimed.count === 0) return { ok: false, reason: "STALE" };
+
+    await recordAudit({
+      type: sent ? AUDIT_EVENTS.INVITE_RECONCILED_SENT : AUDIT_EVENTS.INVITE_RECONCILED_NOT_SENT,
+      summary:
+        `${input.actor} reconciled an unknown invitation to ${recipient.contact.name}: ` +
+        `reported as ${sent ? "sent (found in the sending mailbox)" : "NOT sent"}`,
+      actor: input.actor,
+      actorKind: "ADMIN",
+      campaignId: input.campaignId,
+      contactId: recipient.contactId,
+      accountId: recipient.contact.accountId,
+      fromStatus: recipient.sendStatus,
+      toStatus: sent ? "SENT" : "FAILED",
+      detail: JSON.stringify({
+        recipientId: recipient.id,
+        tokenHint: input.shownTokenHint,
+        previousSendError: recipient.sendError,
+        ...(sent ? { sentAtInferredFrom: "recipient.createdAt" } : {}),
+      }),
+    }, tx);
+
+    return { ok: true, outcome: input.observed, nextStatus: sent ? "SENT" : "FAILED" };
+  });
+}

@@ -12,6 +12,13 @@ export const AUDIT_EVENTS = {
   INVITE_SENT: "INVITE_SENT",
   INVITE_FAILED: "INVITE_FAILED",
   INVITE_UNCERTAIN: "INVITE_UNCERTAIN",
+  /**
+   * An administrator settled an invitation whose provider outcome was never
+   * learned, from what they saw in the sending mailbox. A human assertion, kept
+   * distinct from INVITE_SENT / INVITE_FAILED, which record what the provider said.
+   */
+  INVITE_RECONCILED_SENT: "INVITE_RECONCILED_SENT",
+  INVITE_RECONCILED_NOT_SENT: "INVITE_RECONCILED_NOT_SENT",
   REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
   REMINDER_FAILED: "REMINDER_FAILED",

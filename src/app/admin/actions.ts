@@ -23,6 +23,9 @@ import { saveCampaignEmail } from "@/server/services/campaign-email-service";
 import { DraftEmailConflictError, requireEmailRevision } from "@/lib/check-in-copy";
 import {
   reconcileUncertainWrite,
+  reconcileUnknownInvitation,
+  type InvitationObservedOutcome,
+  type InvitationReconcileResult,
   type ObservedOutcome,
 } from "@/server/services/reconcile-service";
 
@@ -161,7 +164,11 @@ export async function retrySyncAction(campaignId: string) {
  */
 export type ReconcileActionResult =
   | { ok: true }
-  | { ok: false; reason: "STALE" | "NOT_UNCERTAIN" | "NOT_FOUND"; message: string };
+  | {
+      ok: false;
+      reason: "STALE" | "NOT_UNCERTAIN" | "NOT_FOUND" | "NOT_UNRESOLVED" | "STILL_SENDING" | "OPENED";
+      message: string;
+    };
 
 const RECONCILE_REFUSALS = {
   STALE:
@@ -201,6 +208,49 @@ export async function reconcileUncertainAction(
   // validation failures are not refusals: they still throw, above.
   if (!result.ok) {
     return { ok: false, reason: result.reason, message: RECONCILE_REFUSALS[result.reason] };
+  }
+
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+type InvitationRefusal = Extract<InvitationReconcileResult, { ok: false }>["reason"];
+
+/** Fixed refusal strings for the invitation reconcile control; never thrown or stored text. */
+const INVITATION_RECONCILE_REFUSALS: Record<InvitationRefusal, string> = {
+  STALE: "This invitation changed since the page was loaded. Reload and check again.",
+  NOT_UNRESOLVED:
+    "This invitation is no longer unresolved — someone may have recorded its outcome already.",
+  STILL_SENDING: "This invitation may still be sending. Wait a few minutes and reload.",
+  NOT_FOUND: "This invitation is no longer part of the campaign.",
+  OPENED: "The recipient has opened this invitation, so it was delivered. Record it as sent.",
+};
+
+/**
+ * Record what an administrator found in the sending mailbox for an invitation
+ * whose send outcome is unknown. Per recipient, bound to the `sendStatus` and
+ * `tokenHint` that were on screen. Sends nothing.
+ */
+export async function reconcileInvitationAction(
+  campaignId: string,
+  recipientId: string,
+  shownStatus: string,
+  shownTokenHint: string,
+  observed: InvitationObservedOutcome,
+): Promise<ReconcileActionResult> {
+  const actor = await requireAdminActor();
+  const result = await reconcileUnknownInvitation({
+    campaignId,
+    recipientId,
+    shownStatus,
+    shownTokenHint,
+    observed,
+    actor,
+  });
+
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, message: INVITATION_RECONCILE_REFUSALS[result.reason] };
   }
 
   revalidatePath(`/admin/campaigns/${campaignId}`);
