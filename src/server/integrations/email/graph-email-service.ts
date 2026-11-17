@@ -9,6 +9,17 @@ const UNCONFIRMED = "Email acceptance could not be confirmed. Check the sent mai
 const NOT_RECORDED = "Email acceptance could not be recorded. Check the sent mailbox before sending again.";
 
 /**
+ * One cached app-only token per instance, held until five minutes before
+ * Microsoft's stated expiry and dropped when sendMail answers 401 or 403 (a
+ * rejected or under-consented token). GRAPH_* values are read once at startup,
+ * so rotated credentials arrive with a new instance, which starts empty.
+ * shortcut: concurrent sends on an empty cache each fetch a token; launches send
+ * one at a time, so share one pending request only if sends become parallel.
+ */
+let cachedToken: { value: string; expiresAt: number } | null = null;
+const TOKEN_MARGIN_MS = 5 * 60_000;
+
+/**
  * Sending as a real Microsoft 365 mailbox, through Graph.
  *
  * WHY THIS EXISTS. The Resend path was blocked on DNS: proving control of
@@ -151,6 +162,9 @@ export class GraphEmailService implements EmailService {
       );
       // Never persist provider bodies: a Graph error payload can echo the
       // request, and the request contains the recipient's bearer link.
+      // A rejected or under-consented token must not be reused for the rest of a
+      // launch (it costs this one send; the next fetches a fresh token).
+      if (response.status === 401 || response.status === 403) cachedToken = null;
       return classifyGraphSendResponse(response.status);
     } catch {
       // A timeout or transport failure after the request left us. Graph may
@@ -171,9 +185,8 @@ export class GraphEmailService implements EmailService {
   /**
    * App-only client credentials.
    *
-   * Deliberately not cached: a cache would need invalidation on tenant or
-   * secret rotation, and the send path is already dominated by the send itself.
-   * Correctness first; cache later if measurement says it matters.
+   * Cached (see `cachedToken`): fetching one per send doubled the external calls
+   * in a launch loop bounded by the function time limit (PR #13 finding 8).
    *
    * Returns a fixed error instead of throwing. The token body carries AADSTS
    * detail that can name the tenant and app, and a thrown transport error can
@@ -181,6 +194,7 @@ export class GraphEmailService implements EmailService {
    * alone is enough to act on.
    */
   private async accessToken(): Promise<{ value: string } | { error: string }> {
+    if (cachedToken && Date.now() < cachedToken.expiresAt) return { value: cachedToken.value };
     let response: Response;
     try {
       response = await fetch(
@@ -210,6 +224,9 @@ export class GraphEmailService implements EmailService {
     try {
       const data: unknown = await response.json();
       if (typeof data === "object" && data && "access_token" in data && typeof data.access_token === "string" && data.access_token) {
+        // Cache only with a stated lifetime longer than the safety margin.
+        const lifetimeMs = "expires_in" in data && typeof data.expires_in === "number" ? data.expires_in * 1000 : 0;
+        cachedToken = lifetimeMs > TOKEN_MARGIN_MS ? { value: data.access_token, expiresAt: Date.now() + lifetimeMs - TOKEN_MARGIN_MS } : null;
         return { value: data.access_token };
       }
     } catch {

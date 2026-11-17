@@ -623,3 +623,74 @@ describe("the send path", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("the access token", () => {
+  const tokenFor = (expiresIn?: number) => () =>
+    new Response(JSON.stringify({ access_token: "synthetic-access-token", ...(expiresIn === undefined ? {} : { expires_in: expiresIn }) }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const tokenCalls = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.filter(([url]) => !isSendMail(url)).length;
+  const other = { ...MESSAGE, subject: `${MESSAGE.subject} (2)` };
+
+  beforeEach(async () => {
+    await resetDatabase();
+    vi.unstubAllEnvs();
+    for (const [key, value] of Object.entries(BASE_ENV)) vi.stubEnv(key, value);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("is reused across sends until shortly before Microsoft's stated expiry", async () => {
+    const fetchMock = graphFetch(202, tokenFor(3600));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await graphService();
+    expect((await service.send(MESSAGE)).status).toBe("SENT");
+    expect((await service.send(other)).status).toBe("SENT");
+    expect(tokenCalls(fetchMock)).toBe(1);
+    expect(sendMailCalls(fetchMock)).toBe(2);
+  });
+
+  it("is fetched again once the cached token is within five minutes of expiry", async () => {
+    const fetchMock = graphFetch(202, tokenFor(3600));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await graphService();
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    await service.send(MESSAGE);
+    now.mockReturnValue(start + 54 * 60_000);
+    await service.send(other);
+    expect(tokenCalls(fetchMock)).toBe(1);
+    now.mockReturnValue(start + 56 * 60_000);
+    await service.send({ ...MESSAGE, subject: `${MESSAGE.subject} (late)` });
+    expect(tokenCalls(fetchMock)).toBe(2);
+  });
+
+  it.each([401, 403])("is dropped when sendMail answers %s", async (rejection) => {
+    let status = 202;
+    const fetchMock = graphFetch(() => new Response(null, { status }), tokenFor(3600));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await graphService();
+    await service.send(MESSAGE);
+    status = rejection;
+    expect((await service.send(other)).status).toBe("FAILED");
+    status = 202;
+    await service.send({ ...MESSAGE, subject: `${MESSAGE.subject} (after ${rejection})` });
+    expect(tokenCalls(fetchMock)).toBe(2);
+  });
+
+  it("is not cached when Microsoft states no expiry, or one inside the safety margin", async () => {
+    for (const expiresIn of [undefined, 60]) {
+      const fetchMock = graphFetch(202, tokenFor(expiresIn));
+      vi.stubGlobal("fetch", fetchMock);
+      const service = await graphService();
+      await service.send({ ...MESSAGE, subject: `${MESSAGE.subject} ${expiresIn} a` });
+      await service.send({ ...MESSAGE, subject: `${MESSAGE.subject} ${expiresIn} b` });
+      expect(tokenCalls(fetchMock), String(expiresIn)).toBe(2);
+    }
+  });
+
+});

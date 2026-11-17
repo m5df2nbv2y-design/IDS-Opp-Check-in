@@ -573,7 +573,8 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
   if (campaign.status !== "IN_PROGRESS") {
     throw new CampaignChangedError("Only an IN_PROGRESS campaign can be resumed.");
   }
-  const opportunityIds = await getRecoverableOpportunityIds(campaignId);
+  const unreached = await getUnreachedOpportunityIds(campaignId);
+  const opportunityIds = await getRecoverableOpportunityIds(campaignId, unreached);
   if (opportunityIds.length === 0) {
     await closeCampaignIfDone(campaignId);
     return {
@@ -587,7 +588,8 @@ export async function resumeLaunch(campaignId: string, actor = "admin"): Promise
       unresolvedOpportunities: await prisma.opportunity.count({
         where: { isOpen: true, resolutionStatus: "UNRESOLVED" },
       }),
-      unreachedAfter: (await getUnreachedOpportunityIds(campaignId)).length,
+      // Nothing was sent, so the unreached set is unchanged.
+      unreachedAfter: unreached.length,
     };
   }
   const result = await launchCampaign({
@@ -800,12 +802,16 @@ export function recipientSendNote(recipient: { sendStatus: string; sendError: st
   return recipient.sendError;
 }
 
-export async function getRecoverableOpportunityIds(campaignId: string): Promise<string[]> {
+/**
+ * `unreached` lets a caller that already computed getUnreachedOpportunityIds for
+ * this campaign, in this request and with nothing sent since, skip a second scan.
+ */
+export async function getRecoverableOpportunityIds(campaignId: string, unreached?: string[]): Promise<string[]> {
   const [manifest, selections, recipients, missing] = await Promise.all([
     prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
     prisma.campaignSelection.findMany({ where: { campaignId }, include: { opportunity: true } }),
     prisma.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
-    getUnreachedOpportunityIds(campaignId),
+    unreached ?? getUnreachedOpportunityIds(campaignId),
   ]);
   const routes = readManifest(manifest?.detail)?.routes;
   if (!routes) return [];
@@ -978,7 +984,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
 
   const items = campaign.recipients.flatMap((recipient) => recipient.items);
-  const unreachedCount = (await getUnreachedOpportunityIds(campaignId)).length;
+  const unreached = await getUnreachedOpportunityIds(campaignId);
+  const unreachedCount = unreached.length;
 
   return {
     id: campaign.id,
@@ -1003,7 +1010,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     syncErrorCount: recipients.filter((r) => r.status === "SYNC_ERROR").length,
     totalValue: items.reduce((sum, item) => sum + item.amount, 0),
     unreachedCount,
-    recoverableCount: (await getRecoverableOpportunityIds(campaignId)).length,
+    recoverableCount: (await getRecoverableOpportunityIds(campaignId, unreached)).length,
     reminderEligibleCount: campaign.recipients.filter(r => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0).length,
     unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,
