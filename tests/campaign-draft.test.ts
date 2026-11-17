@@ -270,6 +270,48 @@ describe("selection drift and selected-only sending", () => {
     expect(new Set(items.map((i) => i.opportunityId))).toEqual(new Set(selected.map((o) => o.id)));
   });
 
+  it("a drifted opportunity never costs its contact the rest of the invitation", async () => {
+    // Two resolved opportunities that share one contact, plus another contact.
+    const shared = await prisma.opportunity.groupBy({
+      by: ["contactId"],
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      _count: { _all: true },
+      having: { contactId: { _count: { gt: 1 } } },
+    });
+    expect(shared.length).toBeGreaterThan(0);
+    const contactId = shared[0].contactId!;
+    const [drifting, keep] = await prisma.opportunity.findMany({
+      where: { contactId, isOpen: true, resolutionStatus: "RESOLVED" },
+      orderBy: { id: "asc" },
+      take: 2,
+    });
+    const other = await prisma.opportunity.findFirstOrThrow({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: contactId } },
+    });
+    await setSelection({ campaignId, opportunityIds: [drifting.id, keep.id, other.id], selected: true });
+    await prisma.opportunity.update({ where: { id: drifting.id }, data: { isOpen: false } });
+
+    const result = await sendDraft(campaignId, "test");
+
+    expect(result.drifted.map((d) => d.opportunityId)).toEqual([drifting.id]);
+    expect(result.recipients).toBe(2);
+    const recipient = await prisma.checkInRecipient.findFirst({ where: { campaignId, contactId }, include: { items: true } });
+    expect(recipient?.items.map((i) => i.opportunityId)).toEqual([keep.id]);
+    // The manifest routes only what was sent and names the exclusion, and the drift is audited.
+    const manifest = await prisma.auditEvent.findFirstOrThrow({ where: { campaignId, type: "CAMPAIGN_ROUTING" } });
+    const detail = JSON.parse(manifest.detail!);
+    expect(detail.excluded).toEqual([drifting.id]);
+    expect(Object.keys(detail.routes).sort()).toEqual([keep.id, other.id].sort());
+    expect(await prisma.auditEvent.count({ where: { campaignId, summary: { contains: "excluded at send" } } })).toBe(1);
+    // Excluded at send is not unreached work: nothing to review or resume, and the campaign can close.
+    const { getUnreachedOpportunityIds, getRecoverableOpportunityIds, closeCampaignIfDone } = await import("@/server/services/campaign-service");
+    expect(await getUnreachedOpportunityIds(campaignId)).toEqual([]);
+    expect(await getRecoverableOpportunityIds(campaignId)).toEqual([]);
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+    await closeCampaignIfDone(campaignId);
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("COMPLETE");
+  });
+
   it("excludes an opportunity CLOSED after selection", async () => {
     const [first, ...rest] = await selectResolved(3);
     await prisma.opportunity.update({ where: { id: first.id }, data: { isOpen: false } });

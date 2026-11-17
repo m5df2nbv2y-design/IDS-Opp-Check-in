@@ -199,6 +199,12 @@ export async function launchCampaign(options: {
   expectedEmailRevision?: number;
   /** Finish an IN_PROGRESS campaign: leave its name, status and startedAt alone. */
   resume?: boolean;
+  /**
+   * Selections the caller excluded at send (drift), with the audit text that reports
+   * them. Recorded in the same transaction as the routing manifest. Only these ids
+   * leave the shortfall; any other unlaunched selection stays visible as unreached.
+   */
+  excludedAtSend?: { opportunityIds: string[]; summary: string; detail: string };
 }): Promise<LaunchResult> {
   // Runtime half of the type-level guarantee: a JavaScript caller, a bad cast,
   // or a deserialized payload cannot slip past the compiler into a full send.
@@ -300,9 +306,21 @@ export async function launchCampaign(options: {
       await tx.campaign.update({ where: { id: campaign.id }, data: { id: campaign.id } });
       const previous = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
       if (!previous) {
-        const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
+        // Route only what this launch sends: a selection excluded at send (drift) is
+        // reported then, and must not become approved work for any contact.
+        const launching = new Set(opportunities.map((o) => o.id));
+        const reported = new Set(options.excludedAtSend?.opportunityIds ?? []);
+        const all = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
+        const selected = all.filter(({ opportunityId }) => launching.has(opportunityId));
+        // Only selections the caller reported as excluded leave the shortfall; any other
+        // unlaunched selection (e.g. one added mid-send) stays visible as unreached.
+        const excluded = all.filter(({ opportunityId }) => !launching.has(opportunityId) && reported.has(opportunityId)).map(({ opportunityId }) => opportunityId);
         await recordAudit({ type: AUDIT_EVENTS.CAMPAIGN_ROUTING, summary: "Approved invitation routing", actor, actorKind: "ADMIN", campaignId: campaign.id,
-          detail: JSON.stringify({ version: 1, routes: Object.fromEntries(selected.map(({ opportunity: o }) => [o.id, o.contactId])) }) }, tx);
+          detail: JSON.stringify({ version: 1, routes: Object.fromEntries(selected.map(({ opportunity: o }) => [o.id, o.contactId])), excluded }) }, tx);
+        if (excluded.length > 0 && options.excludedAtSend) {
+          await recordAudit({ type: AUDIT_EVENTS.CAMPAIGN_CREATED, summary: options.excludedAtSend.summary, actor, actorKind: "ADMIN",
+            campaignId: campaign.id, detail: options.excludedAtSend.detail }, tx);
+        }
       }
     });
   }
@@ -311,6 +329,7 @@ export async function launchCampaign(options: {
   let emailsSent = 0;
   let emailsFailed = 0;
   let emailsUncertain = 0;
+  let recipientsProvisioned = 0;
 
   /** Attach items to a recipient and mark the intervention point on the observation timeline. */
   const addItems = async (tx: Prisma.TransactionClient, recipientId: string, items: typeof opportunities, startPosition: number) => {
@@ -368,7 +387,7 @@ export async function launchCampaign(options: {
         const current = await tx.campaign.findUniqueOrThrow({ where: { id: campaign.id } });
         if (current.status !== "IN_PROGRESS") throw new Error("Campaign is no longer in progress.");
         const manifest = await tx.auditEvent.findFirst({ where: { campaignId: campaign.id, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } });
-        const routes: Record<string, string | null> = JSON.parse(manifest?.detail ?? "{}").routes ?? {};
+        const routes = readManifest(manifest?.detail)?.routes ?? {};
         const selected = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
         const approved = selected.filter(s => routes[s.opportunityId] === contactId);
         const itemIds = new Set(items.map(o => o.id));
@@ -384,7 +403,9 @@ export async function launchCampaign(options: {
       continue;
     }
 
-    if (!recipient || !sendEmails) continue;
+    if (!recipient) continue;
+    recipientsProvisioned += 1;
+    if (!sendEmails) continue;
 
     const result = await getEmailService().send(
       buildInviteEmail({
@@ -445,7 +466,7 @@ export async function launchCampaign(options: {
 
   await recordAudit({
     type: AUDIT_EVENTS.CAMPAIGN_CREATED,
-    summary: `${campaign.name} ${options.resume ? "resumed" : "launched"} to ${byContact.size} external contacts covering ${opportunities.length} opportunities`,
+    summary: `${campaign.name} ${options.resume ? "resumed" : "launched"} to ${recipientsProvisioned} external contacts covering ${opportunities.length} opportunities`,
     actor,
     actorKind: "ADMIN",
     campaignId: campaign.id,
@@ -455,7 +476,7 @@ export async function launchCampaign(options: {
   return {
     campaignId: campaign.id,
     name: campaign.name,
-    recipients: byContact.size,
+    recipients: recipientsProvisioned,
     opportunities: opportunities.length,
     emailsSent,
     emailsFailed,
@@ -464,16 +485,43 @@ export async function launchCampaign(options: {
   };
 }
 
-/** Marks the campaign COMPLETE once every recipient has finished and every persisted selection is reached. */
+/**
+ * A CAMPAIGN_ROUTING manifest: approved routes plus the selections excluded at send.
+ * Null when absent or unrecognised. An excluded id that is also routed is ignored.
+ */
+function readManifest(detail: string | null | undefined): { routes: Record<string, string | null>; excluded: Set<string> } | null {
+  try {
+    const data = JSON.parse(detail ?? "null");
+    if (data?.version !== 1 || !data.routes || typeof data.routes !== "object" || Array.isArray(data.routes)) return null;
+    const routes: Record<string, string | null> = data.routes;
+    const excluded = Array.isArray(data.excluded) ? data.excluded : [];
+    return { routes, excluded: new Set(excluded.filter((id: unknown): id is string => typeof id === "string" && !Object.hasOwn(routes, id))) };
+  } catch { return null; }
+}
+
+/**
+ * The selections that are approved work for this campaign: every selection except
+ * those the routing manifest records as excluded at send, which were reported then.
+ */
+async function approvedSelectionIds(db: Prisma.TransactionClient, campaignId: string): Promise<string[]> {
+  const [manifest, selections] = await Promise.all([
+    db.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
+    db.campaignSelection.findMany({ where: { campaignId }, select: { opportunityId: true } }),
+  ]);
+  const excluded = readManifest(manifest?.detail)?.excluded ?? new Set<string>();
+  return selections.map((s) => s.opportunityId).filter((id) => !excluded.has(id));
+}
+
+/** Marks the campaign COMPLETE once every recipient has finished and every approved selection is reached. */
 export async function closeCampaignIfDone(campaignId: string): Promise<void> {
   await prisma.$transaction(async tx => {
     await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
     const outstanding = await tx.checkInRecipient.count({ where: { campaignId, completedAt: null, revokedAt: null } });
     if (outstanding > 0) return;
-    const selections = await tx.campaignSelection.findMany({ where: { campaignId }, select: { opportunityId: true } });
+    const approved = await approvedSelectionIds(tx, campaignId);
     const reached = await tx.checkInOpportunity.findMany({ where: { recipient: { campaignId } }, select: { opportunityId: true } });
     const reachedIds = new Set(reached.map(item => item.opportunityId));
-    if (selections.some(selection => !reachedIds.has(selection.opportunityId))) return;
+    if (approved.some(id => !reachedIds.has(id))) return;
     await tx.campaign.updateMany({ where: { id: campaignId, status: "IN_PROGRESS", completedAt: null }, data: { status: "COMPLETE", completedAt: new Date() } });
   });
 }
@@ -636,23 +684,19 @@ export type CampaignSummary = {
 
 /**
  * Every approved selection without an invitation item remains visible, including
- * routing and eligibility drift that requires review. Revoked items count as reached.
+ * routing and eligibility drift after launch that requires review. Revoked items
+ * count as reached. A selection excluded at send was reported then and is not approved work.
  */
 export async function getUnreachedOpportunityIds(campaignId: string): Promise<string[]> {
-  const [selections, reached] = await Promise.all([
-    prisma.campaignSelection.findMany({
-      where: {
-        campaignId,
-      },
-      select: { opportunityId: true },
-    }),
+  const [approved, reached] = await Promise.all([
+    approvedSelectionIds(prisma, campaignId),
     prisma.checkInOpportunity.findMany({
       where: { recipient: { campaignId } },
       select: { opportunityId: true },
     }),
   ]);
   const reachedIds = new Set(reached.map((item) => item.opportunityId));
-  return selections.map((s) => s.opportunityId).filter((id) => !reachedIds.has(id));
+  return approved.filter((id) => !reachedIds.has(id));
 }
 
 /** Validate recovery evidence before it can be used by manual reconciliation. */
@@ -702,12 +746,8 @@ export async function getRecoverableOpportunityIds(campaignId: string): Promise<
     prisma.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
     getUnreachedOpportunityIds(campaignId),
   ]);
-  let routes: Record<string, string | null>;
-  try {
-    const data = JSON.parse(manifest?.detail ?? "null");
-    if (data?.version !== 1 || !data.routes || typeof data.routes !== "object" || Array.isArray(data.routes)) return [];
-    routes = data.routes;
-  } catch { return []; }
+  const routes = readManifest(manifest?.detail)?.routes;
+  if (!routes) return [];
   const existing = new Set(recipients.map(r => r.contactId));
   const missingSet = new Set(missing);
   const unsafe = new Set<string>();
