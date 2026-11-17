@@ -19,7 +19,7 @@ import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/comp
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses, SHORTFALL_REASONS } from "@/server/services/campaign-service";
-import { listAppliedAttestations } from "@/server/services/reconcile-service";
+import { isReconcilableWrite, listAppliedAttestations } from "@/server/services/reconcile-service";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -288,7 +288,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                     pendingLabel="Applying…"
                   >Approve Salesforce update</ActionButton></div>
                 ) : null}
-                {response.syncStatus === "UNCERTAIN" ? (
+                {isReconcilableWrite(response) ? (
                   <div className="mt-3 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
                     <p className="text-[13px] font-semibold text-warning">
                       This write may or may not have reached Salesforce.

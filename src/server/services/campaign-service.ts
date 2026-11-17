@@ -325,13 +325,14 @@ export async function launchCampaign(options: {
         // reported then, and must not become approved work for any contact.
         const launching = new Set(opportunities.map((o) => o.id));
         const reported = new Set(options.excludedAtSend?.opportunityIds ?? []);
-        const all = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, include: { opportunity: true } });
-        const selected = all.filter(({ opportunityId }) => launching.has(opportunityId));
+        const all = await tx.campaignSelection.findMany({ where: { campaignId: campaign.id }, select: { opportunityId: true } });
         // Only selections the caller reported as excluded leave the shortfall; any other
         // unlaunched selection (e.g. one added mid-send) stays visible as unreached.
         const excluded = all.filter(({ opportunityId }) => !launching.has(opportunityId) && reported.has(opportunityId)).map(({ opportunityId }) => opportunityId);
         await recordAudit({ type: AUDIT_EVENTS.CAMPAIGN_ROUTING, summary: "Approved invitation routing", actor, actorKind: "ADMIN", campaignId: campaign.id,
-          detail: JSON.stringify({ version: 1, routes: Object.fromEntries(selected.map(({ opportunity: o }) => [o.id, o.contactId])), excluded }) }, tx);
+          // The contacts this launch grouped and sends to, never a re-read: a contact
+          // changed mid-launch must show as drift, not become approved routing.
+          detail: JSON.stringify({ version: 1, routes: Object.fromEntries(opportunities.map((o) => [o.id, o.contactId])), excluded }) }, tx);
         if (excluded.length > 0 && options.excludedAtSend) {
           await recordAudit({ type: AUDIT_EVENTS.CAMPAIGN_CREATED, summary: options.excludedAtSend.summary, actor, actorKind: "ADMIN",
             campaignId: campaign.id, detail: options.excludedAtSend.detail }, tx);

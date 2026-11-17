@@ -100,7 +100,7 @@ export async function reconcileUncertainWrite(input: {
     });
 
     if (!item) return { ok: false, reason: "NOT_FOUND" };
-    if (item.syncStatus !== "UNCERTAIN") return { ok: false, reason: "NOT_UNCERTAIN" };
+    if (!isReconcilableWrite(item)) return { ok: false, reason: "NOT_UNCERTAIN" };
     if (item.updatedAt.toISOString() !== input.revision) return { ok: false, reason: "STALE" };
 
     /**
@@ -114,10 +114,10 @@ export async function reconcileUncertainWrite(input: {
      */
     const nextStatus = input.observed === "APPLIED" ? "SYNCED" : "FAILED";
 
-    // Conditional on the revision AND on still being UNCERTAIN, so two
+    // Conditional on the revision AND on the state shown (UNCERTAIN or stuck SYNCING), so two
     // administrators resolving the same item concurrently cannot both win.
     const claimed = await tx.checkInOpportunity.updateMany({
-      where: { id: item.id, updatedAt: item.updatedAt, syncStatus: "UNCERTAIN" },
+      where: { id: item.id, updatedAt: item.updatedAt, syncStatus: item.syncStatus },
       data: {
         syncStatus: nextStatus,
         syncError:
@@ -200,6 +200,16 @@ export async function listAppliedAttestations(campaignId: string) {
 
 /** A PENDING invitation younger than this may still be sending, so it cannot be settled yet. */
 export const INTERRUPTED_INVITATION_AGE_MS = 15 * 60 * 1000;
+
+/**
+ * Whether an administrator may settle this Salesforce write by hand: UNCERTAIN,
+ * or SYNCING for longer than any request can run (Salesforce calls time out in
+ * seconds), which means the run died after claiming it and nothing will finish it.
+ */
+export function isReconcilableWrite(item: { syncStatus: string; updatedAt: Date }, now = new Date()): boolean {
+  return item.syncStatus === "UNCERTAIN" ||
+    (item.syncStatus === "SYNCING" && now.getTime() - item.updatedAt.getTime() > INTERRUPTED_INVITATION_AGE_MS);
+}
 
 /**
  * Whether an administrator may settle this invitation by hand: its provider

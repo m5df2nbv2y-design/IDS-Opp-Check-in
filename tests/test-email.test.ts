@@ -155,6 +155,22 @@ describe("the demo test email", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("a repeat after the double-click window says already sent, not sent, and audits nothing new", async () => {
+    vi.stubEnv("DEMO_TEST_EMAIL", DEMO_ADDRESS);
+    vi.stubEnv("RESEND_API_KEY", "test-key");
+    const calls = stubResend();
+    const { recipient } = await launchCampaign();
+
+    const { sendDemoTestEmail } = await loadService();
+    await sendDemoTestEmail(recipient.id, "admin@ids.invalid");
+    await prisma.emailMessage.updateMany({ where: { kind: "TEST" }, data: { createdAt: new Date(Date.now() - 5 * 60_000) } });
+    const later = await sendDemoTestEmail(recipient.id, "admin@ids.invalid");
+
+    expect(later).toMatchObject({ ok: true, alreadySent: true });
+    expect(calls).toHaveLength(1);
+    expect(await prisma.auditEvent.count({ where: { type: "TEST_EMAIL_SENT" } })).toBe(1);
+  });
+
   it("records the send in the audit trail", async () => {
     vi.stubEnv("DEMO_TEST_EMAIL", DEMO_ADDRESS);
     vi.stubEnv("RESEND_API_KEY", "test-key");

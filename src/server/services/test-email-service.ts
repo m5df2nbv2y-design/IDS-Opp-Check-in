@@ -140,7 +140,15 @@ export async function sendDemoTestEmail(
   // configured address. Nothing between here and the provider can change it.
   message.to = { name: message.to.name, email: deliverTo };
 
+  const startedAt = new Date();
   const result = await new ResendEmailService().send(message);
+
+  // The same link and template give the same message, so the duplicate-send
+  // ledger returns the earlier row without contacting the provider. Say so.
+  if (result.status === "SENT") {
+    const row = await prisma.emailMessage.findUnique({ where: { id: result.id }, select: { createdAt: true } });
+    if (row && row.createdAt < startedAt) return { ok: true, sentTo: deliverTo, opportunityName, alreadySent: true };
+  }
 
   await recordAudit({
     type: AUDIT_EVENTS.TEST_EMAIL_SENT,

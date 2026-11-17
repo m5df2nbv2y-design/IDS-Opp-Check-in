@@ -188,6 +188,25 @@ describe("resume a half-sent launch", () => {
     expect(await prisma.checkInOpportunity.count({ where: { opportunityId: others[0].id, recipient: { campaignId } } })).toBe(0);
   });
 
+  it("the routing record keeps the contact this launch grouped, even if it changes mid-launch", async () => {
+    await refreshCatalogFromSalesforce("test");
+    const all = await prisma.opportunity.findMany({ where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } } });
+    const mine = all.filter((o) => o.contactId === all[0].contactId);
+    const elsewhere = all.find((o) => o.contactId !== all[0].contactId)!.contactId!;
+    // Between the launch's fetch and its routing record, a refresh moves one opportunity.
+    const createMany = prisma.campaignSelection.createMany.bind(prisma.campaignSelection);
+    vi.spyOn(prisma.campaignSelection, "createMany").mockImplementationOnce((async (args: Parameters<typeof createMany>[0]) => {
+      const created = await createMany(args);
+      await prisma.opportunity.update({ where: { id: mine[0].id }, data: { contactId: elsewhere } });
+      return created;
+    }) as never);
+
+    const { campaignId } = await launchCampaign({ opportunityIds: mine.map((o) => o.id), name: "Drift", period: "Test", actor: "test" });
+
+    const record = await prisma.auditEvent.findFirstOrThrow({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
+    expect(JSON.parse(record.detail!).routes[mine[0].id]).toBe(all[0].contactId);
+  });
+
   it("legacy routing without a checkpoint requires review", async () => {
     const { campaignId } = await halfSentCampaign();
     await prisma.auditEvent.deleteMany({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });

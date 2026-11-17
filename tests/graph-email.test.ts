@@ -308,6 +308,31 @@ describe("the send path", () => {
     });
   });
 
+  describe("a throttled send (HTTP 429) is retried once after Retry-After", () => {
+    const throttled = () => new Response(ECHO, { status: 429, headers: { "Retry-After": "0" } });
+
+    it("is SENT when the retry is accepted", async () => {
+      const replies = [throttled(), new Response(null, { status: 202 })];
+      const fetchMock = graphFetch(() => replies.shift()!);
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await (await graphService()).send(MESSAGE);
+
+      expect(result.status).toBe("SENT");
+      expect(sendMailCalls(fetchMock)).toBe(2);
+    });
+
+    it("is FAILED after a second 429, with no third request", async () => {
+      const fetchMock = graphFetch(throttled);
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await (await graphService()).send(MESSAGE);
+
+      expect(result.status).toBe("FAILED");
+      expect(sendMailCalls(fetchMock)).toBe(2);
+    });
+  });
+
   describe("a duplicate", () => {
     it("arriving while the first is in flight returns UNCERTAIN, makes no second sendMail request, and the first completes SENT", async () => {
       let release!: () => void;

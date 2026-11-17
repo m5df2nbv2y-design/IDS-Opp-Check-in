@@ -17,6 +17,12 @@ const NOT_RECORDED = "Email acceptance could not be recorded. Check the sent mai
  * one at a time, so share one pending request only if sends become parallel.
  */
 let cachedToken: { value: string; expiresAt: number } | null = null;
+
+/** Graph's Retry-After in seconds, capped so a launch loop stays inside the function time limit. */
+const retryAfterMs = (header: string | null): number => {
+  const seconds = header === null ? NaN : Number(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds, 10) * 1000 : 1000;
+};
 const TOKEN_MARGIN_MS = 5 * 60_000;
 
 /**
@@ -149,7 +155,7 @@ export class GraphEmailService implements EmailService {
     if ("error" in token) return { status: "FAILED", error: token.error };
 
     try {
-      const response = await fetch(
+      const sendMail = () => fetch(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(env.graph.senderMailbox)}/sendMail`,
         {
           method: "POST",
@@ -160,6 +166,13 @@ export class GraphEmailService implements EmailService {
           signal: AbortSignal.timeout(15_000),
         },
       );
+      let response = await sendMail();
+      // 429 means Graph did not take the message, so one paced retry cannot
+      // duplicate it; without it a throttled invitation is lost for good.
+      if (response.status === 429) {
+        await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response.headers.get("retry-after"))));
+        response = await sendMail();
+      }
       // Never persist provider bodies: a Graph error payload can echo the
       // request, and the request contains the recipient's bearer link.
       // A rejected or under-consented token must not be reused for the rest of a

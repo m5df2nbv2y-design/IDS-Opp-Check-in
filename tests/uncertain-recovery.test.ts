@@ -7,6 +7,7 @@ import { getSalesforceService } from "@/server/integrations/salesforce";
 import * as audit from "@/server/services/audit-service";
 import { AUDIT_EVENTS } from "@/server/services/audit-service";
 import {
+  isReconcilableWrite,
   listUncertainWrites,
   reconcileUncertainWrite,
 } from "@/server/services/reconcile-service";
@@ -91,6 +92,33 @@ describe("the only exit from UNCERTAIN", () => {
     // And scoped: another campaign's queue does not show it.
     const elsewhere = await listUncertainWrites("some-other-campaign-id");
     expect(elsewhere).toHaveLength(0);
+  });
+});
+
+describe("a write stuck in SYNCING", () => {
+  async function aSyncingItem(ageMinutes: number) {
+    const { campaignId, item } = await anAnsweredUncertainItem();
+    const stuck = await prisma.checkInOpportunity.update({
+      where: { id: item.id },
+      data: { syncStatus: "SYNCING", updatedAt: new Date(Date.now() - ageMinutes * 60_000) },
+    });
+    return { campaignId, item: stuck };
+  }
+  const attest = (campaignId: string, item: { id: string; updatedAt: Date }) => reconcileUncertainWrite({
+    campaignId, itemId: item.id, revision: item.updatedAt.toISOString(), observed: "APPLIED", actor: "admin@idsculpture.test",
+  });
+
+  it("can be reconciled once it is older than 15 minutes", async () => {
+    const { campaignId, item } = await aSyncingItem(20);
+    expect(isReconcilableWrite(item)).toBe(true);
+    expect(await attest(campaignId, item)).toMatchObject({ ok: true, nextStatus: "SYNCED" });
+  });
+
+  it("is refused while it may still be in flight", async () => {
+    const { campaignId, item } = await aSyncingItem(5);
+    expect(isReconcilableWrite(item)).toBe(false);
+    expect(await attest(campaignId, item)).toEqual({ ok: false, reason: "NOT_UNCERTAIN" });
+    expect((await prisma.checkInOpportunity.findUniqueOrThrow({ where: { id: item.id } })).syncStatus).toBe("SYNCING");
   });
 });
 
