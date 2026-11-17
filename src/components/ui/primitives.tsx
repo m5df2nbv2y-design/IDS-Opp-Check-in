@@ -33,6 +33,7 @@ const RECIPIENT_STATUS_STYLES: Record<RecipientStatus, { label: string; classNam
   SYNC_ERROR: { label: "Sync Error", className: "bg-danger-soft text-danger border-danger/25" },
   SEND_UNCERTAIN: { label: "Delivery unresolved", className: "bg-warning-soft text-warning border-warning/25" },
   SEND_FAILED: { label: "Send Failed", className: "bg-danger-soft text-danger border-danger/25" },
+  REVOKED: { label: "Link revoked", className: "bg-canvas text-muted border-line-strong" },
 };
 
 export function RecipientStatusBadge({ status }: { status: RecipientStatus }) {

@@ -30,6 +30,8 @@ export const AUDIT_EVENTS = {
   CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
   /** An admin excluded a shortfall opportunity that cannot resume. detail: { version: 1, opportunityId, reason }. Final. */
   SELECTION_EXCLUDED: "SELECTION_EXCLUDED",
+  /** An admin closed out a held-back contact by revoking their link. detail: { version: 1, recipientId, tokenHint, reason }. Final. */
+  RECIPIENT_CLOSED_OUT: "RECIPIENT_CLOSED_OUT",
   CHECKIN_OPENED: "CHECKIN_OPENED",
   RESPONSE_SUBMITTED: "RESPONSE_SUBMITTED",
   RESPONSE_REVISED: "RESPONSE_REVISED",

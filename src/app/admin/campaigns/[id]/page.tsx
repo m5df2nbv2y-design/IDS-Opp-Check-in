@@ -7,6 +7,7 @@ import {
   reconcileInvitationAction,
   reconcileUncertainAction,
   resendInvitationAction,
+  closeOutContactAction,
   retrySyncAction,
   resumeLaunchAction,
   sendRemindersAction,
@@ -226,6 +227,9 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           }
           resendInvitation={(recipient) =>
             resendInvitationAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint)
+          }
+          closeOutContact={(recipient) =>
+            closeOutContactAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint, recipient.heldBackNote ?? "")
           }
         />
         {testRecipient ? (

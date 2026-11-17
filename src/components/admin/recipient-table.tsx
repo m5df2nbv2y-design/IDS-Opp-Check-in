@@ -75,6 +75,29 @@ function InvitationResend({
   );
 }
 
+/** Shown only for a held-back contact in an IN_PROGRESS campaign. */
+function CloseOut({
+  recipient,
+  action,
+}: {
+  recipient: RecipientProgress;
+  action?: (recipient: RecipientProgress) => ResendAction;
+}) {
+  if (!action || !recipient.canCloseOut) return null;
+  return (
+    <div className="mt-2">
+      <ActionButton
+        action={action(recipient)}
+        size="sm"
+        pendingLabel="Closing out…"
+        confirm={`Revoke ${recipient.contactName}'s check-in link? It stops opening, no email is sent, and this contact no longer holds the campaign open. Answers already submitted are kept. This cannot be undone.`}
+      >
+        Close out this contact
+      </ActionButton>
+    </div>
+  );
+}
+
 /**
  * The campaign's core table: one row per EXTERNAL CONTACT, not per IDS rep.
  * The internal reps behind each row are shown as supporting context only.
@@ -83,12 +106,15 @@ export function RecipientTable({
   recipients,
   reconcileInvitation,
   resendInvitation,
+  closeOutContact,
 }: {
   recipients: RecipientProgress[];
   /** Binds the invitation reconcile action to one recipient's shown state. */
   reconcileInvitation?: (recipient: RecipientProgress) => InvitationAction;
   /** Binds the re-send action to one recipient's shown link. */
   resendInvitation?: (recipient: RecipientProgress) => ResendAction;
+  /** Binds the close-out action to one recipient's shown link and held-back note. */
+  closeOutContact?: (recipient: RecipientProgress) => ResendAction;
 }) {
   return (
     <Card className="overflow-hidden">
@@ -144,6 +170,7 @@ export function RecipientTable({
                   {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
                   <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
                   <InvitationResend recipient={recipient} action={resendInvitation} />
+                  <CloseOut recipient={recipient} action={closeOutContact} />
                 </td>
               </tr>
             ))}
@@ -167,11 +194,12 @@ export function RecipientTable({
                 </div>
               </div>
               <RecipientStatusBadge status={recipient.status} />
-                  {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
             </div>
+            {recipient.deliveryNote ? <p className="mt-1 text-xs text-warning">{recipient.deliveryNote}</p> : null}
             <div className="mt-2 text-[12px] text-muted">{lastActivity(recipient)}</div>
             <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
             <InvitationResend recipient={recipient} action={resendInvitation} />
+            <CloseOut recipient={recipient} action={closeOutContact} />
           </li>
         ))}
       </ul>

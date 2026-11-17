@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, excludeShortfallOpportunity, resendInvitation, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -279,6 +279,19 @@ export async function resendInvitationAction(campaignId: string, recipientId: st
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
   revalidatePath("/admin/outbox");
+  if (!result.ok) return { error: result.message };
+}
+
+/**
+ * Close out ONE held-back contact by revoking their link, bound to the `tokenHint`
+ * and held-back note that were on screen. Refusals are returned as fixed messages.
+ */
+export async function closeOutContactAction(campaignId: string, recipientId: string, shownTokenHint: string, shownNote: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await closeOutContact({ campaignId, recipientId, shownTokenHint, shownNote, actor });
+  // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
   if (!result.ok) return { error: result.message };
 }
 

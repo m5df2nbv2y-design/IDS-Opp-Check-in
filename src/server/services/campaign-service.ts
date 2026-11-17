@@ -23,7 +23,8 @@ export type RecipientStatus =
   | "COMPLETE"
   | "SYNC_ERROR"
   | "SEND_FAILED"
-  | "SEND_UNCERTAIN";
+  | "SEND_UNCERTAIN"
+  | "REVOKED";
 
 export const RECIPIENT_STATUS_LABELS: Record<RecipientStatus, string> = {
   PENDING: "Delivery pending",
@@ -34,6 +35,7 @@ export const RECIPIENT_STATUS_LABELS: Record<RecipientStatus, string> = {
   SYNC_ERROR: "Sync Error",
   SEND_FAILED: "Send Failed",
   SEND_UNCERTAIN: "Delivery unresolved",
+  REVOKED: "Link revoked",
 };
 
 /** "Fall 2026" / "Spring 2026" — IDS runs this twice a year. */
@@ -758,6 +760,65 @@ export function staleOpportunityNote(recipient: { contactId: string; items: Item
 const canResend = (recipient: { sendStatus: string; completedAt: Date | null; revokedAt: Date | null; items: unknown[] }, campaignStatus: string) =>
   campaignStatus === "IN_PROGRESS" && recipient.sendStatus === "FAILED" && !recipient.completedAt && !recipient.revokedAt && recipient.items.length > 0;
 
+/** The held-back note for a row that would otherwise get a reminder or re-send; null when it is not held back. */
+const heldBackNote = (recipient: { contactId: string; sendStatus: string; completedAt: Date | null; revokedAt: Date | null; items: ItemOpportunity[] }, campaignStatus: string) =>
+  (recipient.sendStatus === "SENT" && !recipient.completedAt && !recipient.revokedAt && recipient.items.length > 0) || canResend(recipient, campaignStatus)
+    ? staleOpportunityNote(recipient)
+    : null;
+
+/** Fixed messages for the close-out control; never stored text. */
+export const CLOSE_OUT_MESSAGES = {
+  NOT_IN_PROGRESS: "Only an in-progress campaign can close out a contact.",
+  NOT_HELD_BACK: "This contact is no longer held back. Reload the page.",
+  CHANGED: "This contact changed since the page was loaded. Reload and check again.",
+  FINISHED: "This contact is already closed out or finished.",
+} as const;
+
+/**
+ * Close out ONE held-back contact: revoke their link, audited with the held-back
+ * note the admin saw, then close the campaign if nothing else is outstanding.
+ * Sends nothing; submitted answers and their sync are untouched. No undo.
+ */
+export async function closeOutContact(input: {
+  campaignId: string;
+  recipientId: string;
+  shownTokenHint: string;
+  shownNote: string;
+  actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { campaignId, recipientId, shownTokenHint, shownNote, actor } = input;
+  if ([campaignId, recipientId, shownTokenHint, shownNote].some((v) => typeof v !== "string")) throw new Error("Invalid close-out input");
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS") return { ok: false as const, message: CLOSE_OUT_MESSAGES.NOT_IN_PROGRESS };
+    const recipient = await tx.checkInRecipient.findFirst({
+      where: { id: recipientId, campaignId },
+      include: { contact: true, items: { include: { opportunity: true } } },
+    });
+    if (!recipient) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
+    if (recipient.completedAt || recipient.revokedAt) return { ok: false as const, message: CLOSE_OUT_MESSAGES.FINISHED };
+    if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
+    const note = heldBackNote(recipient, campaign.status);
+    if (!note) return { ok: false as const, message: CLOSE_OUT_MESSAGES.NOT_HELD_BACK };
+    if (note !== shownNote) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
+    const revoked = await tx.checkInRecipient.updateMany({
+      where: { id: recipient.id, campaignId, tokenHint: shownTokenHint, tokenHash: recipient.tokenHash, completedAt: null, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count !== 1) return { ok: false as const, message: CLOSE_OUT_MESSAGES.CHANGED };
+    await recordAudit({
+      type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT,
+      summary: `Closed out ${recipient.contact.name}; their check-in link no longer opens: ${note}`,
+      actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+      detail: JSON.stringify({ version: 1, recipientId: recipient.id, tokenHint: shownTokenHint, reason: note }),
+    }, tx);
+    return { ok: true as const };
+  });
+  if (result.ok) await closeCampaignIfDone(campaignId);
+  return result;
+}
+
 /**
  * Re-send ONE failed invitation with a fresh link and the campaign's own copy.
  * The claim is bound to the shown `tokenHint`; it rotates the token (the old link
@@ -881,6 +942,10 @@ export type RecipientProgress = {
   canReconcileInvitation: boolean;
   /** FAILED, not completed or revoked, with items, campaign IN_PROGRESS: an admin may re-send it with a fresh link. */
   canResendInvitation: boolean;
+  /** The held-back note shown on the row; with `tokenHint`, what a close-out binds. */
+  heldBackNote: string | null;
+  /** Held back, not completed or revoked, campaign IN_PROGRESS: an admin may close the contact out. */
+  canCloseOut: boolean;
   deliveryNote?: string | null;
 };
 
@@ -1195,8 +1260,15 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   if (!campaign) return null;
   const remindable = (r: (typeof campaign.recipients)[number]) => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0;
   // Only rows that would otherwise get a reminder or re-send are held back (and say why).
-  const heldBack = (r: (typeof campaign.recipients)[number]) =>
-    remindable(r) || canResend(r, campaign.status) ? staleOpportunityNote(r) : null;
+  const heldBack = (r: (typeof campaign.recipients)[number]) => heldBackNote(r, campaign.status);
+  const closeOutReasons = new Map<string, string | undefined>();
+  for (const e of await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT } })) {
+    // An unreadable audit row must not take the campaign page down; the row still shows "Link revoked".
+    try {
+      const d = JSON.parse(e.detail ?? "");
+      if (typeof d?.recipientId === "string") closeOutReasons.set(d.recipientId, typeof d.reason === "string" ? d.reason : undefined);
+    } catch { /* skip */ }
+  }
 
   const recipients: RecipientProgress[] = campaign.recipients
     .map((recipient) => {
@@ -1225,6 +1297,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
           completedAt: recipient.completedAt,
           submittedCount: submitted.length,
           syncErrorCount: syncErrors.length,
+          revokedAt: recipient.revokedAt,
         }),
         sentAt: recipient.sentAt,
         openedAt: recipient.openedAt,
@@ -1232,9 +1305,13 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         reminderCount: recipient.reminderCount,
         tokenHint: recipient.tokenHint,
         sendStatus: recipient.sendStatus,
-        canReconcileInvitation: isSettleableInvitation(recipient),
+        canReconcileInvitation: !recipient.revokedAt && isSettleableInvitation(recipient),
         canResendInvitation: canResend(recipient, campaign.status) && !heldBack(recipient),
-        deliveryNote: [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,
+        heldBackNote: heldBack(recipient),
+        canCloseOut: campaign.status === "IN_PROGRESS" && heldBack(recipient) !== null,
+        deliveryNote: recipient.revokedAt
+          ? ["Link revoked", closeOutReasons.get(recipient.id)].filter(Boolean).join(" — ")
+          : [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,
       };
     })
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
@@ -1289,7 +1366,9 @@ export function deriveRecipientStatus(input: {
   completedAt: Date | null;
   submittedCount: number;
   syncErrorCount: number;
+  revokedAt?: Date | null;
 }): RecipientStatus {
+  if (input.revokedAt) return input.syncErrorCount > 0 ? "SYNC_ERROR" : "REVOKED";
   if (input.sendStatus === "FAILED") return "SEND_FAILED";
   if (input.syncErrorCount > 0) return "SYNC_ERROR";
   if (input.completedAt) return "COMPLETE";
