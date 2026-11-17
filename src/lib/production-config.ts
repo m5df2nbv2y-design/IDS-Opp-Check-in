@@ -133,6 +133,19 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
   const salesforceRefusal = liveIntegrationRefusal(env);
   if (salesforceRefusal) violations.push(salesforceRefusal.split("\n")[0]);
 
+  // --- Email ------------------------------------------------------------
+  // getEmailService refuses anything else at send time; say so at boot too.
+  const emailProvider = env.EMAIL_PROVIDER?.trim().toLowerCase() ?? "";
+  if (!["", "mock", "resend", "graph"].includes(emailProvider)) {
+    violations.push(
+      `EMAIL_PROVIDER is "${env.EMAIL_PROVIDER}". Use "graph", "resend" or "mock".`,
+    );
+  } else if (emailProvider === "graph") {
+    for (const name of ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"]) {
+      if (!isSet(env[name])) violations.push(`${name} is required for the Microsoft Graph email provider.`);
+    }
+  }
+
   const emailRefusal = liveEmailRefusal(env);
   if (emailRefusal) violations.push(emailRefusal);
 

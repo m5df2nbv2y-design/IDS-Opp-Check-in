@@ -32,4 +32,8 @@ describe("getEmailService", () => {
     expect(await selectedProvider("")).toBe("mock");
     expect(await selectedProvider("   ")).toBe("mock");
   });
+
+  it.each(["grpah", "smtp", "outlook"])("refuses an unrecognised EMAIL_PROVIDER=%j instead of falling back to Mock", async (value) => {
+    await expect(selectedProvider(value)).rejects.toThrow(/EMAIL_PROVIDER/);
+  });
 });

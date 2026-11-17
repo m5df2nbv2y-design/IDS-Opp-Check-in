@@ -219,6 +219,8 @@ export async function launchCampaign(options: {
   const period = options.period ?? currentPeriod();
   const name = options.name ?? `${period} Check-In`;
   const sendEmails = options.sendEmails ?? true;
+  // Resolved before anything is provisioned: an unusable provider throws here, not mid-loop.
+  const email = sendEmails ? getEmailService() : null;
   // Reject invalid copy before creating campaigns, tokens or recipients.
   const emailCopy = options.emailCopy ? validateEmailCopy(options.emailCopy) : undefined;
 
@@ -405,9 +407,9 @@ export async function launchCampaign(options: {
 
     if (!recipient) continue;
     recipientsProvisioned += 1;
-    if (!sendEmails) continue;
+    if (!email) continue;
 
-    const result = await getEmailService().send(
+    const result = await email.send(
       buildInviteEmail({
         contactName: contact.name,
         contactEmail: contact.email,
@@ -575,6 +577,8 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
     include: { contact: { include: { account: true } }, campaign: true, items: true },
   });
 
+  // Resolved before any claim: an unusable provider must not leave REMINDER_PENDING rows.
+  const email = getEmailService();
   const expiresAt = new Date(Date.now() + env.checkInTokenTtlDays * 24 * 60 * 60 * 1000);
   let sent = 0;
   for (const recipient of recipients) {
@@ -594,7 +598,7 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
       return claimed;
     });
     if (claim.count !== 1) continue;
-    const result = await getEmailService().send(buildReminderEmail({
+    const result = await email.send(buildReminderEmail({
       contactName: recipient.contact.name, contactEmail: recipient.contact.email,
       organizationName: recipient.contact.account.name, opportunityCount: recipient.items.length,
       checkInUrl: checkInUrl(env.appBaseUrl, token.token), campaignId, contactId: recipient.contactId,

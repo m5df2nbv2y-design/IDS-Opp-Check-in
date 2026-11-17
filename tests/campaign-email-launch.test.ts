@@ -39,3 +39,28 @@ it("invalid custom headers fail before campaign mutation or recipient creation",
   expect(await prisma.checkInRecipient.count()).toBe(0);
   expect(send).not.toHaveBeenCalled();
 });
+it("an unrecognised EMAIL_PROVIDER fails before launch provisions or a reminder claims anything", async () => {
+  const { campaign, opportunity } = await reviewedDraft();
+  // Launch once on Mock so there is a SENT recipient a reminder could claim.
+  const sent = await prisma.campaign.create({ data: { name: "Sent campaign", period: "Test", emailRevision: 1 } });
+  await launchCampaign({ campaignId: sent.id, opportunityIds: [opportunity.id], expectedEmailRevision: 1 });
+  const before = await prisma.checkInRecipient.findFirstOrThrow({ where: { campaignId: sent.id } });
+  expect(before.sendStatus).toBe("SENT");
+
+  // env and the provider singleton are read at module load: import fresh copies.
+  vi.stubEnv("EMAIL_PROVIDER", "grpah");
+  vi.resetModules();
+  const fresh = await import("@/server/services/campaign-service");
+  try {
+    await expect(fresh.launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 7 })).rejects.toThrow(/EMAIL_PROVIDER/);
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } })).status).toBe("DRAFT");
+    expect(await prisma.checkInRecipient.count({ where: { campaignId: campaign.id } })).toBe(0);
+
+    await expect(fresh.sendReminders(sent.id)).rejects.toThrow(/EMAIL_PROVIDER/);
+    const after = await prisma.checkInRecipient.findUniqueOrThrow({ where: { id: before.id } });
+    expect([after.sendStatus, after.tokenHash]).toEqual(["SENT", before.tokenHash]);
+  } finally {
+    vi.unstubAllEnvs();
+    await (await import("@/lib/db")).prisma.$disconnect();
+  }
+});

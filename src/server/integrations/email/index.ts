@@ -12,12 +12,11 @@ export function getEmailService(): EmailService {
     // Trimmed and lowercased exactly as liveEmailRefusal reads it, so a value it
     // guards as live cannot quietly resolve to Mock.
     const provider = env.emailProvider.trim().toLowerCase();
-    instance =
-      provider === "graph"
-        ? new GraphEmailService()
-        : provider === "resend"
-          ? new ResendEmailService()
-          : new MockEmailService();
+    if (provider === "graph") instance = new GraphEmailService();
+    else if (provider === "resend") instance = new ResendEmailService();
+    else if (provider === "" || provider === "mock") instance = new MockEmailService();
+    // A typo must not become Mock: production would report sends that never left.
+    else throw new Error(`EMAIL_PROVIDER "${env.emailProvider}" is not recognised. Use "graph", "resend" or "mock".`);
   }
   return instance;
 }

@@ -462,6 +462,9 @@ describe("the send path", () => {
     expect(result.status).toBe("FAILED");
     expect(result.error).toBe(`${name} is not configured.`);
     expect(fetchMock).not.toHaveBeenCalled();
+    // Refused before the ledger: no row, so the request identity is not consumed.
+    expect(result.id).toBe("");
+    expect(await prisma.emailMessage.count()).toBe(0);
     // The other three values are still configured and must not appear anywhere.
     const visible = await everythingVisible(result);
     for (const leak of LEAKS) expect(visible, leak).not.toContain(leak);

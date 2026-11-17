@@ -67,6 +67,10 @@ export class GraphEmailService implements EmailService {
     // Returned, not thrown: nothing has left, so this is a definite FAILED. A
     // throw is read by callers as an unknown send.
     if (refusal) return { id: "", status: "FAILED", error: refusal };
+    // Before the ledger row, so a missing value does not consume the request
+    // identity and a corrected retry of the same message can still send.
+    const missing = this.missingConfiguration();
+    if (missing) return { id: "", status: "FAILED", error: `${missing} is not configured.` };
 
     const payload = JSON.stringify({
       message: {
@@ -124,9 +128,6 @@ export class GraphEmailService implements EmailService {
 
   /** Everything between the PENDING row and the ledger update. Never throws. */
   private async attempt(payload: string): Promise<Pick<EmailSendResult, "status" | "error">> {
-    const missing = this.missingConfiguration();
-    if (missing) return { status: "FAILED", error: `${missing} is not configured.` };
-
     // Token stage: no sendMail request exists yet, so any failure here is a
     // definite FAILED.
     const token = await this.accessToken();
