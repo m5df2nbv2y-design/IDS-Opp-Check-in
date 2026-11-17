@@ -763,6 +763,106 @@ export async function getRecoverableOpportunityIds(campaignId: string): Promise<
     missingSet.has(o.id) && o.contactId && routes[o.id] === o.contactId && o.isOpen && o.resolutionStatus === "RESOLVED" && !existing.has(o.contactId) && !unsafe.has(o.contactId) ? [o.id] : []);
 }
 
+// ---------------------------------------------------------------------------
+// Legacy campaigns: launched before CAMPAIGN_ROUTING records existed.
+// ---------------------------------------------------------------------------
+
+export type LegacyRoutingRow = {
+  opportunityId: string;
+  opportunityName: string;
+  customerName: string;
+  /** The contact Salesforce shows today; null when the opportunity is not eligible (closed, unresolved, no contact). */
+  contactId: string | null;
+  contactName: string | null;
+  /** Today's contact already has an invitation, which is never expanded. */
+  alreadyInvited: boolean;
+};
+
+/** Unsent selections with today's contact, read inside the caller's transaction when given one. */
+async function legacyRoutingRows(db: Prisma.TransactionClient, campaignId: string): Promise<LegacyRoutingRow[]> {
+  const [selections, reached, recipients] = await Promise.all([
+    db.campaignSelection.findMany({ where: { campaignId }, include: { opportunity: { include: { contact: true } } } }),
+    db.checkInOpportunity.findMany({ where: { recipient: { campaignId } }, select: { opportunityId: true } }),
+    db.checkInRecipient.findMany({ where: { campaignId }, select: { contactId: true } }),
+  ]);
+  const reachedIds = new Set(reached.map((r) => r.opportunityId));
+  const invited = new Set(recipients.map((r) => r.contactId));
+  return selections.filter((s) => !reachedIds.has(s.opportunityId)).map(({ opportunity: o }) => {
+    const eligible = o.isOpen && o.resolutionStatus === "RESOLVED" && o.contactId !== null;
+    return {
+      opportunityId: o.id,
+      opportunityName: o.projectName ?? o.opportunityName,
+      customerName: o.customerName,
+      contactId: eligible ? o.contactId : null,
+      contactName: eligible ? o.contact?.name ?? null : null,
+      alreadyInvited: eligible && invited.has(o.contactId!),
+    };
+  });
+}
+
+/** The routes the admin saw, in the shape approveLegacyRouting compares against: every row, ineligible ones as null. */
+export const legacyShownRoutes = (rows: LegacyRoutingRow[]): Record<string, string | null> =>
+  Object.fromEntries(rows.map((row) => [row.opportunityId, row.contactId]));
+
+/**
+ * What the admin approves for an IN_PROGRESS campaign that has no routing record:
+ * each unsent selection with today's contact. Null when a record exists or the
+ * campaign is not IN_PROGRESS — those campaigns behave exactly as before.
+ */
+export async function getLegacyRoutingPreview(campaignId: string): Promise<LegacyRoutingRow[] | null> {
+  const [campaign, record] = await Promise.all([
+    prisma.campaign.findUnique({ where: { id: campaignId } }),
+    prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } }),
+  ]);
+  if (campaign?.status !== "IN_PROGRESS" || record) return null;
+  return legacyRoutingRows(prisma, campaignId);
+}
+
+/**
+ * Record the routing the admin saw: reached opportunities keep the contact actually
+ * invited, unsent ones get the shown contact, ineligible ones are left out (still in
+ * review). Refused, recording nothing, if the campaign is not IN_PROGRESS, already
+ * has a record, or any shown contact changed. Uses the existing manifest format.
+ */
+export async function approveLegacyRouting(
+  campaignId: string,
+  shownRoutes: Record<string, string | null>,
+  actor: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS") return { ok: false as const, message: "Only an in-progress campaign can have its routing approved." };
+    if (await tx.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } })) {
+      return { ok: false as const, message: "This campaign already has approved routing. Reload the page." };
+    }
+    const rows = await legacyRoutingRows(tx, campaignId);
+    const shown = shownRoutes && typeof shownRoutes === "object" ? shownRoutes : {};
+    if (Object.keys(shown).length !== rows.length || rows.some((r) => !Object.hasOwn(shown, r.opportunityId) || shown[r.opportunityId] !== r.contactId)) {
+      return { ok: false as const, message: "The unsent opportunities or their contacts changed since the page loaded. Nothing was recorded. Reload and review the routing again." };
+    }
+    const reached = await tx.checkInOpportunity.findMany({
+      where: { recipient: { campaignId } },
+      select: { opportunityId: true, recipient: { select: { contactId: true } } },
+    });
+    const selected = new Set((await tx.campaignSelection.findMany({ where: { campaignId }, select: { opportunityId: true } })).map((s) => s.opportunityId));
+    const routes: Record<string, string> = {};
+    for (const r of reached) if (selected.has(r.opportunityId)) routes[r.opportunityId] = r.recipient.contactId;
+    for (const r of rows) if (r.contactId) routes[r.opportunityId] = r.contactId;
+    const leftOut = rows.filter((r) => !r.contactId).length;
+    const invited = rows.filter((r) => r.alreadyInvited).length;
+    const sendable = rows.length - leftOut - invited;
+    await recordAudit({
+      type: AUDIT_EVENTS.CAMPAIGN_ROUTING,
+      summary: `Approved current routing for a campaign launched before routing records: ${sendable} unsent opportunities can resume` +
+        `${invited ? `; ${invited} whose contact is already invited stay in review` : ""}${leftOut ? `; ${leftOut} without an eligible contact stay in review` : ""}`,
+      actor, actorKind: "ADMIN", campaignId,
+      detail: JSON.stringify({ version: 1, routes, excluded: [] }),
+    }, tx);
+    return { ok: true as const };
+  });
+}
+
 /**
  * The ONE rule for "send outcome unknown" on an invitation. The campaign tile
  * and the sending results both count with it, so they cannot disagree. A PENDING

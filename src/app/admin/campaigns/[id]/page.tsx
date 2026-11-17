@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  approveLegacyRoutingAction,
   approveWritebackAction,
   reconcileUncertainAction,
   retrySyncAction,
@@ -15,7 +16,7 @@ import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/components/ui/primitives";
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
-import { getCampaignSummary, listResponses } from "@/server/services/campaign-service";
+import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses } from "@/server/services/campaign-service";
 import { listAppliedAttestations } from "@/server/services/reconcile-service";
 import { env } from "@/lib/env";
 
@@ -34,10 +35,11 @@ function AttestedNote({ event }: { event?: { actor: string; createdAt: Date } })
 
 export default async function CampaignDetailPage({ params }: PageProps<"/admin/campaigns/[id]">) {
   const { id } = await params;
-  const [summary, responses, attestations] = await Promise.all([
+  const [summary, responses, attestations, legacyRouting] = await Promise.all([
     getCampaignSummary(id),
     listResponses(id),
     listAppliedAttestations(id),
+    getLegacyRoutingPreview(id),
   ]);
   if (!summary) notFound();
 
@@ -100,6 +102,25 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           <p role="status">{summary.unreachedCount} approved opportunities have no invitation items. This campaign cannot close until the shortfall is reviewed.</p>
           <p>{summary.recoverableCount} can safely resume for contacts never provisioned. Remaining work needs review of routing, eligibility or an existing invitation; issued links are never expanded.</p>
           {summary.status === "IN_PROGRESS" && summary.recoverableCount > 0 ? <ActionButton action={resumeLaunchAction.bind(null, summary.id)} pendingLabel="Resuming…" confirm="Resume only approved opportunities for eligible contacts with no existing invitation?">Resume unsent invitations</ActionButton> : null}
+          {legacyRouting && legacyRouting.length > 0 ? (
+            <div className="space-y-2">
+              <p>This campaign was launched before routing was recorded. Review where each unsent opportunity would go today, then approve to allow resume. Contacts already invited are never re-sent.</p>
+              <ul className="list-disc pl-5 text-[14px]">
+                {legacyRouting.map((row) => (
+                  <li key={row.opportunityId}>
+                    {row.customerName} · {row.opportunityName} → {row.contactName ?? "no eligible contact (stays in review)"}
+                    {row.alreadyInvited ? " (already invited; will not be added to that invitation)" : ""}
+                  </li>
+                ))}
+              </ul>
+              {legacyRouting.some((row) => !row.contactId || row.alreadyInvited) ? <p>Opportunities already invited or without an eligible contact stay in the shortfall, and the campaign stays open until they are reviewed.</p> : null}
+              <ActionButton
+                action={approveLegacyRoutingAction.bind(null, summary.id, legacyShownRoutes(legacyRouting))}
+                pendingLabel="Approving…"
+                confirm="Record this routing as approved? Unsent opportunities go to the contacts shown; opportunities without an eligible contact stay in review."
+              >Approve routing</ActionButton>
+            </div>
+          ) : null}
         </Card>
       ) : null}
       {summary.unresolvedDeliveryCount > 0 ? (

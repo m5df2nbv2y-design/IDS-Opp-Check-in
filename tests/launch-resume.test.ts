@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { approveLegacyRoutingAction } from "@/app/admin/actions";
+import CampaignDetailPage from "@/app/admin/campaigns/[id]/page";
 import { prisma } from "@/lib/db";
 import { AUDIT_EVENTS } from "@/server/services/audit-service";
-import { getUnreachedOpportunityIds, launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
+import { approveLegacyRouting, getLegacyRoutingPreview, getUnreachedOpportunityIds, legacyShownRoutes, launchCampaign, resumeLaunch } from "@/server/services/campaign-service";
 import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
 import { resetDatabase } from "./fixtures";
+
+const session = vi.hoisted(() => ({ current: null as unknown, revalidated: [] as string[] }));
+vi.mock("@/server/auth/config", () => ({ auth: async () => session.current, DEV_BYPASS_ENABLED: false }));
+vi.mock("next/cache", () => ({ revalidatePath: (path: string) => session.revalidated.push(path) }));
 
 const FIRST = "Jane Doe";
 
@@ -34,6 +41,9 @@ async function halfSentCampaign() {
   } });
   return { campaignId: result.campaignId, mine, others, otherContacts: new Set(others.map((o) => o.contactId!)) };
 }
+
+const status = async (campaignId: string) =>
+  (await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status;
 
 const invites = (campaignId: string) =>
   prisma.emailMessage.findMany({ where: { campaignId, kind: "INVITE" } });
@@ -184,6 +194,152 @@ describe("resume a half-sent launch", () => {
     expect((await invites(campaignId)).length).toBe(before);
   });
 
+  describe("legacy campaign launched before routing records", () => {
+    async function legacyCampaign() {
+      const fixture = await halfSentCampaign();
+      await prisma.auditEvent.deleteMany({ where: { campaignId: fixture.campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
+      return fixture;
+    }
+    const shown = legacyShownRoutes;
+    const routing = (campaignId: string) =>
+      prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING } });
+
+    it("approving current routing unblocks resume, never re-sends, and lets the campaign close", async () => {
+      const { campaignId, mine, others, otherContacts } = await legacyCampaign();
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      expect(rows.map((r) => r.opportunityId).sort()).toEqual(others.map((o) => o.id).sort());
+      expect(await approveLegacyRouting(campaignId, shown(rows), "josh")).toEqual({ ok: true });
+      const [record] = await routing(campaignId);
+      expect(record.actor).toBe("josh");
+      const routes = JSON.parse(record.detail!).routes;
+      for (const o of [...mine, ...others]) expect(routes[o.id]).toBe(o.contactId);
+      expect(await getLegacyRoutingPreview(campaignId)).toBeNull();
+
+      const before = (await invites(campaignId)).length;
+      const result = await resumeLaunch(campaignId, "josh");
+      expect(result.emailsSent).toBe(otherContacts.size);
+      expect((await invites(campaignId)).length).toBe(before + otherContacts.size);
+      expect((await invites(campaignId)).filter((e) => e.toName === FIRST)).toHaveLength(1);
+      await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+      await resumeLaunch(campaignId, "josh");
+      expect(await status(campaignId)).toBe("COMPLETE");
+    });
+
+    it("a second approval is refused and the first record stands", async () => {
+      const { campaignId } = await legacyCampaign();
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      await approveLegacyRouting(campaignId, shown(rows), "josh");
+      expect((await approveLegacyRouting(campaignId, shown(rows), "other")).ok).toBe(false);
+      expect(await routing(campaignId)).toHaveLength(1);
+    });
+
+    it("a shown contact that changed before the click records nothing", async () => {
+      const { campaignId, others, mine } = await legacyCampaign();
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      await prisma.opportunity.update({ where: { id: others[0].id }, data: { contactId: mine[0].contactId } });
+      expect((await approveLegacyRouting(campaignId, shown(rows), "josh")).ok).toBe(false);
+      expect(await routing(campaignId)).toHaveLength(0);
+    });
+
+    it("is refused for a campaign that is not IN_PROGRESS", async () => {
+      const { campaignId } = await legacyCampaign();
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      await prisma.campaign.update({ where: { id: campaignId }, data: { status: "COMPLETE" } });
+      expect((await approveLegacyRouting(campaignId, shown(rows), "josh")).ok).toBe(false);
+      expect(await routing(campaignId)).toHaveLength(0);
+    });
+
+    it("an unsent opportunity with no eligible contact is left out and stays unreached", async () => {
+      const { campaignId, others } = await legacyCampaign();
+      await prisma.opportunity.update({ where: { id: others[0].id }, data: { isOpen: false } });
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      expect(rows.find((r) => r.opportunityId === others[0].id)).toMatchObject({ contactId: null });
+      await approveLegacyRouting(campaignId, shown(rows), "josh");
+      const [record] = await routing(campaignId);
+      expect(Object.hasOwn(JSON.parse(record.detail!).routes, others[0].id)).toBe(false);
+      await resumeLaunch(campaignId, "josh");
+      expect(await getUnreachedOpportunityIds(campaignId)).toContain(others[0].id);
+    });
+
+    it("an unsent opportunity whose contact is already invited is routed but never added to that invitation", async () => {
+      const { campaignId, others, mine } = await legacyCampaign();
+      await prisma.opportunity.update({ where: { id: others[0].id }, data: { contactId: mine[0].contactId } });
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      expect(rows.find((r) => r.opportunityId === others[0].id)).toMatchObject({ contactId: mine[0].contactId, alreadyInvited: true });
+      await approveLegacyRouting(campaignId, shown(rows), "josh");
+      await resumeLaunch(campaignId, "josh");
+      expect(await prisma.checkInOpportunity.count({ where: { opportunityId: others[0].id, recipient: { campaignId } } })).toBe(0);
+      expect((await invites(campaignId)).filter((e) => e.toName === FIRST)).toHaveLength(1);
+    });
+
+    it("a fully sent legacy campaign shows nothing to approve and still closes", async () => {
+      const { campaignId, mine } = await legacyCampaign();
+      // Fully sent: drop the never-reached selections, leaving only reached work.
+      await prisma.campaignSelection.deleteMany({ where: { campaignId, opportunityId: { notIn: mine.map((o) => o.id) } } });
+      expect(await getLegacyRoutingPreview(campaignId)).toEqual([]);
+      await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+      await resumeLaunch(campaignId, "josh");
+      expect(await status(campaignId)).toBe("COMPLETE");
+      expect(await routing(campaignId)).toHaveLength(0);
+    });
+
+    it("two simultaneous approvals record exactly one routing row", async () => {
+      const { campaignId } = await legacyCampaign();
+      const rows = (await getLegacyRoutingPreview(campaignId))!;
+      const results = await Promise.all([approveLegacyRouting(campaignId, shown(rows), "a"), approveLegacyRouting(campaignId, shown(rows), "b")]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(await routing(campaignId)).toHaveLength(1);
+    });
+
+    it("the campaign page shows the panel with review labels until routing is approved", async () => {
+      const { campaignId, others, mine } = await legacyCampaign();
+      await prisma.opportunity.update({ where: { id: others[0].id }, data: { isOpen: false } });
+      await prisma.opportunity.update({ where: { id: others[1].id }, data: { contactId: mine[0].contactId } });
+      const page = async () => renderToStaticMarkup(await CampaignDetailPage({ params: Promise.resolve({ id: campaignId }) } as never));
+      const html = await page();
+      expect(html).toContain("Approve routing");
+      expect(html).toContain("no eligible contact");
+      expect(html).toContain("already invited");
+      expect(html).toContain("stays open until they are reviewed");
+      await approveLegacyRouting(campaignId, shown((await getLegacyRoutingPreview(campaignId))!), "josh");
+      expect(await page()).not.toContain("Approve routing");
+    });
+
+    describe("the server action", () => {
+      beforeEach(() => {
+        vi.stubEnv("AUTH_REQUIRED_APP_ROLE", "SalesOps.Admin");
+        session.current = { user: { id: "u1", name: "Josh Young", email: "josh@idsculpture.com", roles: ["SalesOps.Admin"], oid: "entra-oid-1" } };
+        session.revalidated.length = 0;
+      });
+      afterEach(() => { vi.unstubAllEnvs(); session.current = null; });
+
+      it("returns an error for stale routes, records nothing, and revalidates", async () => {
+        const { campaignId, others, mine } = await legacyCampaign();
+        const rows = (await getLegacyRoutingPreview(campaignId))!;
+        await prisma.opportunity.update({ where: { id: others[0].id }, data: { contactId: mine[0].contactId } });
+        const result = await approveLegacyRoutingAction(campaignId, shown(rows));
+        expect(result).toEqual({ error: expect.stringContaining("changed since the page loaded") });
+        expect(await routing(campaignId)).toHaveLength(0);
+        expect(session.revalidated).toContain(`/admin/campaigns/${campaignId}`);
+      });
+
+      it("records the routing and revalidates on a valid call", async () => {
+        const { campaignId } = await legacyCampaign();
+        const rows = (await getLegacyRoutingPreview(campaignId))!;
+        expect(await approveLegacyRoutingAction(campaignId, shown(rows))).toBeUndefined();
+        const [record] = await routing(campaignId);
+        expect(record.actor).not.toBe("admin");
+        expect(session.revalidated).toContain(`/admin/campaigns/${campaignId}`);
+      });
+    });
+
+    it("a campaign with a routing record gets no preview", async () => {
+      const { campaignId } = await halfSentCampaign();
+      expect(await getLegacyRoutingPreview(campaignId)).toBeNull();
+      expect((await approveLegacyRouting(campaignId, {}, "josh")).ok).toBe(false);
+    });
+  });
+
   it("resume with nothing unreached returns a zero result and writes no audit row", async () => {
     const { campaignId } = await halfSentCampaign();
     await resumeLaunch(campaignId, "test");
@@ -233,9 +389,6 @@ describe("resume a half-sent launch", () => {
     await resumeLaunch(campaignId, "test");
     expect(await toTarget()).toHaveLength(1);
   });
-
-  const status = async (campaignId: string) =>
-    (await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status;
 
   it("resume closes a campaign whose recipients are all complete and every selection is reached", async () => {
     const { campaignId } = await halfSentCampaign();

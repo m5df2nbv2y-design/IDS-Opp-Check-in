@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { resumeLaunch, sendReminders } from "@/server/services/campaign-service";
+import { approveLegacyRouting, resumeLaunch, sendReminders } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -103,6 +103,17 @@ export async function resumeLaunchAction(campaignId: string): Promise<void> {
   await resumeLaunch(campaignId, actor);
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin/outbox");
+}
+
+type ActionRefusal = { error: string };
+
+/** Approve the routing shown for a campaign launched before routing records. Refusals are returned, not thrown. */
+export async function approveLegacyRoutingAction(campaignId: string, shownRoutes: Record<string, string | null>): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await approveLegacyRouting(campaignId, shownRoutes, actor);
+  // Revalidate on refusal too, so a stale preview and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  if (!result.ok) return { error: result.message };
 }
 
 export async function sendRemindersAction(campaignId: string) {
