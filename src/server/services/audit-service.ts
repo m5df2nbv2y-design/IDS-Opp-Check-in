@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
@@ -10,7 +11,27 @@ export const AUDIT_EVENTS = {
   CAMPAIGN_EMAIL_DRAFTED: "CAMPAIGN_EMAIL_DRAFTED",
   INVITE_SENT: "INVITE_SENT",
   INVITE_FAILED: "INVITE_FAILED",
+  INVITE_UNCERTAIN: "INVITE_UNCERTAIN",
+  /**
+   * An administrator settled an invitation whose provider outcome was never
+   * learned, from what they saw in the sending mailbox. A human assertion, kept
+   * distinct from INVITE_SENT / INVITE_FAILED, which record what the provider said.
+   */
+  INVITE_RECONCILED_SENT: "INVITE_RECONCILED_SENT",
+  INVITE_RECONCILED_NOT_SENT: "INVITE_RECONCILED_NOT_SENT",
+  /** An admin started a re-send of a FAILED invitation with a fresh link. The outcome is INVITE_SENT / INVITE_FAILED / INVITE_UNCERTAIN. */
+  INVITE_RESEND_STARTED: "INVITE_RESEND_STARTED",
+  REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
+  REMINDER_FAILED: "REMINDER_FAILED",
+  REMINDER_UNCERTAIN: "REMINDER_UNCERTAIN",
+  /** A reminder was withheld: an item's opportunity closed, moved or is no longer resolved. detail: { reason }. */
+  REMINDER_SKIPPED: "REMINDER_SKIPPED",
+  CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
+  /** An admin excluded a shortfall opportunity that cannot resume. detail: { version: 1, opportunityId, reason }. Final. */
+  SELECTION_EXCLUDED: "SELECTION_EXCLUDED",
+  /** An admin closed out a held-back contact by revoking their link. detail: { version: 1, recipientId, tokenHint, reason }. Final. */
+  RECIPIENT_CLOSED_OUT: "RECIPIENT_CLOSED_OUT",
   CHECKIN_OPENED: "CHECKIN_OPENED",
   RESPONSE_SUBMITTED: "RESPONSE_SUBMITTED",
   RESPONSE_REVISED: "RESPONSE_REVISED",
@@ -19,6 +40,15 @@ export const AUDIT_EVENTS = {
   SYNC_FAILED: "SYNC_FAILED",
   SYNC_SKIPPED: "SYNC_SKIPPED",
   SYNC_WITHHELD: "SYNC_WITHHELD",
+  /**
+   * An administrator reconciled an UNCERTAIN write by hand and attested to what
+   * they saw in Salesforce. Deliberately distinct from SYNC_SUCCEEDED and
+   * SYNC_FAILED, which record what the API told us: these two record what a
+   * person told us. Collapsing them would let a human assertion masquerade as
+   * an observed provider result in the audit trail.
+   */
+  SYNC_RECONCILED_APPLIED: "SYNC_RECONCILED_APPLIED",
+  SYNC_RECONCILED_NOT_APPLIED: "SYNC_RECONCILED_NOT_APPLIED",
   CATALOG_REFRESHED: "CATALOG_REFRESHED",
   OPPORTUNITY_CLOSED: "OPPORTUNITY_CLOSED",
   SIGNAL_INGESTED: "SIGNAL_INGESTED",
@@ -46,8 +76,8 @@ export type AuditInput = {
   opportunityId?: string | null;
 };
 
-export async function recordAudit(input: AuditInput) {
-  return prisma.auditEvent.create({
+export async function recordAudit(input: AuditInput, db: Prisma.TransactionClient = prisma) {
+  return db.auditEvent.create({
     data: {
       type: input.type,
       summary: input.summary,
@@ -78,4 +108,13 @@ export async function listAuditEvents(options?: { campaignId?: string; limit?: n
       opportunity: { select: { customerName: true, opportunityName: true } },
     },
   });
+}
+
+/**
+ * Persistence-time defense for provider-returned text: drops URLs and check-in
+ * paths (bearer links) and caps length. It does not claim to redact every secret.
+ */
+export function sanitizeProviderError(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  return text.replace(/\bhttps?:\/\/\S*/gi, "[link removed]").replace(/\/checkin\/\S*/gi, "[link removed]").slice(0, 300);
 }

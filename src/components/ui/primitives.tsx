@@ -25,13 +25,15 @@ export function Wordmark({ subdued = false }: { subdued?: boolean }) {
 }
 
 const RECIPIENT_STATUS_STYLES: Record<RecipientStatus, { label: string; className: string }> = {
-  PENDING: { label: "Not Sent", className: "bg-canvas text-muted border-line-strong" },
+  PENDING: { label: "Delivery pending", className: "bg-canvas text-muted border-line-strong" },
   SENT: { label: "Sent", className: "bg-canvas text-muted border-line-strong" },
   OPENED: { label: "Opened", className: "bg-brand-soft text-brand border-brand/25" },
   IN_PROGRESS: { label: "In Progress", className: "bg-warning-soft text-warning border-warning/25" },
   COMPLETE: { label: "Complete", className: "bg-success-soft text-success border-success/25" },
   SYNC_ERROR: { label: "Sync Error", className: "bg-danger-soft text-danger border-danger/25" },
+  SEND_UNCERTAIN: { label: "Delivery unresolved", className: "bg-warning-soft text-warning border-warning/25" },
   SEND_FAILED: { label: "Send Failed", className: "bg-danger-soft text-danger border-danger/25" },
+  REVOKED: { label: "Link revoked", className: "bg-canvas text-muted border-line-strong" },
 };
 
 export function RecipientStatusBadge({ status }: { status: RecipientStatus }) {

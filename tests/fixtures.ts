@@ -60,6 +60,19 @@ export async function launchCampaignAndCollectTokens(name = "Test Campaign") {
   return { campaignId: result.campaignId, tokens, emails, result };
 }
 
+/** A launched campaign with one item parked in UNCERTAIN, as a lost Salesforce PATCH response would leave it. */
+export async function anUncertainItem() {
+  const launched = await launchCampaignAndCollectTokens("Reconcile Campaign");
+  const item = await prisma.checkInOpportunity.findFirstOrThrow({
+    where: { recipient: { campaignId: launched.campaignId } },
+  });
+  const uncertain = await prisma.checkInOpportunity.update({
+    where: { id: item.id },
+    data: { syncStatus: "UNCERTAIN", syncError: "Salesforce returned HTTP 503." },
+  });
+  return { campaignId: launched.campaignId, item: uncertain };
+}
+
 export async function itemsForContact(campaignId: string, contactName: string) {
   return prisma.checkInOpportunity.findMany({
     where: { recipient: { campaignId, contact: { name: contactName } } },

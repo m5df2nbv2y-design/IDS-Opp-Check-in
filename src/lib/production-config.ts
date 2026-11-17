@@ -55,8 +55,9 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
   const violations: string[] = [];
 
   // --- Database ---------------------------------------------------------
-  // Without this, env.databaseUrl falls back to a local SQLite file and the
-  // application serves an empty database as though nothing were wrong.
+  // Checked here too so startup lists every problem at once; db.ts refuses a
+  // missing or non-PostgreSQL URL on first use. A SQLite URL is named explicitly
+  // because the application once fell back to one.
   if (!isSet(env.DATABASE_URL)) {
     violations.push("DATABASE_URL is not set. Production must not fall back to local SQLite.");
   } else if (env.DATABASE_URL!.startsWith("file:")) {
@@ -131,6 +132,19 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
   // Salesforce call.
   const salesforceRefusal = liveIntegrationRefusal(env);
   if (salesforceRefusal) violations.push(salesforceRefusal.split("\n")[0]);
+
+  // --- Email ------------------------------------------------------------
+  // getEmailService refuses anything else at send time; say so at boot too.
+  const emailProvider = env.EMAIL_PROVIDER?.trim().toLowerCase() ?? "";
+  if (!["", "mock", "resend", "graph"].includes(emailProvider)) {
+    violations.push(
+      `EMAIL_PROVIDER is "${env.EMAIL_PROVIDER}". Use "graph", "resend" or "mock".`,
+    );
+  } else if (emailProvider === "graph") {
+    for (const name of ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"]) {
+      if (!isSet(env[name])) violations.push(`${name} is required for the Microsoft Graph email provider.`);
+    }
+  }
 
   const emailRefusal = liveEmailRefusal(env);
   if (emailRefusal) violations.push(emailRefusal);

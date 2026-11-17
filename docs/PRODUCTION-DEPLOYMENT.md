@@ -51,7 +51,8 @@ and names every problem at once.
 | `SF_CLIENT_ID` / `SF_CLIENT_SECRET` | External Client App Consumer Key / Secret. |
 | `SF_LOGIN_URL` | The org's My Domain host, **not** `login.salesforce.com`. |
 | `SALESFORCE_WRITE_ENABLED` | Leave `false`. |
-| `EMAIL_PROVIDER` | Leave `mock` until customer email is commissioned. |
+| `EMAIL_PROVIDER` | Leave `mock` until customer email is commissioned. Only `mock`, `resend` or `graph` are accepted; anything else refuses to start. |
+| `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` / `GRAPH_SENDER_MAILBOX` | Required at startup when `EMAIL_PROVIDER="graph"`. |
 
 `AUTH_DEV_BYPASS` must **not** be set in production. The local sign-in provider
 is not registered in a production build at all, and setting the variable is

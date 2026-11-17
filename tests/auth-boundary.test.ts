@@ -92,6 +92,8 @@ describe("every server action asserts independently of the layout", () => {
 
   it("finds the expected set of actions", () => {
     expect(actionNames.length).toBeGreaterThanOrEqual(11);
+    // The only exit from an UNCERTAIN write must be inside this scan.
+    expect(actionNames).toContain("reconcileUncertainAction");
   });
 
   it.each(actionNames)("%s calls requireAdminActor() as its first statement", (name) => {

@@ -181,11 +181,15 @@ model CheckInRecipient {
   startedAt   DateTime?
   completedAt DateTime?
   revokedAt   DateTime?
-  /// PENDING | SENT | FAILED — delivery state of the invitation itself.
+  /// PENDING | SENT | FAILED | UNCERTAIN | REMINDER_PENDING | REMINDER_UNCERTAIN.
+  /// Pending/uncertain outcomes block automatic replay.
   sendStatus  String    @default("PENDING")
+  /// Error text, or versioned reminder recovery metadata (hash/hint/expiry only).
   sendError   String?
   remindedAt  DateTime?
   reminderCount Int     @default(0)
+  /// When the current invitation attempt started: reset by a re-send. Read by
+  /// isSettleableInvitation and the "It was sent" attestation (sentAt = createdAt).
   createdAt   DateTime  @default(now())
 
   campaign Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)

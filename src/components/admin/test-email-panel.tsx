@@ -69,7 +69,7 @@ export function TestEmailPanel({
             >
               {result.ok
                 ? result.alreadySent
-                  ? `Already sent to ${result.sentTo} moments ago.`
+                  ? `Already sent to ${result.sentTo}; the same test email is not sent twice.`
                   : `Test email sent to ${result.sentTo}`
                 : result.message}
             </span>

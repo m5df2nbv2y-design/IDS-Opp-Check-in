@@ -1,47 +1,66 @@
-import { beforeEach, expect, it, vi } from "vitest";
-
-const mock = vi.hoisted(() => ({
-  claim: vi.fn(), emails: vi.fn(), recipients: vi.fn(), findOpportunities: vi.fn(),
-}));
-vi.mock("@/lib/db", () => ({ prisma: {
-  opportunity: { findMany: mock.findOpportunities, count: vi.fn(async () => 0) },
-  campaign: { updateMany: mock.claim, findUniqueOrThrow: vi.fn(async () => ({ id: "draft", name: "Example campaign" })) },
-  campaignSelection: { findMany: vi.fn(async () => []), createMany: vi.fn() },
-  checkInRecipient: { create: mock.recipients, update: vi.fn() },
-  checkInOpportunity: { createMany: vi.fn() },
-} }));
-vi.mock("@/server/integrations/email", () => ({ getEmailService: () => ({ send: mock.emails }) }));
-vi.mock("@/server/integrations/salesforce", () => ({ getSalesforceService: () => ({ info: { label: "Test catalog" } }) }));
-vi.mock("@/server/services/audit-service", () => ({ recordAudit: vi.fn(), AUDIT_EVENTS: {} }));
-vi.mock("@/server/services/snapshot-service", () => ({ recordSnapshot: vi.fn(), SNAPSHOT_SOURCES: {} }));
-vi.mock("@/lib/tokens", () => ({ issueToken: () => ({ token: "synthetic", hash: "synthetic-hash", hint: "hint" }), checkInUrl: () => "https://example.invalid/checkin/synthetic" }));
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { prisma } from "@/lib/db";
 import { launchCampaign } from "@/server/services/campaign-service";
+import { refreshCatalogFromSalesforce } from "@/server/services/catalog-service";
+import { getEmailService } from "@/server/integrations/email";
+import { resetDatabase } from "./fixtures";
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  mock.claim.mockResolvedValue({ count: 1 });
-  mock.emails.mockResolvedValue({ status: "SENT" });
-  mock.recipients.mockResolvedValue({ id: "recipient" });
-  mock.findOpportunities.mockResolvedValue([{ id: "opportunity", contactId: "contact", accountId: "account", internalRepId: "rep", amount: 100, currentStage: "PROPOSAL", closeDate: null, contact: { name: "Alex Example", email: "alex@example.invalid", accountId: "account", account: { name: "Example Company" } }, account: { name: "Example Company" }, internalRep: { name: "IDS Example" } }]);
+beforeEach(async () => { await resetDatabase(); await refreshCatalogFromSalesforce("test"); });
+afterEach(() => vi.restoreAllMocks());
+async function reviewedDraft() {
+  const campaign = await prisma.campaign.create({ data: { name: "Example campaign", period: "Test", emailRevision: 7 } });
+  const opportunity = await prisma.opportunity.findFirstOrThrow({ where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } }, include: { contact: true } });
+  return { campaign, opportunity };
+}
+it("uses reviewed custom copy after claiming the same revision and freezing routing", async () => {
+  const { campaign, opportunity } = await reviewedDraft();
+  const send = vi.spyOn(getEmailService(), "send");
+  await launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 7, emailCopy: { mode: "custom", subject: "Your project update", body: "Could you share an update?" } });
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ subject: "Your project update", text: expect.stringContaining("Could you share an update?"), to: { name: opportunity.contact!.name, email: opportunity.contact!.email }, linkUrl: expect.stringContaining("https://checkin.test/checkin/") }));
+  expect(await prisma.checkInRecipient.count({ where: { campaignId: campaign.id } })).toBe(1);
+  expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } })).status).toBe("IN_PROGRESS");
+  expect(await prisma.auditEvent.count({ where: { campaignId: campaign.id, type: "CAMPAIGN_ROUTING" } })).toBe(1);
 });
-
-it("uses the reviewed custom copy in the invitation after claiming the same revision", async () => {
-  await launchCampaign({ campaignId: "draft", opportunityIds: ["opportunity"], expectedEmailRevision: 7, emailCopy: { mode: "custom", subject: "Your project update", body: "Could you share an update?" } });
-  expect(mock.claim).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "draft", status: "DRAFT", emailRevision: 7 } }));
-  expect(mock.emails).toHaveBeenCalledWith(expect.objectContaining({ subject: "Your project update", text: expect.stringContaining("Could you share an update?"), to: { name: "Alex Example", email: "alex@example.invalid" }, linkUrl: "https://example.invalid/checkin/synthetic" }));
-  expect(mock.recipients).toHaveBeenCalledTimes(1);
-});
-
 it("a changed email revision or already-claimed draft cannot mint recipients or send", async () => {
-  mock.claim.mockResolvedValue({ count: 0 });
-  await expect(launchCampaign({ campaignId: "draft", opportunityIds: ["opportunity"], expectedEmailRevision: 7 })).rejects.toThrow("changed or was already sent");
-  expect(mock.recipients).not.toHaveBeenCalled();
-  expect(mock.emails).not.toHaveBeenCalled();
+  const { campaign, opportunity } = await reviewedDraft();
+  const send = vi.spyOn(getEmailService(), "send");
+  await prisma.campaign.update({ where: { id: campaign.id }, data: { emailRevision: 8 } });
+  await expect(launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 7 })).rejects.toThrow("changed or was already sent");
+  await prisma.campaign.update({ where: { id: campaign.id }, data: { status: "IN_PROGRESS" } });
+  await expect(launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 8 })).rejects.toThrow("changed or was already sent");
+  expect(await prisma.checkInRecipient.count()).toBe(0);
+  expect(send).not.toHaveBeenCalled();
 });
-
 it("invalid custom headers fail before campaign mutation or recipient creation", async () => {
-  await expect(launchCampaign({ campaignId: "draft", opportunityIds: ["opportunity"], expectedEmailRevision: 7, emailCopy: { mode: "custom", subject: "Injected\r\nBcc: forged@example.invalid", body: "Hello" } })).rejects.toThrow("single line");
-  expect(mock.findOpportunities).not.toHaveBeenCalled();
-  expect(mock.claim).not.toHaveBeenCalled();
-  expect(mock.recipients).not.toHaveBeenCalled();
+  const { campaign, opportunity } = await reviewedDraft();
+  const send = vi.spyOn(getEmailService(), "send");
+  await expect(launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 7, emailCopy: { mode: "custom", subject: "Injected\r\nBcc: forged@example.invalid", body: "Hello" } })).rejects.toThrow("single line");
+  expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } })).status).toBe("DRAFT");
+  expect(await prisma.checkInRecipient.count()).toBe(0);
+  expect(send).not.toHaveBeenCalled();
+});
+it("an unrecognised EMAIL_PROVIDER fails before launch provisions or a reminder claims anything", async () => {
+  const { campaign, opportunity } = await reviewedDraft();
+  // Launch once on Mock so there is a SENT recipient a reminder could claim.
+  const sent = await prisma.campaign.create({ data: { name: "Sent campaign", period: "Test", emailRevision: 1 } });
+  await launchCampaign({ campaignId: sent.id, opportunityIds: [opportunity.id], expectedEmailRevision: 1 });
+  const before = await prisma.checkInRecipient.findFirstOrThrow({ where: { campaignId: sent.id } });
+  expect(before.sendStatus).toBe("SENT");
+
+  // env and the provider singleton are read at module load: import fresh copies.
+  vi.stubEnv("EMAIL_PROVIDER", "grpah");
+  vi.resetModules();
+  const fresh = await import("@/server/services/campaign-service");
+  try {
+    await expect(fresh.launchCampaign({ campaignId: campaign.id, opportunityIds: [opportunity.id], expectedEmailRevision: 7 })).rejects.toThrow(/EMAIL_PROVIDER/);
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } })).status).toBe("DRAFT");
+    expect(await prisma.checkInRecipient.count({ where: { campaignId: campaign.id } })).toBe(0);
+
+    await expect(fresh.sendReminders(sent.id)).rejects.toThrow(/EMAIL_PROVIDER/);
+    const after = await prisma.checkInRecipient.findUniqueOrThrow({ where: { id: before.id } });
+    expect([after.sendStatus, after.tokenHash]).toEqual(["SENT", before.tokenHash]);
+  } finally {
+    vi.unstubAllEnvs();
+    await (await import("@/lib/db")).prisma.$disconnect();
+  }
 });

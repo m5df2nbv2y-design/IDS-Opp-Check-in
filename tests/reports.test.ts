@@ -96,6 +96,16 @@ describe("the reporting snapshot", () => {
   });
 
   it("counts past due from the close date on the record", async () => {
+    // The mock catalog carries fixed calendar close dates, so some of them pass
+    // as real time moves on. Pin every open record a year ahead first, so the
+    // only past-due record is the one this test moves, whatever today is.
+    const nextYear = new Date();
+    nextYear.setFullYear(nextYear.getFullYear() + 1);
+    await prisma.opportunity.updateMany({
+      where: { isOpen: true },
+      data: { closeDate: nextYear },
+    });
+
     const target = await prisma.opportunity.findFirstOrThrow({ where: { isOpen: true } });
     await prisma.opportunity.update({
       where: { id: target.id },

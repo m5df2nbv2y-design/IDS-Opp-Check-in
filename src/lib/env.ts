@@ -16,7 +16,8 @@ function int(key: string, fallback: number): number {
 }
 
 export const env = {
-  databaseUrl: str("DATABASE_URL", "file:./dev.db"),
+  // No default: a missing database must fail loudly in db.ts, never fall back.
+  databaseUrl: str("DATABASE_URL", ""),
 
   /** Public origin used to build check-in links inside emails. */
   appBaseUrl: str(
@@ -32,7 +33,7 @@ export const env = {
   /** "mock" | "smartsheet" */
   smartsheetProvider: str("SMARTSHEET_PROVIDER", "mock"),
 
-  /** "mock" | "resend" | "microsoft365" */
+  /** "mock" | "resend" | "graph" */
   emailProvider: str("EMAIL_PROVIDER", "mock"),
   emailFromName: str("EMAIL_FROM_NAME", "IDS Sales Operations"),
   emailFromAddress: str("EMAIL_FROM_ADDRESS", "sales-ops@ids.example.com"),
@@ -107,6 +108,37 @@ export const env = {
   emailReplyTo: process.env.EMAIL_REPLY_TO ?? "",
   resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? "",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
+
+  /**
+   * Microsoft Graph send-as-mailbox.
+   *
+   * Graph does not need Resend's DNS proof; sender-domain authentication is a
+   * Microsoft 365 tenant matter to confirm with IT. It does need admin consent
+   * for Mail.Send and — importantly — a scoping
+   * mechanism narrowing that consent to ONE mailbox, to be verified against
+   * current official Microsoft guidance (none is asserted here). Application
+   * permission Mail.Send is expected to reach every mailbox in the tenant until
+   * it is scoped.
+   *
+   * Every message is saved to the sending mailbox's Sent Items, and that copy
+   * holds the full message including the live check-in link. Access to that
+   * mailbox and its retention are to settle with IT.
+   *
+   * GRAPH_TENANT_ID and GRAPH_CLIENT_ID are read on their own: there is no
+   * fallback to the AUTH_MICROSOFT_ENTRA_ID_* sign-in variables, so both must be
+   * set explicitly. Which app registration to use is decided with IT. The
+   * mailbox is explicit rather than derived from emailFromAddress, so a
+   * mis-set From cannot silently redirect which mailbox we send as.
+   */
+  // Trimmed: a padded value would pass the "is it set" check and then fail every
+  // send as a token 401 or a mailbox 404, and a whitespace-only value is not set.
+  graph: {
+    tenantId: (process.env.GRAPH_TENANT_ID ?? "").trim(),
+    clientId: (process.env.GRAPH_CLIENT_ID ?? "").trim(),
+    clientSecret: (process.env.GRAPH_CLIENT_SECRET ?? "").trim(),
+    /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
+    senderMailbox: (process.env.GRAPH_SENDER_MAILBOX ?? "").trim(),
+  },
 
   /**
    * The ONE address the "Send test email" demo action may send to. Read only

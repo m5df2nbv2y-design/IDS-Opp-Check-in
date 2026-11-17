@@ -17,6 +17,13 @@ import { env } from "@/lib/env";
 function createPrismaClient() {
   const url = env.databaseUrl;
 
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set. This deployment has no database configured. " +
+        "Local development uses the Docker Postgres started by `npm run db:up`.",
+    );
+  }
+
   if (!/^postgres(ql)?:\/\//.test(url)) {
     throw new Error(
       `DATABASE_URL must be a PostgreSQL connection string, got "${url.split(":")[0]}:…". ` +

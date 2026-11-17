@@ -471,6 +471,7 @@ export type SendDraftResult = {
   sent: number;
   recipients: number;
   emailsFailed: number;
+  emailsUncertain: number;
   drifted: DriftedSelection[];
 };
 
@@ -486,7 +487,7 @@ export async function sendDraft(campaignId: string, actor = "admin", expectedEma
   const { sendableOpportunityIds, drifted } = await validateSelection(campaignId);
 
   if (sendableOpportunityIds.length === 0) {
-    return { campaignId, sent: 0, recipients: 0, emailsFailed: 0, drifted };
+    return { campaignId, sent: 0, recipients: 0, emailsFailed: 0, emailsUncertain: 0, drifted };
   }
 
   const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
@@ -501,26 +502,22 @@ export async function sendDraft(campaignId: string, actor = "admin", expectedEma
     opportunityIds: sendableOpportunityIds,
     emailCopy: readEmailCopy(campaign),
     expectedEmailRevision,
-  });
-
-  if (drifted.length > 0) {
-    await recordAudit({
-      type: AUDIT_EVENTS.CAMPAIGN_CREATED,
+    // Reported in the same transaction as the routing manifest that excludes them.
+    excludedAtSend: drifted.length > 0 ? {
+      opportunityIds: drifted.map((entry) => entry.opportunityId),
       summary: `${drifted.length} selected ${drifted.length === 1 ? "opportunity was" : "opportunities were"} excluded at send — no longer resolvable`,
-      actor,
-      actorKind: "ADMIN",
-      campaignId,
       detail: drifted
         .map((entry) => `${entry.accountName} — ${entry.opportunityName}: ${DRIFT_REASON_LABELS[entry.reason]}`)
         .join("; "),
-    });
-  }
+    } : undefined,
+  });
 
   return {
     campaignId,
     sent: result.opportunities,
     recipients: result.recipients,
     emailsFailed: result.emailsFailed,
+    emailsUncertain: result.emailsUncertain,
     drifted,
   };
 }

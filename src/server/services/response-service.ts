@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { hashToken } from "@/lib/tokens";
 import { isClosedStage, isOpportunityStage, stageLabel, type OpportunityStage } from "@/lib/stages";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
+import { closeCampaignIfDone } from "./campaign-service";
 import { syncCampaignResponses } from "./sync-service";
 
 export type InviteRejection = "NOT_FOUND" | "EXPIRED" | "REVOKED";
@@ -293,17 +294,4 @@ export async function completeCheckIn(token: string): Promise<CompleteResult> {
   await closeCampaignIfDone(session.campaignId);
 
   return { ok: true, alreadyCompleted: false, submitted, total: session.items.length };
-}
-
-/** Marks the campaign COMPLETE once every recipient has finished. */
-async function closeCampaignIfDone(campaignId: string): Promise<void> {
-  const outstanding = await prisma.checkInRecipient.count({
-    where: { campaignId, completedAt: null, revokedAt: null },
-  });
-  if (outstanding > 0) return;
-
-  await prisma.campaign.updateMany({
-    where: { id: campaignId, completedAt: null },
-    data: { status: "COMPLETE", completedAt: new Date() },
-  });
 }

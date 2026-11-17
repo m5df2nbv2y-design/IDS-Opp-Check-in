@@ -270,6 +270,48 @@ describe("selection drift and selected-only sending", () => {
     expect(new Set(items.map((i) => i.opportunityId))).toEqual(new Set(selected.map((o) => o.id)));
   });
 
+  it("a drifted opportunity never costs its contact the rest of the invitation", async () => {
+    // Two resolved opportunities that share one contact, plus another contact.
+    const shared = await prisma.opportunity.groupBy({
+      by: ["contactId"],
+      where: { isOpen: true, resolutionStatus: "RESOLVED" },
+      _count: { _all: true },
+      having: { contactId: { _count: { gt: 1 } } },
+    });
+    expect(shared.length).toBeGreaterThan(0);
+    const contactId = shared[0].contactId!;
+    const [drifting, keep] = await prisma.opportunity.findMany({
+      where: { contactId, isOpen: true, resolutionStatus: "RESOLVED" },
+      orderBy: { id: "asc" },
+      take: 2,
+    });
+    const other = await prisma.opportunity.findFirstOrThrow({
+      where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: contactId } },
+    });
+    await setSelection({ campaignId, opportunityIds: [drifting.id, keep.id, other.id], selected: true });
+    await prisma.opportunity.update({ where: { id: drifting.id }, data: { isOpen: false } });
+
+    const result = await sendDraft(campaignId, "test");
+
+    expect(result.drifted.map((d) => d.opportunityId)).toEqual([drifting.id]);
+    expect(result.recipients).toBe(2);
+    const recipient = await prisma.checkInRecipient.findFirst({ where: { campaignId, contactId }, include: { items: true } });
+    expect(recipient?.items.map((i) => i.opportunityId)).toEqual([keep.id]);
+    // The manifest routes only what was sent and names the exclusion, and the drift is audited.
+    const manifest = await prisma.auditEvent.findFirstOrThrow({ where: { campaignId, type: "CAMPAIGN_ROUTING" } });
+    const detail = JSON.parse(manifest.detail!);
+    expect(detail.excluded).toEqual([drifting.id]);
+    expect(Object.keys(detail.routes).sort()).toEqual([keep.id, other.id].sort());
+    expect(await prisma.auditEvent.count({ where: { campaignId, summary: { contains: "excluded at send" } } })).toBe(1);
+    // Excluded at send is not unreached work: nothing to review or resume, and the campaign can close.
+    const { getUnreachedOpportunityIds, getRecoverableOpportunityIds, closeCampaignIfDone } = await import("@/server/services/campaign-service");
+    expect(await getUnreachedOpportunityIds(campaignId)).toEqual([]);
+    expect(await getRecoverableOpportunityIds(campaignId)).toEqual([]);
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { completedAt: new Date() } });
+    await closeCampaignIfDone(campaignId);
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("COMPLETE");
+  });
+
   it("excludes an opportunity CLOSED after selection", async () => {
     const [first, ...rest] = await selectResolved(3);
     await prisma.opportunity.update({ where: { id: first.id }, data: { isOpen: false } });
@@ -473,6 +515,57 @@ describe("launchCampaign has no whole-catalog fallback", () => {
     expect(result.recipients).toBe(0);
     expect(await prisma.checkInRecipient.count()).toBe(0);
     expect(await prisma.emailMessage.count()).toBe(0);
+  });
+
+  const launchCounts = () => Promise.all([
+    prisma.campaign.count(), prisma.campaignSelection.count(),
+    prisma.checkInRecipient.count(), prisma.checkInOpportunity.count(),
+    prisma.emailMessage.count(), prisma.auditEvent.count(), prisma.opportunitySnapshot.count(),
+  ]);
+
+  it.each(["closed", "unresolved", "unassigned", "missing"])(
+    "rejects a mixed direct selection containing a %s opportunity before any side effects",
+    async invalid => {
+      const [valid, other] = await prisma.opportunity.findMany({
+        where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } }, take: 2,
+      });
+      let invalidId = other.id;
+      if (invalid === "closed") await prisma.opportunity.update({ where: { id: other.id }, data: { isOpen: false } });
+      if (invalid === "unresolved") await prisma.opportunity.update({ where: { id: other.id }, data: { resolutionStatus: "UNRESOLVED" } });
+      if (invalid === "unassigned") await prisma.opportunity.update({ where: { id: other.id }, data: { contactId: null } });
+      if (invalid === "missing") invalidId = "nonexistent-selected-opportunity";
+      const before = await launchCounts();
+      await expect(launchCampaign({ opportunityIds: [valid.id, invalidId] })).rejects.toThrow(/review.*selection/i);
+      expect(await launchCounts()).toEqual(before);
+    },
+  );
+
+  it("rejects an entirely missing selection without creating an empty campaign", async () => {
+    const before = await launchCounts();
+    await expect(launchCampaign({ opportunityIds: ["nonexistent-selected-opportunity"] })).rejects.toThrow(/review.*selection/i);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("cannot bypass new-campaign validation with a resume flag", async () => {
+    const before = await launchCounts();
+    await expect(launchCampaign({ opportunityIds: ["nonexistent-selected-opportunity"], resume: true })).rejects.toThrow(/review.*selection/i);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("does not claim a supplied draft when a direct selection is incomplete", async () => {
+    const draft = await prisma.campaign.create({ data: { name: "Still a draft", period: "Test", status: "DRAFT" } });
+    const before = await launchCounts();
+    await expect(launchCampaign({ campaignId: draft.id, expectedEmailRevision: draft.emailRevision, opportunityIds: ["nonexistent-selected-opportunity"] })).rejects.toThrow(/review.*selection/i);
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: draft.id } })).toEqual(draft);
+    expect(await launchCounts()).toEqual(before);
+  });
+
+  it("treats duplicate valid ids as one explicit selection", async () => {
+    const valid = await prisma.opportunity.findFirstOrThrow({ where: { isOpen: true, resolutionStatus: "RESOLVED", contactId: { not: null } } });
+    const result = await launchCampaign({ opportunityIds: [valid.id, valid.id] });
+    expect(result.opportunities).toBe(1);
+    expect(await prisma.campaignSelection.count({ where: { campaignId: result.campaignId } })).toBe(1);
+    expect(await prisma.emailMessage.count({ where: { campaignId: result.campaignId, kind: "INVITE" } })).toBe(1);
   });
 
   it("sends to exactly the selection it is given, never more", async () => {

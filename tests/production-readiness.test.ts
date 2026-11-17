@@ -108,6 +108,28 @@ describe("production configuration", () => {
     expect(violations.join(" ")).toContain("email provider");
   });
 
+  it("REFUSES an unrecognised EMAIL_PROVIDER, which would otherwise send nothing", () => {
+    const violations = productionConfigViolations({ ...VALID, EMAIL_PROVIDER: "grpah" });
+    expect(violations.join(" ")).toContain('EMAIL_PROVIDER is "grpah"');
+  });
+
+  it.each(["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"])(
+    "REFUSES the Graph provider when %s is missing, naming only the variable",
+    (name) => {
+      const graph = {
+        GRAPH_TENANT_ID: "tenant",
+        GRAPH_CLIENT_ID: "client",
+        GRAPH_CLIENT_SECRET: "secret-value",
+        GRAPH_SENDER_MAILBOX: "hello@idsculpture.test",
+      };
+      expect(productionConfigViolations({ ...VALID, EMAIL_PROVIDER: "graph", ...graph })).toEqual([]);
+      const violations = productionConfigViolations({ ...VALID, EMAIL_PROVIDER: " Graph ", ...graph, [name]: "  " });
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toContain(name);
+      expect(violations[0]).not.toContain("secret-value");
+    },
+  );
+
   it("accepts a Preview deployment running entirely on mock providers", () => {
     const violations = productionConfigViolations({
       ...VALID,

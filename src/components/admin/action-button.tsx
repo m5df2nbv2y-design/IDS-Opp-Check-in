@@ -1,10 +1,11 @@
 "use client";
 
-import { useTransition, type ReactNode } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
 type Props = {
-  action: () => Promise<void>;
+  /** A returned `error` is an expected refusal, shown beside the button. */
+  action: () => Promise<void | { error: string }>;
   children: ReactNode;
   pendingLabel?: string;
   variant?: "primary" | "secondary" | "ghost" | "danger";
@@ -22,20 +23,30 @@ export function ActionButton({
   confirm,
 }: Props) {
   const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
-  return (
+  const button = (
     <Button
       variant={variant}
       size={size}
       disabled={pending}
       onClick={() => {
         if (confirm && !window.confirm(confirm)) return;
+        setError(null);
         startTransition(async () => {
-          await action();
+          const result = await action();
+          if (result?.error) setError(result.error);
         });
       }}
     >
       {pending ? pendingLabel : children}
     </Button>
+  );
+  if (!error) return button;
+  return (
+    <div className="flex flex-col gap-1">
+      {button}
+      <p role="alert" className="text-[13px] text-danger">{error}</p>
+    </div>
   );
 }

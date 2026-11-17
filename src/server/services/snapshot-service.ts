@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
@@ -74,13 +75,13 @@ function materiallyDiffers(
  * CAMPAIGN_LAUNCH and OUTCOME_OBSERVED always write: they mark events, not
  * routine polling, and the timeline should show them even when nothing changed.
  */
-export async function recordSnapshot(input: SnapshotInput): Promise<boolean> {
+export async function recordSnapshot(input: SnapshotInput, db: Prisma.TransactionClient = prisma): Promise<boolean> {
   const alwaysRecord =
     input.source === SNAPSHOT_SOURCES.CAMPAIGN_LAUNCH ||
     input.source === SNAPSHOT_SOURCES.OUTCOME_OBSERVED;
 
   if (!alwaysRecord) {
-    const previous = await prisma.opportunitySnapshot.findFirst({
+    const previous = await db.opportunitySnapshot.findFirst({
       where: { externalId: input.externalId },
       orderBy: { observedAt: "desc" },
       select: { amount: true, stage: true, closeDate: true, isOpen: true, isWon: true },
@@ -89,7 +90,7 @@ export async function recordSnapshot(input: SnapshotInput): Promise<boolean> {
     if (previous && !materiallyDiffers(previous, input)) return false;
   }
 
-  await prisma.opportunitySnapshot.create({
+  await db.opportunitySnapshot.create({
     data: {
       opportunityId: input.opportunityId,
       externalId: input.externalId,
