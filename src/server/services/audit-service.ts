@@ -25,6 +25,8 @@ export const AUDIT_EVENTS = {
   REMINDER_SENT: "REMINDER_SENT",
   REMINDER_FAILED: "REMINDER_FAILED",
   REMINDER_UNCERTAIN: "REMINDER_UNCERTAIN",
+  /** A reminder was withheld: an item's opportunity closed, moved or is no longer resolved. detail: { reason }. */
+  REMINDER_SKIPPED: "REMINDER_SKIPPED",
   CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
   /** An admin excluded a shortfall opportunity that cannot resume. detail: { version: 1, opportunityId, reason }. Final. */
   SELECTION_EXCLUDED: "SELECTION_EXCLUDED",

@@ -661,13 +661,21 @@ export async function sendReminders(campaignId: string, actor = "admin"): Promis
     } });
     if (!readReminderRecovery(metadata)) throw new Error("Invalid reminder recovery metadata");
     const claim = await prisma.$transaction(async tx => {
+      // Re-read inside the claim: a catalog refresh since the batch began must not send.
+      const stale = staleOpportunityNote({ contactId: recipient.contactId, items: await tx.checkInOpportunity.findMany({ where: { recipientId: recipient.id }, include: { opportunity: true } }) });
+      if (stale) return { count: 0, stale };
       const claimed = await tx.checkInRecipient.updateMany({
         where: { id: recipient.id, tokenHash: recipient.tokenHash, sendStatus: "SENT", sendError: recipient.sendError, completedAt: null, revokedAt: null },
         data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt, sendStatus: "REMINDER_PENDING", sendError: metadata },
       });
       if (claimed.count === 1) await recordAudit({ type: AUDIT_EVENTS.REMINDER_STARTED, summary: `Reminder attempt started for ${recipient.contact.name}`, actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, detail: JSON.stringify({ attempt: JSON.parse(metadata).attempt }) }, tx);
-      return claimed;
+      return { count: claimed.count, stale: null };
     });
+    if (claim.stale) {
+      // Best-effort: a failed audit write must not abort a batch that has already sent reminders.
+      await recordAudit({ type: AUDIT_EVENTS.REMINDER_SKIPPED, summary: `Reminder withheld from ${recipient.contact.name}: ${claim.stale}`, actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId, detail: JSON.stringify({ version: 1, reason: claim.stale }) }).catch(() => undefined);
+      continue;
+    }
     if (claim.count !== 1) continue;
     const result = await email.send(buildReminderEmail({
       contactName: recipient.contact.name, contactEmail: recipient.contact.email,
@@ -722,7 +730,29 @@ export const RESEND_INVITATION_MESSAGES = {
   NOT_ELIGIBLE: "This invitation can no longer be re-sent.",
   FAILED: "The provider rejected the re-send. Nothing was sent.",
   UNKNOWN: "The outcome of this re-send is unknown. Check the sending mailbox's Sent Items before doing anything else.",
+  OPPORTUNITIES_CHANGED: "This contact's opportunities changed since launch. Refresh from Salesforce and review before re-sending.",
 } as const;
+
+type ItemOpportunity = { submittedAt: Date | null; opportunityName: string; projectName: string | null; opportunity: { isOpen: boolean; resolutionStatus: string; contactId: string | null } };
+
+/**
+ * The launch rule, re-checked before a reminder or re-send against the cached catalog:
+ * every unanswered item's opportunity is open, RESOLVED and routed to this contact
+ * (an answered item that later closed or moved never holds the contact back). Null when it
+ * holds; otherwise the row note naming the first opportunity that no longer does.
+ */
+export function staleOpportunityNote(recipient: { contactId: string; items: ItemOpportunity[] }): string | null {
+  for (const item of recipient.items) {
+    if (item.submittedAt) continue;
+    const o = item.opportunity;
+    const why = !o.isOpen ? "closed since launch"
+      : o.resolutionStatus !== "RESOLVED" || !o.contactId ? "is no longer resolved to a contact"
+      : o.contactId !== recipient.contactId ? "moved to another contact since launch"
+      : null;
+    if (why) return `${item.projectName ?? item.opportunityName} ${why}; no reminder or re-send until an admin reviews. Refresh from Salesforce if this looks out of date.`;
+  }
+  return null;
+}
 
 /** FAILED, still open, with items, in an IN_PROGRESS campaign: an admin may re-send it with a fresh link. */
 const canResend = (recipient: { sendStatus: string; completedAt: Date | null; revokedAt: Date | null; items: unknown[] }, campaignStatus: string) =>
@@ -753,11 +783,12 @@ export async function resendInvitation(input: {
   const claim = await prisma.$transaction(async (tx) => {
     const recipient = await tx.checkInRecipient.findFirst({
       where: { id: recipientId, campaignId },
-      include: { campaign: true, items: true, contact: { include: { account: true } } },
+      include: { campaign: true, items: { include: { opportunity: true } }, contact: { include: { account: true } } },
     });
     if (!recipient) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE };
     if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.STALE };
     if (!canResend(recipient, recipient.campaign.status)) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE };
+    if (staleOpportunityNote(recipient)) return { ok: false as const, message: RESEND_INVITATION_MESSAGES.OPPORTUNITIES_CHANGED };
     const claimed = await tx.checkInRecipient.updateMany({
       where: { id: recipient.id, campaignId, sendStatus: "FAILED", tokenHint: shownTokenHint, tokenHash: recipient.tokenHash, completedAt: null, revokedAt: null },
       data: { tokenHash: token.hash, tokenHint: token.hint, expiresAt, sendStatus: "PENDING", sendError: null, createdAt: new Date() },
@@ -1157,11 +1188,15 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
     where: { id: campaignId },
     include: {
       recipients: {
-        include: { contact: { include: { account: true } }, items: true },
+        include: { contact: { include: { account: true } }, items: { include: { opportunity: true } } },
       },
     },
   });
   if (!campaign) return null;
+  const remindable = (r: (typeof campaign.recipients)[number]) => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0;
+  // Only rows that would otherwise get a reminder or re-send are held back (and say why).
+  const heldBack = (r: (typeof campaign.recipients)[number]) =>
+    remindable(r) || canResend(r, campaign.status) ? staleOpportunityNote(r) : null;
 
   const recipients: RecipientProgress[] = campaign.recipients
     .map((recipient) => {
@@ -1198,8 +1233,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         tokenHint: recipient.tokenHint,
         sendStatus: recipient.sendStatus,
         canReconcileInvitation: isSettleableInvitation(recipient),
-        canResendInvitation: canResend(recipient, campaign.status),
-        deliveryNote: isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null,
+        canResendInvitation: canResend(recipient, campaign.status) && !heldBack(recipient),
+        deliveryNote: [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,
       };
     })
     .sort((a, b) => a.contactName.localeCompare(b.contactName));
@@ -1241,7 +1276,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
       const o = excludedOpportunities.get(e.opportunityId);
       return { ...e, opportunityName: o ? o.projectName ?? o.opportunityName : e.opportunityName ?? e.opportunityId, customerName: o?.customerName ?? e.customerName ?? "Unknown opportunity" };
     }),
-    reminderEligibleCount: campaign.recipients.filter(r => r.sendStatus === "SENT" && !r.completedAt && !r.revokedAt && r.items.length > 0).length,
+    reminderEligibleCount: campaign.recipients.filter(r => remindable(r) && !heldBack(r)).length,
     unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,
   };
