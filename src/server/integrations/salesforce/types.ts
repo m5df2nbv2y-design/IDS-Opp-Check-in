@@ -105,6 +105,14 @@ export type OpportunityStatusUpdate = {
   lossReason?: string | null;
 };
 
+export type SalesforceWriteReadiness = {
+  username: string;
+  /** `updateable` is false too when the field is missing from the Describe. */
+  fields: { name: string; updateable: boolean }[];
+  /** Ids Salesforce did not answer for are absent; callers count them as not editable. */
+  editable: Record<string, boolean>;
+};
+
 export type SalesforceProviderInfo = {
   id: string;
   label: string;
@@ -129,6 +137,9 @@ export interface SalesforceService {
 
   /** Read-only, active Loss Reason options; no fallback to invented live values. */
   getLossReasonOptions?(): Promise<{ value: string; label: string }[]>;
+
+  /** Read-only: who the app acts as, which write fields it may update, and which records it may edit. */
+  checkWriteReadiness?(externalIds: string[]): Promise<SalesforceWriteReadiness>;
 
   getOpportunity(externalId: string): Promise<SalesforceOpportunity | null>;
 

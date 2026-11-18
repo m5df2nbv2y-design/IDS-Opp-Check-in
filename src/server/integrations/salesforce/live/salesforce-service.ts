@@ -13,8 +13,9 @@ import {
   type SalesforceProviderInfo,
   type SalesforceRep,
   type SalesforceService,
+  type SalesforceWriteReadiness,
 } from "../types";
-import { requestAccessToken } from "./auth";
+import { fetchIdentity, requestAccessToken } from "./auth";
 
 /**
  * ===========================================================================
@@ -311,6 +312,63 @@ export class LiveSalesforceService implements SalesforceService {
     }
 
     await this.patchOpportunity(update.externalId, buildWritePayload(update), update.expectedLastModified);
+  }
+
+  /**
+   * Read-only write-readiness check: GET requests only (userinfo, Describe,
+   * SOQL). Each step's failure names the step, so an admin can see which one.
+   */
+  async checkWriteReadiness(externalIds: string[]): Promise<SalesforceWriteReadiness> {
+    const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (caught) {
+        throw new SalesforceSyncError(`${name} failed: ${caught instanceof Error ? caught.message : String(caught)}`, { code: "QUERY_FAILED", retryable: true });
+      }
+    };
+
+    const identity = await step("Identifying the integration user", async () => {
+      const lookup = async () => {
+        const auth = await this.authenticate();
+        const found = await fetchIdentity({ accessToken: auth.accessToken, instanceUrl: auth.instanceUrl, identityUrl: null });
+        return found && found.userId !== "unknown" ? found : null;
+      };
+      // A null may be a revoked cached token: retry once with a fresh one, as request() does on 401.
+      let found = await lookup();
+      if (!found) {
+        this.auth = null;
+        found = await lookup();
+      }
+      if (!found) throw new Error("Salesforce userinfo did not return the user id.");
+      return found;
+    });
+
+    const fields = await step("Reading the Opportunity Describe", async () => {
+      const response = await this.readWithRetry(
+        (auth) => `${auth.instanceUrl}/services/data/${API_VERSION}/sobjects/Opportunity/describe`,
+      );
+      const described = (await response.json()) as { fields?: { name: string; updateable?: boolean }[] };
+      const names = [...new Set(["StageName", "CloseDate", "Probability", env.salesforce.write.lossReasonField.trim()])].filter(Boolean);
+      return names.map((name) => ({
+        name,
+        updateable: described.fields?.find((field) => field.name === name)?.updateable === true,
+      }));
+    });
+
+    const editable = await step("Checking record access", async () => {
+      const result: Record<string, boolean> = {};
+      // UserRecordAccess accepts at most 200 RecordIds per query.
+      for (let i = 0; i < externalIds.length; i += 200) {
+        const ids = externalIds.slice(i, i + 200).map((id) => `'${escapeSoql(id)}'`).join(",");
+        const rows = await this.query<{ RecordId: string; HasEditAccess: boolean }>(
+          `SELECT RecordId, HasEditAccess FROM UserRecordAccess WHERE UserId = '${escapeSoql(identity.userId)}' AND RecordId IN (${ids})`,
+        );
+        for (const row of rows) result[row.RecordId] = row.HasEditAccess;
+      }
+      return result;
+    });
+
+    return { username: identity.username, fields, editable };
   }
 
   // -- transport ------------------------------------------------------------
