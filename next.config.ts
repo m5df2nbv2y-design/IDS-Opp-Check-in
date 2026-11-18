@@ -4,9 +4,10 @@ import type { NextConfig } from "next";
  * Baseline security headers.
  *
  * Applied to every response, including the public /checkin pages, which are the
- * only part of the application an outsider can reach. Deliberately conservative
- * — nothing here needs a CSP nonce pipeline, which would be a larger change
- * than this pass warrants.
+ * only part of the application an outsider can reach.
+ *
+ * The Content-Security-Policy is NOT set here: src/proxy.ts sets it per request
+ * with a fresh nonce. Do not add a CSP here — browsers enforce both policies.
  */
 const securityHeaders = [
   // The check-in page must not be embeddable: a framed check-in could be

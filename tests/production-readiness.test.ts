@@ -319,13 +319,11 @@ describe("the Salesforce transport is bounded", () => {
 
 describe("the public surface stays public and bounded", () => {
   it("keeps /checkin and /signin outside the admin guard", () => {
-    const proxy = read("proxy.ts");
-    // The matcher is the whole boundary: only /admin is intercepted. proxy.ts
-    // naturally names /signin as its redirect TARGET, which is not a match rule.
-    expect(proxy).toContain('matcher: ["/admin/:path*"]');
-    const matcher = proxy.slice(proxy.indexOf("export const config"));
-    expect(matcher).not.toContain("/checkin");
-    expect(matcher).not.toContain("/signin");
+    const proxy = read("src/proxy.ts");
+    // proxy.ts runs on every page for the CSP, but its sign-in redirect is
+    // gated to /admin. Behaviour is covered in content-security-policy.test.ts.
+    expect(proxy).toContain('pathname === "/admin" || pathname.startsWith("/admin/")');
+    expect(proxy).not.toContain("/checkin");
     // And the recipient page itself is never authenticated.
     const page = read("src/app/checkin/[token]/page.tsx");
     expect(page).not.toContain("requireAdmin");
