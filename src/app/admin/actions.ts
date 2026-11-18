@@ -55,10 +55,23 @@ export async function saveCampaignEmailAction(campaignId: string, revision: numb
  * only — this never sends anything and never selects anything. Opportunities
  * become sendable only when an admin explicitly selects them.
  */
-export async function refreshDiscoveryAction() {
+export async function refreshDiscoveryAction(): Promise<void | ActionRefusal> {
   const actor = await requireAdminActor();
-  await refreshCatalogFromSalesforce(actor);
+  const refused = await refreshOrRefuse(actor);
   revalidatePath("/admin");
+  return refused;
+}
+
+const REFRESH_FAILED = "The Salesforce refresh didn't finish. The last successful refresh is shown below; try again, and if it keeps failing, check the server log.";
+
+/** Run the refresh; a failure comes back as a message beside the button instead of the error page. */
+async function refreshOrRefuse(actor: string): Promise<void | ActionRefusal> {
+  try {
+    await refreshCatalogFromSalesforce(actor);
+  } catch (error) {
+    console.error("[catalog] Salesforce refresh failed", error);
+    return { error: REFRESH_FAILED };
+  }
 }
 
 /** Select or deselect specific opportunities in the draft. */
@@ -328,11 +341,12 @@ export async function restoreContactAction(campaignId: string, recipientId: stri
   if (!result.ok) return { error: result.message };
 }
 
-export async function refreshCatalogAction() {
+export async function refreshCatalogAction(): Promise<void | ActionRefusal> {
   const actor = await requireAdminActor();
-  await refreshCatalogFromSalesforce(actor);
+  const refused = await refreshOrRefuse(actor);
   revalidatePath("/admin/organizations");
   revalidatePath("/admin");
+  return refused;
 }
 
 /**

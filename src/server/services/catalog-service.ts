@@ -298,3 +298,13 @@ export async function listOrganizations() {
     },
   });
 }
+
+/** The newest Salesforce refresh, as recorded in the audit trail; null before the first one. */
+export async function getLastCatalogRefresh(): Promise<{ at: Date; summary: string } | null> {
+  const last = await prisma.auditEvent.findFirst({
+    where: { type: AUDIT_EVENTS.CATALOG_REFRESHED },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true, summary: true },
+  });
+  return last ? { at: last.createdAt, summary: last.summary } : null;
+}

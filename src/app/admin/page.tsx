@@ -3,6 +3,7 @@ import Image from "next/image";
 import { refreshDiscoveryAction } from "./actions";
 import { AccountSelectionList } from "@/components/admin/account-selection-list";
 import { ActionButton } from "@/components/admin/action-button";
+import { LastRefreshed } from "@/components/admin/last-refreshed";
 import { SelectionBar } from "@/components/admin/selection-bar";
 import { SelectionFilters } from "@/components/admin/selection-filters";
 import { SignalList, type SignalListItem } from "@/components/admin/signal-list";
@@ -16,6 +17,7 @@ import {
 } from "@/server/services/campaign-draft-service";
 import { requireAdminActor } from "@/server/auth/require-admin";
 import { listCampaigns } from "@/server/services/campaign-service";
+import { getLastCatalogRefresh } from "@/server/services/catalog-service";
 import {
   listOpenOpportunitiesForAccount,
   listSignals,
@@ -50,12 +52,13 @@ export default async function AdminDashboardPage({
   // draft-creation audit entry names a person, not a generic "admin".
   const draft = await getOrCreateDraft(await requireAdminActor());
 
-  const [accounts, summary, owners, campaigns, signals] = await Promise.all([
+  const [accounts, summary, owners, campaigns, signals, lastRefresh] = await Promise.all([
     listDraftAccounts(draft.id, filters),
     getDraftSummary(draft.id),
     listOwnersWithOpenOpportunities(),
     listCampaigns(),
     listSignals(),
+    getLastCatalogRefresh(),
   ]);
 
   const sent = campaigns.filter((campaign) => campaign.status !== "DRAFT");
@@ -115,9 +118,12 @@ export default async function AdminDashboardPage({
             contact. Nothing is sent until you select it and confirm.
           </p>
         </div>
-        <ActionButton action={refreshDiscoveryAction} pendingLabel="Refreshing…">
-          Refresh from Salesforce
-        </ActionButton>
+        <div className="text-right">
+          <ActionButton action={refreshDiscoveryAction} pendingLabel="Refreshing…">
+            Refresh from Salesforce
+          </ActionButton>
+          <LastRefreshed last={lastRefresh} />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

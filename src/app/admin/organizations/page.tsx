@@ -1,12 +1,13 @@
 import { refreshCatalogAction } from "../actions";
 import { ActionButton } from "@/components/admin/action-button";
+import { LastRefreshed } from "@/components/admin/last-refreshed";
 import { AccountTypeBadge, Card, EmptyState } from "@/components/ui/primitives";
 import { accountTypeLabel } from "@/lib/account-types";
 import { formatAmount, pluralize } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import { RESOLUTION_REASON_LABELS, type ResolutionReason } from "@/server/services/recipient-resolution-service";
 import { getSalesforceService } from "@/server/integrations/salesforce";
-import { listOrganizations } from "@/server/services/catalog-service";
+import { getLastCatalogRefresh, listOrganizations } from "@/server/services/catalog-service";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export const dynamic = "force-dynamic";
  * checks the recipient resolution before launching a campaign.
  */
 export default async function OrganizationsPage() {
-  const organizations = await listOrganizations();
+  const [organizations, lastRefresh] = await Promise.all([listOrganizations(), getLastCatalogRefresh()]);
   const provider = getSalesforceService();
   const withOpportunities = organizations.filter((org) => org.opportunities.length > 0);
   const total = withOpportunities.reduce((sum, org) => sum + org.opportunities.length, 0);
@@ -32,9 +33,12 @@ export default async function OrganizationsPage() {
             {provider.info.label}
           </p>
         </div>
-        <ActionButton action={refreshCatalogAction} pendingLabel="Refreshing…">
-          Refresh from Salesforce
-        </ActionButton>
+        <div className="text-right">
+          <ActionButton action={refreshCatalogAction} pendingLabel="Refreshing…">
+            Refresh from Salesforce
+          </ActionButton>
+          <LastRefreshed last={lastRefresh} />
+        </div>
       </div>
 
       {withOpportunities.length === 0 ? (
