@@ -9,6 +9,7 @@ import {
   resendInvitationAction,
   closeOutContactAction,
   restoreContactAction,
+  restoreExcludedAction,
   retrySyncAction,
   resumeLaunchAction,
   sendRemindersAction,
@@ -119,7 +120,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                         action={excludeShortfallAction.bind(null, summary.id, row.opportunityId, row.reason)}
                         pendingLabel="Excluding…"
                         size="sm"
-                        confirm={`Exclude ${row.customerName} · ${row.opportunityName} from this campaign? Reason: ${SHORTFALL_REASONS[row.reason]}. Nothing is sent. This cannot be undone.`}
+                        confirm={`Exclude ${row.customerName} · ${row.opportunityName} from this campaign? Reason: ${SHORTFALL_REASONS[row.reason]}. Nothing is sent. You can restore it later.`}
                       >Exclude from this campaign</ActionButton>
                     ) : null}
                   </li>
@@ -151,10 +152,18 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
       {summary.excluded.length > 0 ? (
         <Card className="space-y-2 p-5">
           <p className="font-semibold text-ink">Excluded from this campaign</p>
-          <ul className="list-disc pl-5 text-[14px]">
+          <ul className="space-y-2 text-[14px]">
             {summary.excluded.map((row) => (
-              <li key={row.opportunityId}>
-                {row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]} · excluded by {row.actor} on {formatDateTime(row.at)}
+              <li key={row.opportunityId} className="flex flex-wrap items-center justify-between gap-2">
+                <span>{row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]} · excluded by {row.actor} on {formatDateTime(row.at)}</span>
+                {summary.status === "IN_PROGRESS" || summary.status === "COMPLETE" ? (
+                  <ActionButton
+                    action={restoreExcludedAction.bind(null, summary.id, row.opportunityId)}
+                    pendingLabel="Restoring…"
+                    size="sm"
+                    confirm={`Restore ${row.customerName} · ${row.opportunityName} to this campaign? It returns to the shortfall. Nothing is sent; use Resume to invite it if it can resume.${summary.status === "COMPLETE" ? " If this opportunity was never invited, the campaign reopens." : ""}`}
+                  >Restore to this campaign</ActionButton>
+                ) : null}
               </li>
             ))}
           </ul>

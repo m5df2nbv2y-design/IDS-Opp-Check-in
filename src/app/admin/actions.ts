@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, restoreContact, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, restoreContact, restoreExcludedOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -131,6 +131,16 @@ export async function approveLegacyRoutingAction(campaignId: string, shownRoutes
 export async function excludeShortfallAction(campaignId: string, opportunityId: string, shownReason: ShortfallReason): Promise<void | ActionRefusal> {
   const actor = await requireAdminActor();
   const result = await excludeShortfallOpportunity(campaignId, opportunityId, shownReason, actor);
+  // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  if (!result.ok) return { error: result.message };
+}
+
+/** Restore one admin-excluded opportunity to the shortfall. Refusals are returned, not thrown. */
+export async function restoreExcludedAction(campaignId: string, opportunityId: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await restoreExcludedOpportunity(campaignId, opportunityId, actor);
   // Revalidate on refusal too, so a stale row and button leave the screen.
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");

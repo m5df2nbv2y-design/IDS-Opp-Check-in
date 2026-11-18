@@ -553,17 +553,38 @@ export type ShortfallReason = keyof typeof SHORTFALL_REASONS;
 const isShortfallReason = (value: unknown): value is ShortfallReason =>
   typeof value === "string" && Object.hasOwn(SHORTFALL_REASONS, value);
 
-/** The exclusions admins recorded from the shortfall card, oldest first. Unrecognised rows are ignored. */
+/**
+ * The opportunities admins currently exclude from this campaign, each with its newest
+ * exclusion, oldest first. An exclusion adds and a restore removes. Unrecognised rows are ignored.
+ */
 async function adminExclusions(db: Prisma.TransactionClient, campaignId: string) {
-  const rows = await db.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.SELECTION_EXCLUDED }, orderBy: { createdAt: "asc" } });
-  return rows.flatMap((row) => {
+  const rows = await db.auditEvent.findMany({
+    where: { campaignId, type: { in: [AUDIT_EVENTS.SELECTION_EXCLUDED, AUDIT_EVENTS.SELECTION_RESTORED] } },
+    orderBy: { createdAt: "asc" },
+  });
+  type Exclusion = { opportunityId: string; reason: ShortfallReason; customerName: string | null; opportunityName: string | null; actor: string; at: Date };
+  const latest = new Map<string, Exclusion>();
+  // Exclude and restore strictly alternate per opportunity (each refuses unless the other
+  // holds, under the campaign lock), so the net count is right even when two rows share a millisecond.
+  const net = new Map<string, number>();
+  for (const row of rows) {
     try {
       const data = JSON.parse(row.detail ?? "null");
-      if (data?.version !== 1 || typeof data.opportunityId !== "string" || !isShortfallReason(data.reason)) return [];
+      if (data?.version !== 1 || typeof data.opportunityId !== "string") continue;
+      const id: string = data.opportunityId;
+      if (row.type === AUDIT_EVENTS.SELECTION_RESTORED) {
+        // Clamped: a restore of an exclusion we skipped as unrecognised must not cancel a later valid one.
+        net.set(id, Math.max(0, (net.get(id) ?? 0) - 1));
+        continue;
+      }
+      if (!isShortfallReason(data.reason)) continue;
       const text = (value: unknown) => (typeof value === "string" ? value : null);
-      return [{ opportunityId: data.opportunityId as string, reason: data.reason as ShortfallReason, customerName: text(data.customerName), opportunityName: text(data.opportunityName), actor: row.actor, at: row.createdAt }];
-    } catch { return []; }
-  });
+      net.set(id, (net.get(id) ?? 0) + 1);
+      latest.delete(id);
+      latest.set(id, { opportunityId: id, reason: data.reason, customerName: text(data.customerName), opportunityName: text(data.opportunityName), actor: row.actor, at: row.createdAt });
+    } catch { /* unrecognised row */ }
+  }
+  return [...latest.values()].filter((e) => (net.get(e.opportunityId) ?? 0) > 0);
 }
 
 /**
@@ -1172,8 +1193,9 @@ export const SHORTFALL_EXCLUDE_REFUSALS = {
 
 /**
  * Exclude one unreached opportunity that cannot resume, with the reason the admin
- * saw. Final: it stops counting as approved work, so the campaign may close. Sends
- * nothing, issues no link, never rewrites the routing record or deletes the selection.
+ * saw. It stops counting as approved work, so the campaign may close, until an admin
+ * restores it (restoreExcludedOpportunity). Sends nothing, issues no link, never
+ * rewrites the routing record or deletes the selection.
  */
 export async function excludeShortfallOpportunity(
   campaignId: string,
@@ -1206,6 +1228,44 @@ export async function excludeShortfallOpportunity(
   });
   if (result.ok) await closeCampaignIfDone(campaignId);
   return result;
+}
+
+export const RESTORE_EXCLUDED_REFUSALS = {
+  NOT_OPEN: "Only an in-progress or complete campaign can restore an excluded opportunity.",
+  NOT_EXCLUDED: "This opportunity is no longer excluded. Reload the page.",
+} as const;
+
+/**
+ * Undo an admin exclusion: the opportunity counts as approved work again and returns
+ * to the shortfall (recoverable or needing review with its current reason). Reopens a
+ * COMPLETE campaign in the same audited transaction when it is still unreached. Sends
+ * nothing, issues no link, triggers no Resume, rewrites no earlier row.
+ */
+export async function restoreExcludedOpportunity(
+  campaignId: string,
+  opportunityId: string,
+  actor: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (typeof campaignId !== "string" || typeof opportunityId !== "string") throw new Error("Invalid restore input");
+  return prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS" && campaign.status !== "COMPLETE") return { ok: false as const, message: RESTORE_EXCLUDED_REFUSALS.NOT_OPEN };
+    const exclusion = (await adminExclusions(tx, campaignId)).find((e) => e.opportunityId === opportunityId);
+    if (!exclusion) return { ok: false as const, message: RESTORE_EXCLUDED_REFUSALS.NOT_EXCLUDED };
+    const reached = await tx.checkInOpportunity.count({ where: { opportunityId, recipient: { campaignId } } });
+    const reopened = reached === 0
+      && (await tx.campaign.updateMany({ where: { id: campaignId, status: "COMPLETE" }, data: { status: "IN_PROGRESS", completedAt: null } })).count === 1;
+    const o = await tx.opportunity.findUnique({ where: { id: opportunityId } });
+    const name = `${o?.customerName ?? exclusion.customerName ?? "Unknown opportunity"} · ${o ? o.projectName ?? o.opportunityName : exclusion.opportunityName ?? opportunityId}`;
+    await recordAudit({
+      type: AUDIT_EVENTS.SELECTION_RESTORED,
+      summary: `Restored ${name} to this campaign; it returns to the shortfall${reopened ? ` and the campaign reopened (it had completed at ${campaign.completedAt?.toISOString() ?? "an unrecorded time"})` : ""}`,
+      actor, actorKind: "ADMIN", campaignId, opportunityId,
+      detail: JSON.stringify({ version: 1, opportunityId }),
+    }, tx);
+    return { ok: true as const };
+  });
 }
 
 // ---------------------------------------------------------------------------
