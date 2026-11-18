@@ -9,6 +9,8 @@ import {
   resolveCheckInToken,
   type InviteRejection,
 } from "@/server/services/response-service";
+import { hashToken } from "@/lib/tokens";
+import { settleInvitationOnOpen } from "@/server/services/reconcile-service";
 import { countUnresolved, rateLimit, reportRateLimit } from "@/server/security/rate-limit";
 
 export const metadata: Metadata = {
@@ -40,6 +42,8 @@ export default async function CheckInPage({ params }: PageProps<"/checkin/[token
   }
 
   const { session } = resolved;
+  // Settles an unknown invitation: an open of the current link proves delivery. Never throws.
+  await settleInvitationOnOpen(session.recipientId, hashToken(token));
   await markCheckInOpened(session.recipientId);
 
   if (session.completedAt) {

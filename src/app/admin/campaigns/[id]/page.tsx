@@ -6,8 +6,11 @@ import {
   excludeShortfallAction,
   reconcileInvitationAction,
   reconcileUncertainAction,
+  resendFailedAction,
   resendInvitationAction,
   closeOutContactAction,
+  restoreContactAction,
+  restoreExcludedAction,
   retrySyncAction,
   resumeLaunchAction,
   sendRemindersAction,
@@ -55,6 +58,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
     attestations.map((event) => [attestationKey(event.contactId, event.opportunityId), event]),
   );
 
+  const resendable = summary.recipients.filter((r) => r.canResendInvitation).map((r) => ({ recipientId: r.recipientId, tokenHint: r.tokenHint }));
   const failed = responses.filter((response) => response.syncStatus === "FAILED");
 
   // The demo control appears only when a demo address is configured on the
@@ -98,6 +102,15 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
               Send {summary.reminderEligibleCount} reminder{summary.reminderEligibleCount === 1 ? "" : "s"}
             </ActionButton>
           ) : null}
+          {summary.status === "IN_PROGRESS" && resendable.length > 0 ? (
+            <ActionButton
+              action={resendFailedAction.bind(null, summary.id, resendable)}
+              pendingLabel="Re-sending…"
+              confirm={`Re-send the ${resendable.length} failed invitation${resendable.length === 1 ? "" : "s"}, one at a time? Each contact gets a fresh link, and their old link stops working. Sending stops at the first unknown result.`}
+            >
+              Re-send {resendable.length} failed invitation{resendable.length === 1 ? "" : "s"}
+            </ActionButton>
+          ) : null}
         </div>
       </div>
 
@@ -118,7 +131,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                         action={excludeShortfallAction.bind(null, summary.id, row.opportunityId, row.reason)}
                         pendingLabel="Excluding…"
                         size="sm"
-                        confirm={`Exclude ${row.customerName} · ${row.opportunityName} from this campaign? Reason: ${SHORTFALL_REASONS[row.reason]}. Nothing is sent. This cannot be undone.`}
+                        confirm={`Exclude ${row.customerName} · ${row.opportunityName} from this campaign? Reason: ${SHORTFALL_REASONS[row.reason]}. Nothing is sent. You can restore it later.`}
                       >Exclude from this campaign</ActionButton>
                     ) : null}
                   </li>
@@ -150,13 +163,35 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
       {summary.excluded.length > 0 ? (
         <Card className="space-y-2 p-5">
           <p className="font-semibold text-ink">Excluded from this campaign</p>
-          <ul className="list-disc pl-5 text-[14px]">
+          <ul className="space-y-2 text-[14px]">
             {summary.excluded.map((row) => (
-              <li key={row.opportunityId}>
-                {row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]} · excluded by {row.actor} on {formatDateTime(row.at)}
+              <li key={row.opportunityId} className="flex flex-wrap items-center justify-between gap-2">
+                <span>{row.customerName} · {row.opportunityName} — {SHORTFALL_REASONS[row.reason]} · excluded by {row.actor} on {formatDateTime(row.at)}</span>
+                {summary.status === "IN_PROGRESS" || summary.status === "COMPLETE" ? (
+                  <ActionButton
+                    action={restoreExcludedAction.bind(null, summary.id, row.opportunityId)}
+                    pendingLabel="Restoring…"
+                    size="sm"
+                    confirm={`Restore ${row.customerName} · ${row.opportunityName} to this campaign? It returns to the shortfall. Nothing is sent; use Resume to invite it if it can resume.${summary.status === "COMPLETE" ? " If this opportunity was never invited, the campaign reopens." : ""}`}
+                  >Restore to this campaign</ActionButton>
+                ) : null}
               </li>
             ))}
           </ul>
+        </Card>
+      ) : null}
+      {summary.excludedAtSend.length > 0 ? (
+        <Card className="space-y-2 p-5">
+          <p className="font-semibold text-ink">
+            {summary.excludedAtSend.length === 1 ? "1 selection" : `${summary.excludedAtSend.length} selections`} left out at send
+          </p>
+          <ul className="list-disc pl-5 text-[14px]">
+            {summary.excludedAtSend.map((row) => (
+              <li key={row.opportunityId}>{row.customerName} · {row.opportunityName}</li>
+            ))}
+          </ul>
+          <p className="text-[13px] text-muted">These were never sent and are not part of this campaign. To check in on them, include them in a new campaign.</p>
+          {summary.excludedAtSendNote ? <p className="text-[13px] text-muted">Recorded at send: {summary.excludedAtSendNote}</p> : null}
         </Card>
       ) : null}
       {summary.unresolvedDeliveryCount > 0 ? (
@@ -231,6 +266,8 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           closeOutContact={(recipient) =>
             closeOutContactAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint, recipient.closeOutReason ?? "")
           }
+          campaignComplete={summary.status === "COMPLETE"}
+          restoreContact={(recipient) => restoreContactAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint)}
         />
         {testRecipient ? (
           <TestEmailPanel

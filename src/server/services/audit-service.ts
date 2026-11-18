@@ -19,8 +19,12 @@ export const AUDIT_EVENTS = {
    */
   INVITE_RECONCILED_SENT: "INVITE_RECONCILED_SENT",
   INVITE_RECONCILED_NOT_SENT: "INVITE_RECONCILED_NOT_SENT",
+  /** An unknown invitation settled as SENT because the contact opened its current link. detail: { version: 1, recipientId, tokenHint, previousSendError }. */
+  INVITE_SETTLED_BY_OPEN: "INVITE_SETTLED_BY_OPEN",
   /** An admin started a re-send of a FAILED invitation with a fresh link. The outcome is INVITE_SENT / INVITE_FAILED / INVITE_UNCERTAIN. */
   INVITE_RESEND_STARTED: "INVITE_RESEND_STARTED",
+  /** An admin re-sent every failed invitation shown, one by one (each audited on its own). detail: { version: 1, shown, sent, failed, unknown, skipped, notTried }. */
+  INVITE_RESEND_BATCH: "INVITE_RESEND_BATCH",
   REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
   REMINDER_FAILED: "REMINDER_FAILED",
@@ -28,10 +32,14 @@ export const AUDIT_EVENTS = {
   /** A reminder was withheld: an item's opportunity closed, moved or is no longer resolved. detail: { reason }. */
   REMINDER_SKIPPED: "REMINDER_SKIPPED",
   CAMPAIGN_ROUTING: "CAMPAIGN_ROUTING",
-  /** An admin excluded a shortfall opportunity that cannot resume. detail: { version: 1, opportunityId, reason }. Final. */
+  /** An admin excluded a shortfall opportunity that cannot resume. detail: { version: 1, opportunityId, reason }. Undone by SELECTION_RESTORED. */
   SELECTION_EXCLUDED: "SELECTION_EXCLUDED",
-  /** An admin closed out a held-back contact by revoking their link. detail: { version: 1, recipientId, tokenHint, reason }. Final. */
+  /** An admin restored an excluded opportunity to the shortfall, reopening a COMPLETE campaign when it is unreached. detail: { version: 1, opportunityId }. */
+  SELECTION_RESTORED: "SELECTION_RESTORED",
+  /** An admin closed out a held-back contact by revoking their link. detail: { version: 1, recipientId, tokenHint, reason }. Undone by RECIPIENT_RESTORED. */
   RECIPIENT_CLOSED_OUT: "RECIPIENT_CLOSED_OUT",
+  /** An admin restored a closed-out contact's existing link, reopening a COMPLETE campaign. detail: { version: 1, recipientId, tokenHint }. */
+  RECIPIENT_RESTORED: "RECIPIENT_RESTORED",
   CHECKIN_OPENED: "CHECKIN_OPENED",
   RESPONSE_SUBMITTED: "RESPONSE_SUBMITTED",
   RESPONSE_REVISED: "RESPONSE_REVISED",

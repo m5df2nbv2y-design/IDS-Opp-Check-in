@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendBatchMessage, resendFailedInvitations, resendInvitation, restoreContact, restoreExcludedOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -131,6 +131,16 @@ export async function approveLegacyRoutingAction(campaignId: string, shownRoutes
 export async function excludeShortfallAction(campaignId: string, opportunityId: string, shownReason: ShortfallReason): Promise<void | ActionRefusal> {
   const actor = await requireAdminActor();
   const result = await excludeShortfallOpportunity(campaignId, opportunityId, shownReason, actor);
+  // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  if (!result.ok) return { error: result.message };
+}
+
+/** Restore one admin-excluded opportunity to the shortfall. Refusals are returned, not thrown. */
+export async function restoreExcludedAction(campaignId: string, opportunityId: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await restoreExcludedOpportunity(campaignId, opportunityId, actor);
   // Revalidate on refusal too, so a stale row and button leave the screen.
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
@@ -282,6 +292,17 @@ export async function resendInvitationAction(campaignId: string, recipientId: st
   if (!result.ok) return { error: result.message };
 }
 
+/** Re-send every failed invitation the page showed, one at a time; a summary line unless all went out. */
+export async function resendFailedAction(campaignId: string, shown: Parameters<typeof resendFailedInvitations>[0]["shown"]): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const counts = await resendFailedInvitations({ campaignId, shown, actor });
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  revalidatePath("/admin/outbox");
+  const message = resendBatchMessage(counts);
+  if (message) return { error: message };
+}
+
 /**
  * Close out ONE held-back contact by revoking their link, bound to the `tokenHint`
  * and held-back note that were on screen. Refusals are returned as fixed messages.
@@ -290,6 +311,18 @@ export async function closeOutContactAction(campaignId: string, recipientId: str
   const actor = await requireAdminActor();
   const result = await closeOutContact({ campaignId, recipientId, shownTokenHint, shownNote, actor });
   // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  if (!result.ok) return { error: result.message };
+}
+
+/**
+ * Restore ONE closed-out contact: their existing link opens again and a COMPLETE
+ * campaign reopens. Bound to the `tokenHint` that was on screen; sends nothing.
+ */
+export async function restoreContactAction(campaignId: string, recipientId: string, shownTokenHint: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await restoreContact({ campaignId, recipientId, shownTokenHint, actor });
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
   if (!result.ok) return { error: result.message };

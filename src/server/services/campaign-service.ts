@@ -542,6 +542,9 @@ function readManifest(detail: string | null | undefined): { routes: Record<strin
   } catch { return null; }
 }
 
+/** Ends the summary of the drift note launchCampaign records; getCampaignSummary finds the note by it. */
+export const EXCLUDED_AT_SEND_SUFFIX = "excluded at send — no longer resolvable";
+
 /** Why a shortfall opportunity cannot resume, as the admin sees it. */
 export const SHORTFALL_REASONS = {
   ALREADY_INVITED: "Contact already has an invitation",
@@ -553,17 +556,38 @@ export type ShortfallReason = keyof typeof SHORTFALL_REASONS;
 const isShortfallReason = (value: unknown): value is ShortfallReason =>
   typeof value === "string" && Object.hasOwn(SHORTFALL_REASONS, value);
 
-/** The exclusions admins recorded from the shortfall card, oldest first. Unrecognised rows are ignored. */
+/**
+ * The opportunities admins currently exclude from this campaign, each with its newest
+ * exclusion, oldest first. An exclusion adds and a restore removes. Unrecognised rows are ignored.
+ */
 async function adminExclusions(db: Prisma.TransactionClient, campaignId: string) {
-  const rows = await db.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.SELECTION_EXCLUDED }, orderBy: { createdAt: "asc" } });
-  return rows.flatMap((row) => {
+  const rows = await db.auditEvent.findMany({
+    where: { campaignId, type: { in: [AUDIT_EVENTS.SELECTION_EXCLUDED, AUDIT_EVENTS.SELECTION_RESTORED] } },
+    orderBy: { createdAt: "asc" },
+  });
+  type Exclusion = { opportunityId: string; reason: ShortfallReason; customerName: string | null; opportunityName: string | null; actor: string; at: Date };
+  const latest = new Map<string, Exclusion>();
+  // Exclude and restore strictly alternate per opportunity (each refuses unless the other
+  // holds, under the campaign lock), so the net count is right even when two rows share a millisecond.
+  const net = new Map<string, number>();
+  for (const row of rows) {
     try {
       const data = JSON.parse(row.detail ?? "null");
-      if (data?.version !== 1 || typeof data.opportunityId !== "string" || !isShortfallReason(data.reason)) return [];
+      if (data?.version !== 1 || typeof data.opportunityId !== "string") continue;
+      const id: string = data.opportunityId;
+      if (row.type === AUDIT_EVENTS.SELECTION_RESTORED) {
+        // Clamped: a restore of an exclusion we skipped as unrecognised must not cancel a later valid one.
+        net.set(id, Math.max(0, (net.get(id) ?? 0) - 1));
+        continue;
+      }
+      if (!isShortfallReason(data.reason)) continue;
       const text = (value: unknown) => (typeof value === "string" ? value : null);
-      return [{ opportunityId: data.opportunityId as string, reason: data.reason as ShortfallReason, customerName: text(data.customerName), opportunityName: text(data.opportunityName), actor: row.actor, at: row.createdAt }];
-    } catch { return []; }
-  });
+      net.set(id, (net.get(id) ?? 0) + 1);
+      latest.delete(id);
+      latest.set(id, { opportunityId: id, reason: data.reason, customerName: text(data.customerName), opportunityName: text(data.opportunityName), actor: row.actor, at: row.createdAt });
+    } catch { /* unrecognised row */ }
+  }
+  return [...latest.values()].filter((e) => (net.get(e.opportunityId) ?? 0) > 0);
 }
 
 /**
@@ -797,7 +821,7 @@ export const CLOSE_OUT_MESSAGES = {
 /**
  * Close out ONE contact (see `closeOutReason`): revoke their link, audited with the
  * reason the admin saw, then close the campaign if nothing else is outstanding.
- * Sends nothing; submitted answers and their sync are untouched. No undo.
+ * Sends nothing; submitted answers and their sync are untouched. Undone by `restoreContact`.
  */
 export async function closeOutContact(input: {
   campaignId: string;
@@ -837,6 +861,50 @@ export async function closeOutContact(input: {
   });
   if (result.ok) await closeCampaignIfDone(campaignId);
   return result;
+}
+
+/** Fixed messages for the restore control; never stored text. */
+export const RESTORE_MESSAGES = {
+  NOT_OPEN: "Only an in-progress or complete campaign can restore a contact.",
+  CHANGED: "This contact changed since the page was loaded. Reload and check again.",
+  ALREADY_RESTORED: "This contact is already restored.",
+} as const;
+
+/**
+ * Undo a close-out: clear `revokedAt` so the contact's existing link opens again
+ * (expiry unchanged) and they hold the campaign open, reopening a COMPLETE campaign
+ * in the same audited transaction. Sends nothing; no other field changes.
+ */
+export async function restoreContact(input: {
+  campaignId: string;
+  recipientId: string;
+  shownTokenHint: string;
+  actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { campaignId, recipientId, shownTokenHint, actor } = input;
+  if ([campaignId, recipientId, shownTokenHint].some((v) => typeof v !== "string")) throw new Error("Invalid restore input");
+  return prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS" && campaign.status !== "COMPLETE") return { ok: false as const, message: RESTORE_MESSAGES.NOT_OPEN };
+    const recipient = await tx.checkInRecipient.findFirst({ where: { id: recipientId, campaignId }, include: { contact: true } });
+    if (!recipient) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    if (!recipient.revokedAt) return { ok: false as const, message: RESTORE_MESSAGES.ALREADY_RESTORED };
+    if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    const restored = await tx.checkInRecipient.updateMany({
+      where: { id: recipient.id, campaignId, tokenHint: shownTokenHint, tokenHash: recipient.tokenHash, revokedAt: { not: null } },
+      data: { revokedAt: null },
+    });
+    if (restored.count !== 1) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    const reopened = (await tx.campaign.updateMany({ where: { id: campaignId, status: "COMPLETE" }, data: { status: "IN_PROGRESS", completedAt: null } })).count === 1;
+    await recordAudit({
+      type: AUDIT_EVENTS.RECIPIENT_RESTORED,
+      summary: `Restored ${recipient.contact.name}; their existing check-in link opens again${reopened ? ` and the campaign reopened (it had completed at ${campaign.completedAt?.toISOString() ?? "an unrecorded time"})` : ""}`,
+      actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+      detail: JSON.stringify({ version: 1, recipientId: recipient.id, tokenHint: shownTokenHint }),
+    }, tx);
+    return { ok: true as const };
+  });
 }
 
 /**
@@ -934,6 +1002,62 @@ export async function resendInvitation(input: {
   return { ok: false, message: outcome === "FAILED" ? RESEND_INVITATION_MESSAGES.FAILED : RESEND_INVITATION_MESSAGES.UNKNOWN };
 }
 
+/** Refusals that sent nothing; any message not listed here or FAILED is treated as unknown. */
+const SKIPPED_RESEND_MESSAGES = new Set<string>([RESEND_INVITATION_MESSAGES.STALE, RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE, RESEND_INVITATION_MESSAGES.OPPORTUNITIES_CHANGED]);
+
+export type ResendBatchCounts = { sent: number; failed: number; unknown: number; skipped: number; notTried: number };
+
+/**
+ * Re-send every failed invitation the page showed, one `resendInvitation` at a time,
+ * each bound to its shown `tokenHint`. Stops at the first unknown outcome: the rest
+ * stay FAILED and untouched until the unknown one is reconciled. A failed-again row
+ * is not retried. Writes one best-effort INVITE_RESEND_BATCH audit with the counts.
+ */
+export async function resendFailedInvitations(input: {
+  campaignId: string;
+  shown: { recipientId: string; tokenHint: string }[];
+  actor: string;
+}): Promise<ResendBatchCounts> {
+  const { campaignId, shown, actor } = input;
+  if (typeof campaignId !== "string" || !Array.isArray(shown) || shown.some((r) => typeof r?.recipientId !== "string" || typeof r?.tokenHint !== "string")) {
+    throw new Error("Invalid re-send input");
+  }
+  const counts: ResendBatchCounts = { sent: 0, failed: 0, unknown: 0, skipped: 0, notTried: shown.length };
+  try {
+    for (const row of shown) {
+      // A throw may follow the claim (row left PENDING), so it is an unknown outcome.
+      const result = await resendInvitation({ campaignId, recipientId: row.recipientId, shownTokenHint: row.tokenHint, actor })
+        .catch(() => ({ ok: false as const, message: RESEND_INVITATION_MESSAGES.UNKNOWN }));
+      counts.notTried -= 1;
+      if (result.ok) counts.sent += 1;
+      else if (result.message === RESEND_INVITATION_MESSAGES.FAILED) counts.failed += 1;
+      else if (SKIPPED_RESEND_MESSAGES.has(result.message)) counts.skipped += 1;
+      else { counts.unknown += 1; break; }
+    }
+  } finally {
+    await recordAudit({
+      type: AUDIT_EVENTS.INVITE_RESEND_BATCH,
+      summary: `Re-sent ${counts.sent} of ${shown.length} failed invitations${counts.unknown ? "; stopped at an unknown outcome" : ""}`,
+      actor, actorKind: "ADMIN", campaignId,
+      detail: JSON.stringify({ version: 1, shown: shown.length, ...counts }),
+    }).catch(() => undefined);
+  }
+  return counts;
+}
+
+/** The one line shown after a batch re-send; null when every shown invitation went out. */
+export function resendBatchMessage(c: ResendBatchCounts): string | null {
+  const total = c.sent + c.failed + c.unknown + c.skipped + c.notTried;
+  if (c.sent + c.failed + c.unknown === 0) return "Nothing to re-send. Reload the page.";
+  if (c.sent === total) return null;
+  const parts = [`${c.sent} of ${total} re-sent`];
+  if (c.failed) parts.push(`${c.failed} failed again`);
+  if (c.skipped) parts.push(`${c.skipped} changed since the page was loaded and ${c.skipped === 1 ? "was" : "were"} skipped`);
+  if (!c.unknown) return `${parts.join("; ")}.`;
+  if (c.notTried) parts.push(`${c.notTried} not tried`);
+  return `Stopped after an unknown result: ${parts.join("; ")}. Check the sending mailbox's Sent Items and reconcile that contact before re-sending the rest.`;
+}
+
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------
@@ -968,6 +1092,8 @@ export type RecipientProgress = {
   closeOutReason: string | null;
   /** `closeOutReason` is set: an admin may close the contact out. */
   canCloseOut: boolean;
+  /** Closed out, campaign IN_PROGRESS or COMPLETE: an admin may restore the contact. */
+  canRestore: boolean;
   deliveryNote?: string | null;
 };
 
@@ -1004,6 +1130,10 @@ export type CampaignSummary = {
   needsReview: ShortfallRow[];
   /** Opportunities an admin excluded from the shortfall, oldest first. */
   excluded: (ShortfallRow & { actor: string; at: Date })[];
+  /** Selections the first routing manifest records as excluded at send (drift). Not admin exclusions. */
+  excludedAtSend: { opportunityId: string; opportunityName: string; customerName: string }[];
+  /** The reasons recorded at send, word for word, or null when that audit row is missing. */
+  excludedAtSendNote: string | null;
   unresolvedDeliveryCount: number;
   reminderEligibleCount: number;
   recipients: RecipientProgress[];
@@ -1126,8 +1256,9 @@ export const SHORTFALL_EXCLUDE_REFUSALS = {
 
 /**
  * Exclude one unreached opportunity that cannot resume, with the reason the admin
- * saw. Final: it stops counting as approved work, so the campaign may close. Sends
- * nothing, issues no link, never rewrites the routing record or deletes the selection.
+ * saw. It stops counting as approved work, so the campaign may close, until an admin
+ * restores it (restoreExcludedOpportunity). Sends nothing, issues no link, never
+ * rewrites the routing record or deletes the selection.
  */
 export async function excludeShortfallOpportunity(
   campaignId: string,
@@ -1160,6 +1291,44 @@ export async function excludeShortfallOpportunity(
   });
   if (result.ok) await closeCampaignIfDone(campaignId);
   return result;
+}
+
+export const RESTORE_EXCLUDED_REFUSALS = {
+  NOT_OPEN: "Only an in-progress or complete campaign can restore an excluded opportunity.",
+  NOT_EXCLUDED: "This opportunity is no longer excluded. Reload the page.",
+} as const;
+
+/**
+ * Undo an admin exclusion: the opportunity counts as approved work again and returns
+ * to the shortfall (recoverable or needing review with its current reason). Reopens a
+ * COMPLETE campaign in the same audited transaction when it is still unreached. Sends
+ * nothing, issues no link, triggers no Resume, rewrites no earlier row.
+ */
+export async function restoreExcludedOpportunity(
+  campaignId: string,
+  opportunityId: string,
+  actor: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (typeof campaignId !== "string" || typeof opportunityId !== "string") throw new Error("Invalid restore input");
+  return prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS" && campaign.status !== "COMPLETE") return { ok: false as const, message: RESTORE_EXCLUDED_REFUSALS.NOT_OPEN };
+    const exclusion = (await adminExclusions(tx, campaignId)).find((e) => e.opportunityId === opportunityId);
+    if (!exclusion) return { ok: false as const, message: RESTORE_EXCLUDED_REFUSALS.NOT_EXCLUDED };
+    const reached = await tx.checkInOpportunity.count({ where: { opportunityId, recipient: { campaignId } } });
+    const reopened = reached === 0
+      && (await tx.campaign.updateMany({ where: { id: campaignId, status: "COMPLETE" }, data: { status: "IN_PROGRESS", completedAt: null } })).count === 1;
+    const o = await tx.opportunity.findUnique({ where: { id: opportunityId } });
+    const name = `${o?.customerName ?? exclusion.customerName ?? "Unknown opportunity"} · ${o ? o.projectName ?? o.opportunityName : exclusion.opportunityName ?? opportunityId}`;
+    await recordAudit({
+      type: AUDIT_EVENTS.SELECTION_RESTORED,
+      summary: `Restored ${name} to this campaign; it returns to the shortfall${reopened ? ` and the campaign reopened (it had completed at ${campaign.completedAt?.toISOString() ?? "an unrecorded time"})` : ""}`,
+      actor, actorKind: "ADMIN", campaignId, opportunityId,
+      detail: JSON.stringify({ version: 1, opportunityId }),
+    }, tx);
+    return { ok: true as const };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1284,7 +1453,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   // Only rows that would otherwise get a reminder or re-send are held back (and say why).
   const heldBack = (r: (typeof campaign.recipients)[number]) => heldBackNote(r, campaign.status);
   const closeOutReasons = new Map<string, string | undefined>();
-  for (const e of await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT } })) {
+  for (const e of await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT }, orderBy: { createdAt: "asc" } })) {
+    // Ascending, so a contact closed out again after a restore shows the latest reason.
     // An unreadable audit row must not take the campaign page down; the row still shows "Link revoked".
     try {
       const d = JSON.parse(e.detail ?? "");
@@ -1332,6 +1502,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         heldBackNote: heldBack(recipient),
         closeOutReason: closeOutReason(recipient, campaign.status),
         canCloseOut: closeOutReason(recipient, campaign.status) !== null,
+        canRestore: recipient.revokedAt !== null && (campaign.status === "IN_PROGRESS" || campaign.status === "COMPLETE"),
         deliveryNote: recipient.revokedAt
           ? ["Link revoked", closeOutReasons.get(recipient.id)].filter(Boolean).join(" — ")
           : [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,
@@ -1342,10 +1513,22 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   const items = campaign.recipients.flatMap((recipient) => recipient.items);
   const unreached = await getUnreachedOpportunityIds(campaignId);
   const unreachedCount = unreached.length;
-  const [shortfall, exclusions] = await Promise.all([readShortfall(prisma, campaignId, unreached), adminExclusions(prisma, campaignId)]);
-  const excludedOpportunities = new Map(exclusions.length === 0 ? [] : (await prisma.opportunity.findMany({
-    where: { id: { in: exclusions.map((e) => e.opportunityId) } },
+  const [shortfall, exclusions, manifest] = await Promise.all([
+    readShortfall(prisma, campaignId, unreached),
+    adminExclusions(prisma, campaignId),
+    // The first manifest, as approvedSelectionIds reads it, so this list and "approved work" agree.
+    prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const atSend = [...(readManifest(manifest?.detail)?.excluded ?? [])];
+  const lookupIds = [...exclusions.map((e) => e.opportunityId), ...atSend];
+  const excludedOpportunities = new Map(lookupIds.length === 0 ? [] : (await prisma.opportunity.findMany({
+    where: { id: { in: lookupIds } },
   })).map((o) => [o.id, o]));
+  // Only launchCampaign's drift note ends with this suffix; the other CAMPAIGN_CREATED writers never do.
+  const atSendNote = atSend.length === 0 ? null : await prisma.auditEvent.findFirst({
+    where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_CREATED, summary: { endsWith: EXCLUDED_AT_SEND_SUFFIX } },
+    orderBy: { createdAt: "asc" },
+  });
 
   return {
     id: campaign.id,
@@ -1376,6 +1559,11 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
       const o = excludedOpportunities.get(e.opportunityId);
       return { ...e, opportunityName: o ? o.projectName ?? o.opportunityName : e.opportunityName ?? e.opportunityId, customerName: o?.customerName ?? e.customerName ?? "Unknown opportunity" };
     }),
+    excludedAtSend: atSend.map((id) => {
+      const o = excludedOpportunities.get(id);
+      return { opportunityId: id, opportunityName: o ? o.projectName ?? o.opportunityName : id, customerName: o?.customerName ?? "Unknown opportunity" };
+    }),
+    excludedAtSendNote: atSendNote?.detail || null,
     reminderEligibleCount: campaign.recipients.filter(r => remindable(r) && !heldBack(r)).length,
     unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,
