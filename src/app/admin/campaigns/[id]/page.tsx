@@ -180,6 +180,20 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           </ul>
         </Card>
       ) : null}
+      {summary.excludedAtSend.length > 0 ? (
+        <Card className="space-y-2 p-5">
+          <p className="font-semibold text-ink">
+            {summary.excludedAtSend.length === 1 ? "1 selection" : `${summary.excludedAtSend.length} selections`} left out at send
+          </p>
+          <ul className="list-disc pl-5 text-[14px]">
+            {summary.excludedAtSend.map((row) => (
+              <li key={row.opportunityId}>{row.customerName} · {row.opportunityName}</li>
+            ))}
+          </ul>
+          <p className="text-[13px] text-muted">These were never sent and are not part of this campaign. To check in on them, include them in a new campaign.</p>
+          {summary.excludedAtSendNote ? <p className="text-[13px] text-muted">Recorded at send: {summary.excludedAtSendNote}</p> : null}
+        </Card>
+      ) : null}
       {summary.unresolvedDeliveryCount > 0 ? (
         <Card className="p-5"><p role="status">{summary.unresolvedDeliveryCount} invitation or reminder deliveries are pending or unresolved. Automatic replay is blocked. Reconcile provider records before any replacement. An interrupted reminder may have invalidated the previous link; uninterrupted link access cannot be guaranteed.</p></Card>
       ) : null}

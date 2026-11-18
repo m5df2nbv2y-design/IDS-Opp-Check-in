@@ -542,6 +542,9 @@ function readManifest(detail: string | null | undefined): { routes: Record<strin
   } catch { return null; }
 }
 
+/** Ends the summary of the drift note launchCampaign records; getCampaignSummary finds the note by it. */
+export const EXCLUDED_AT_SEND_SUFFIX = "excluded at send — no longer resolvable";
+
 /** Why a shortfall opportunity cannot resume, as the admin sees it. */
 export const SHORTFALL_REASONS = {
   ALREADY_INVITED: "Contact already has an invitation",
@@ -1127,6 +1130,10 @@ export type CampaignSummary = {
   needsReview: ShortfallRow[];
   /** Opportunities an admin excluded from the shortfall, oldest first. */
   excluded: (ShortfallRow & { actor: string; at: Date })[];
+  /** Selections the first routing manifest records as excluded at send (drift). Not admin exclusions. */
+  excludedAtSend: { opportunityId: string; opportunityName: string; customerName: string }[];
+  /** The reasons recorded at send, word for word, or null when that audit row is missing. */
+  excludedAtSendNote: string | null;
   unresolvedDeliveryCount: number;
   reminderEligibleCount: number;
   recipients: RecipientProgress[];
@@ -1506,10 +1513,22 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   const items = campaign.recipients.flatMap((recipient) => recipient.items);
   const unreached = await getUnreachedOpportunityIds(campaignId);
   const unreachedCount = unreached.length;
-  const [shortfall, exclusions] = await Promise.all([readShortfall(prisma, campaignId, unreached), adminExclusions(prisma, campaignId)]);
-  const excludedOpportunities = new Map(exclusions.length === 0 ? [] : (await prisma.opportunity.findMany({
-    where: { id: { in: exclusions.map((e) => e.opportunityId) } },
+  const [shortfall, exclusions, manifest] = await Promise.all([
+    readShortfall(prisma, campaignId, unreached),
+    adminExclusions(prisma, campaignId),
+    // The first manifest, as approvedSelectionIds reads it, so this list and "approved work" agree.
+    prisma.auditEvent.findFirst({ where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_ROUTING }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const atSend = [...(readManifest(manifest?.detail)?.excluded ?? [])];
+  const lookupIds = [...exclusions.map((e) => e.opportunityId), ...atSend];
+  const excludedOpportunities = new Map(lookupIds.length === 0 ? [] : (await prisma.opportunity.findMany({
+    where: { id: { in: lookupIds } },
   })).map((o) => [o.id, o]));
+  // Only launchCampaign's drift note ends with this suffix; the other CAMPAIGN_CREATED writers never do.
+  const atSendNote = atSend.length === 0 ? null : await prisma.auditEvent.findFirst({
+    where: { campaignId, type: AUDIT_EVENTS.CAMPAIGN_CREATED, summary: { endsWith: EXCLUDED_AT_SEND_SUFFIX } },
+    orderBy: { createdAt: "asc" },
+  });
 
   return {
     id: campaign.id,
@@ -1540,6 +1559,11 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
       const o = excludedOpportunities.get(e.opportunityId);
       return { ...e, opportunityName: o ? o.projectName ?? o.opportunityName : e.opportunityName ?? e.opportunityId, customerName: o?.customerName ?? e.customerName ?? "Unknown opportunity" };
     }),
+    excludedAtSend: atSend.map((id) => {
+      const o = excludedOpportunities.get(id);
+      return { opportunityId: id, opportunityName: o ? o.projectName ?? o.opportunityName : id, customerName: o?.customerName ?? "Unknown opportunity" };
+    }),
+    excludedAtSendNote: atSendNote?.detail || null,
     reminderEligibleCount: campaign.recipients.filter(r => remindable(r) && !heldBack(r)).length,
     unresolvedDeliveryCount: campaign.recipients.filter(r => ["PENDING", "UNCERTAIN", "REMINDER_PENDING", "REMINDER_UNCERTAIN"].includes(r.sendStatus)).length,
     recipients,

@@ -3,7 +3,7 @@ import { validResponseDate } from "@/lib/client-response";
 import { DraftEmailConflictError, readEmailCopy } from "@/lib/check-in-copy";
 import { deriveSendState, type SendState } from "@/lib/send-states";
 import { launchCampaign } from "./campaign-service";
-import { currentPeriod } from "./campaign-service";
+import { currentPeriod, EXCLUDED_AT_SEND_SUFFIX } from "./campaign-service";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
 
 /**
@@ -505,7 +505,7 @@ export async function sendDraft(campaignId: string, actor = "admin", expectedEma
     // Reported in the same transaction as the routing manifest that excludes them.
     excludedAtSend: drifted.length > 0 ? {
       opportunityIds: drifted.map((entry) => entry.opportunityId),
-      summary: `${drifted.length} selected ${drifted.length === 1 ? "opportunity was" : "opportunities were"} excluded at send — no longer resolvable`,
+      summary: `${drifted.length} selected ${drifted.length === 1 ? "opportunity was" : "opportunities were"} ${EXCLUDED_AT_SEND_SUFFIX}`,
       detail: drifted
         .map((entry) => `${entry.accountName} — ${entry.opportunityName}: ${DRIFT_REASON_LABELS[entry.reason]}`)
         .join("; "),
