@@ -341,3 +341,66 @@ export async function reconcileUnknownInvitation(input: {
     return { ok: true, outcome: input.observed, nextStatus: sent ? "SENT" : "FAILED" };
   });
 }
+
+/**
+ * Settle an unknown invitation as SENT because its link was opened, which
+ * proves the email arrived. `openedTokenHash` is the hash of the link that was
+ * opened: only an open of the row's current link counts, so an old link opened
+ * after a re-send rotated the token settles nothing. Runs on every open while
+ * the row is settleable. Conditional on the row's id, that tokenHash and an
+ * unknown status, so a concurrent admin settle or a link change writes nothing.
+ * Never throws: the contact's page must render whatever happens here.
+ */
+export async function settleInvitationOnOpen(recipientId: string, openedTokenHash: string): Promise<void> {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const recipient = await tx.checkInRecipient.findUnique({
+        where: { id: recipientId },
+        select: {
+          id: true,
+          campaignId: true,
+          contactId: true,
+          sendStatus: true,
+          sendError: true,
+          tokenHash: true,
+          tokenHint: true,
+          createdAt: true,
+          contact: { select: { name: true, accountId: true } },
+        },
+      });
+      if (!recipient || recipient.tokenHash !== openedTokenHash || !isSettleableInvitation(recipient)) return;
+
+      const claimed = await tx.checkInRecipient.updateMany({
+        where: {
+          id: recipient.id,
+          tokenHash: openedTokenHash,
+          sendStatus: { in: ["UNCERTAIN", "PENDING"] },
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { sendStatus: "SENT", sendError: null, sentAt: recipient.createdAt },
+      });
+      if (claimed.count === 0) return;
+
+      await recordAudit({
+        type: AUDIT_EVENTS.INVITE_SETTLED_BY_OPEN,
+        summary: `The check-in link for ${recipient.contact.name} was opened, so the unknown invitation was recorded as sent`,
+        actor: recipient.contact.name,
+        actorKind: "SYSTEM",
+        campaignId: recipient.campaignId,
+        contactId: recipient.contactId,
+        accountId: recipient.contact.accountId,
+        fromStatus: recipient.sendStatus,
+        toStatus: "SENT",
+        detail: JSON.stringify({
+          version: 1,
+          recipientId: recipient.id,
+          tokenHint: recipient.tokenHint,
+          previousSendError: recipient.sendError,
+        }),
+      }, tx);
+    });
+  } catch (error) {
+    console.error("Settling an invitation on open failed", error);
+  }
+}
