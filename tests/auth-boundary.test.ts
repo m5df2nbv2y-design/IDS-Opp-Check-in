@@ -159,9 +159,11 @@ describe("the development bypass cannot exist in production", () => {
 });
 
 describe("the external check-in experience is never authenticated", () => {
-  it("proxy.ts matches /admin only", () => {
-    const proxy = read("proxy.ts");
-    expect(proxy).toContain('matcher: ["/admin/:path*"]');
+  it("proxy.ts redirects /admin only", () => {
+    // The proxy runs on every page for the CSP; its sign-in redirect is gated
+    // to /admin. Behaviour is covered in content-security-policy.test.ts.
+    const proxy = read("src/proxy.ts");
+    expect(proxy).toContain('pathname === "/admin" || pathname.startsWith("/admin/")');
     expect(proxy).not.toContain("/checkin");
   });
 

@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { connection } from "next/server";
 import { Geist, Geist_Mono } from "next/font/google";
 import { brand } from "@/lib/brand";
 import "./globals.css";
@@ -20,7 +21,10 @@ export const viewport: Viewport = {
   themeColor: brand.colors.canvas,
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // Every page renders per request so it can carry the CSP nonce from proxy.ts;
+  // a prerendered page (e.g. the global not-found) would have its scripts blocked.
+  await connection();
   return (
     <html
       lang="en"
