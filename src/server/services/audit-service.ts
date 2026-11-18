@@ -56,6 +56,12 @@ export const AUDIT_EVENTS = {
   SIGNAL_DRAFTED: "SIGNAL_DRAFTED",
   REPORT_EXPORTED: "REPORT_EXPORTED",
   TEST_EMAIL_SENT: "TEST_EMAIL_SENT",
+  /**
+   * One-off removal of the read-only pilot. detail: { version: 1, ...counts } covering campaigns, recipients,
+   * check-in items, submitted answers, selections, pilot emails (simulated, TEST, FAILED on a pilot campaign),
+   * campaign audit events and CAMPAIGN_LAUNCH snapshots. No campaignId.
+   */
+  PILOT_DATA_CLEARED: "PILOT_DATA_CLEARED",
 } as const;
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS];
