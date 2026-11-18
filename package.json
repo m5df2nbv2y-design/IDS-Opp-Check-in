@@ -20,7 +20,8 @@
     "test:watch": "vitest",
     "sf:smoke": "tsx scripts/salesforce-smoke-test.ts",
     "sf:discover": "tsx scripts/salesforce-discovery.ts",
-    "sf:preview": "tsx scripts/salesforce-recipient-preview.ts"
+    "sf:preview": "tsx scripts/salesforce-recipient-preview.ts",
+    "db:clear-pilot": "tsx scripts/clear-pilot-data.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.10.0",
