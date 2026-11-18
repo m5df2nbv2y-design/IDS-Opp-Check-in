@@ -8,6 +8,7 @@ import {
   reconcileUncertainAction,
   resendInvitationAction,
   closeOutContactAction,
+  restoreContactAction,
   retrySyncAction,
   resumeLaunchAction,
   sendRemindersAction,
@@ -231,6 +232,8 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           closeOutContact={(recipient) =>
             closeOutContactAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint, recipient.closeOutReason ?? "")
           }
+          campaignComplete={summary.status === "COMPLETE"}
+          restoreContact={(recipient) => restoreContactAction.bind(null, summary.id, recipient.recipientId, recipient.tokenHint)}
         />
         {testRecipient ? (
           <TestEmailPanel

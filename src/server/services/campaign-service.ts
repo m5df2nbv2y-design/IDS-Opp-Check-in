@@ -797,7 +797,7 @@ export const CLOSE_OUT_MESSAGES = {
 /**
  * Close out ONE contact (see `closeOutReason`): revoke their link, audited with the
  * reason the admin saw, then close the campaign if nothing else is outstanding.
- * Sends nothing; submitted answers and their sync are untouched. No undo.
+ * Sends nothing; submitted answers and their sync are untouched. Undone by `restoreContact`.
  */
 export async function closeOutContact(input: {
   campaignId: string;
@@ -837,6 +837,50 @@ export async function closeOutContact(input: {
   });
   if (result.ok) await closeCampaignIfDone(campaignId);
   return result;
+}
+
+/** Fixed messages for the restore control; never stored text. */
+export const RESTORE_MESSAGES = {
+  NOT_OPEN: "Only an in-progress or complete campaign can restore a contact.",
+  CHANGED: "This contact changed since the page was loaded. Reload and check again.",
+  ALREADY_RESTORED: "This contact is already restored.",
+} as const;
+
+/**
+ * Undo a close-out: clear `revokedAt` so the contact's existing link opens again
+ * (expiry unchanged) and they hold the campaign open, reopening a COMPLETE campaign
+ * in the same audited transaction. Sends nothing; no other field changes.
+ */
+export async function restoreContact(input: {
+  campaignId: string;
+  recipientId: string;
+  shownTokenHint: string;
+  actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { campaignId, recipientId, shownTokenHint, actor } = input;
+  if ([campaignId, recipientId, shownTokenHint].some((v) => typeof v !== "string")) throw new Error("Invalid restore input");
+  return prisma.$transaction(async (tx) => {
+    await tx.campaign.update({ where: { id: campaignId }, data: { id: campaignId } });
+    const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    if (campaign.status !== "IN_PROGRESS" && campaign.status !== "COMPLETE") return { ok: false as const, message: RESTORE_MESSAGES.NOT_OPEN };
+    const recipient = await tx.checkInRecipient.findFirst({ where: { id: recipientId, campaignId }, include: { contact: true } });
+    if (!recipient) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    if (!recipient.revokedAt) return { ok: false as const, message: RESTORE_MESSAGES.ALREADY_RESTORED };
+    if (recipient.tokenHint !== shownTokenHint) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    const restored = await tx.checkInRecipient.updateMany({
+      where: { id: recipient.id, campaignId, tokenHint: shownTokenHint, tokenHash: recipient.tokenHash, revokedAt: { not: null } },
+      data: { revokedAt: null },
+    });
+    if (restored.count !== 1) return { ok: false as const, message: RESTORE_MESSAGES.CHANGED };
+    const reopened = (await tx.campaign.updateMany({ where: { id: campaignId, status: "COMPLETE" }, data: { status: "IN_PROGRESS", completedAt: null } })).count === 1;
+    await recordAudit({
+      type: AUDIT_EVENTS.RECIPIENT_RESTORED,
+      summary: `Restored ${recipient.contact.name}; their existing check-in link opens again${reopened ? ` and the campaign reopened (it had completed at ${campaign.completedAt?.toISOString() ?? "an unrecorded time"})` : ""}`,
+      actor, actorKind: "ADMIN", campaignId, contactId: recipient.contactId, accountId: recipient.contact.accountId,
+      detail: JSON.stringify({ version: 1, recipientId: recipient.id, tokenHint: shownTokenHint }),
+    }, tx);
+    return { ok: true as const };
+  });
 }
 
 /**
@@ -968,6 +1012,8 @@ export type RecipientProgress = {
   closeOutReason: string | null;
   /** `closeOutReason` is set: an admin may close the contact out. */
   canCloseOut: boolean;
+  /** Closed out, campaign IN_PROGRESS or COMPLETE: an admin may restore the contact. */
+  canRestore: boolean;
   deliveryNote?: string | null;
 };
 
@@ -1284,7 +1330,8 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
   // Only rows that would otherwise get a reminder or re-send are held back (and say why).
   const heldBack = (r: (typeof campaign.recipients)[number]) => heldBackNote(r, campaign.status);
   const closeOutReasons = new Map<string, string | undefined>();
-  for (const e of await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT } })) {
+  for (const e of await prisma.auditEvent.findMany({ where: { campaignId, type: AUDIT_EVENTS.RECIPIENT_CLOSED_OUT }, orderBy: { createdAt: "asc" } })) {
+    // Ascending, so a contact closed out again after a restore shows the latest reason.
     // An unreadable audit row must not take the campaign page down; the row still shows "Link revoked".
     try {
       const d = JSON.parse(e.detail ?? "");
@@ -1332,6 +1379,7 @@ export async function getCampaignSummary(campaignId: string): Promise<CampaignSu
         heldBackNote: heldBack(recipient),
         closeOutReason: closeOutReason(recipient, campaign.status),
         canCloseOut: closeOutReason(recipient, campaign.status) !== null,
+        canRestore: recipient.revokedAt !== null && (campaign.status === "IN_PROGRESS" || campaign.status === "COMPLETE"),
         deliveryNote: recipient.revokedAt
           ? ["Link revoked", closeOutReasons.get(recipient.id)].filter(Boolean).join(" — ")
           : [isRejectedReminder(recipient) ? REMINDER_REJECTED_NOTE : null, heldBack(recipient)].filter(Boolean).join(". ") || null,

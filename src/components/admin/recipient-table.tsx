@@ -90,9 +90,34 @@ function CloseOut({
         action={action(recipient)}
         size="sm"
         pendingLabel="Closing out…"
-        confirm={`Close out ${recipient.contactName}? Reason: ${recipient.closeOutReason.replace(/\.$/, "")}. Their check-in link stops opening, no email is sent, and this contact no longer holds the campaign open. Answers already submitted are kept. This cannot be undone.`}
+        confirm={`Close out ${recipient.contactName}? Reason: ${recipient.closeOutReason.replace(/\.$/, "")}. Their check-in link stops opening, no email is sent, and this contact no longer holds the campaign open. Answers already submitted are kept. An admin can restore this contact later.`}
       >
         Close out this contact
+      </ActionButton>
+    </div>
+  );
+}
+
+/** Shown only on a closed-out row whose campaign is in progress or complete. */
+function Restore({
+  recipient,
+  action,
+  campaignComplete,
+}: {
+  recipient: RecipientProgress;
+  action?: (recipient: RecipientProgress) => ResendAction;
+  campaignComplete?: boolean;
+}) {
+  if (!action || !recipient.canRestore) return null;
+  return (
+    <div className="mt-2">
+      <ActionButton
+        action={action(recipient)}
+        size="sm"
+        pendingLabel="Restoring…"
+        confirm={`Restore ${recipient.contactName}? Their existing check-in link opens again (if it has not expired) and no email is sent. ${campaignComplete ? "The campaign reopens and stays in progress until this contact finishes or is closed out again." : "This contact holds the campaign open again."}`}
+      >
+        Restore this contact
       </ActionButton>
     </div>
   );
@@ -107,6 +132,8 @@ export function RecipientTable({
   reconcileInvitation,
   resendInvitation,
   closeOutContact,
+  restoreContact,
+  campaignComplete,
 }: {
   recipients: RecipientProgress[];
   /** Binds the invitation reconcile action to one recipient's shown state. */
@@ -115,6 +142,10 @@ export function RecipientTable({
   resendInvitation?: (recipient: RecipientProgress) => ResendAction;
   /** Binds the close-out action to one recipient's shown link and close-out reason. */
   closeOutContact?: (recipient: RecipientProgress) => ResendAction;
+  /** Binds the restore action to one closed-out recipient's shown link. */
+  restoreContact?: (recipient: RecipientProgress) => ResendAction;
+  /** The campaign is COMPLETE, so a restore reopens it. */
+  campaignComplete?: boolean;
 }) {
   return (
     <Card className="overflow-hidden">
@@ -171,6 +202,7 @@ export function RecipientTable({
                   <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
                   <InvitationResend recipient={recipient} action={resendInvitation} />
                   <CloseOut recipient={recipient} action={closeOutContact} />
+                  <Restore recipient={recipient} action={restoreContact} campaignComplete={campaignComplete} />
                 </td>
               </tr>
             ))}
@@ -200,6 +232,7 @@ export function RecipientTable({
             <InvitationReconcile recipient={recipient} action={reconcileInvitation} />
             <InvitationResend recipient={recipient} action={resendInvitation} />
             <CloseOut recipient={recipient} action={closeOutContact} />
+            <Restore recipient={recipient} action={restoreContact} campaignComplete={campaignComplete} />
           </li>
         ))}
       </ul>

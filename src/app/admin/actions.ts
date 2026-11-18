@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, restoreContact, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -290,6 +290,18 @@ export async function closeOutContactAction(campaignId: string, recipientId: str
   const actor = await requireAdminActor();
   const result = await closeOutContact({ campaignId, recipientId, shownTokenHint, shownNote, actor });
   // Revalidate on refusal too, so a stale row and button leave the screen.
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  if (!result.ok) return { error: result.message };
+}
+
+/**
+ * Restore ONE closed-out contact: their existing link opens again and a COMPLETE
+ * campaign reopens. Bound to the `tokenHint` that was on screen; sends nothing.
+ */
+export async function restoreContactAction(campaignId: string, recipientId: string, shownTokenHint: string): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const result = await restoreContact({ campaignId, recipientId, shownTokenHint, actor });
   revalidatePath(`/admin/campaigns/${campaignId}`);
   revalidatePath("/admin");
   if (!result.ok) return { error: result.message };
