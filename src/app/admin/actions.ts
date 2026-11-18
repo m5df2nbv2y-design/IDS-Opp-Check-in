@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendInvitation, restoreContact, restoreExcludedOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
+import { approveLegacyRouting, CampaignChangedError, closeOutContact, excludeShortfallOpportunity, resendBatchMessage, resendFailedInvitations, resendInvitation, restoreContact, restoreExcludedOpportunity, resumeLaunch, sendReminders, type ShortfallReason } from "@/server/services/campaign-service";
 import {
   clearSelections,
   getOrCreateDraft,
@@ -290,6 +290,17 @@ export async function resendInvitationAction(campaignId: string, recipientId: st
   revalidatePath("/admin");
   revalidatePath("/admin/outbox");
   if (!result.ok) return { error: result.message };
+}
+
+/** Re-send every failed invitation the page showed, one at a time; a summary line unless all went out. */
+export async function resendFailedAction(campaignId: string, shown: Parameters<typeof resendFailedInvitations>[0]["shown"]): Promise<void | ActionRefusal> {
+  const actor = await requireAdminActor();
+  const counts = await resendFailedInvitations({ campaignId, shown, actor });
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin");
+  revalidatePath("/admin/outbox");
+  const message = resendBatchMessage(counts);
+  if (message) return { error: message };
 }
 
 /**

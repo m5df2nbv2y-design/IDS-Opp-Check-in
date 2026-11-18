@@ -6,6 +6,7 @@ import {
   excludeShortfallAction,
   reconcileInvitationAction,
   reconcileUncertainAction,
+  resendFailedAction,
   resendInvitationAction,
   closeOutContactAction,
   restoreContactAction,
@@ -57,6 +58,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
     attestations.map((event) => [attestationKey(event.contactId, event.opportunityId), event]),
   );
 
+  const resendable = summary.recipients.filter((r) => r.canResendInvitation).map((r) => ({ recipientId: r.recipientId, tokenHint: r.tokenHint }));
   const failed = responses.filter((response) => response.syncStatus === "FAILED");
 
   // The demo control appears only when a demo address is configured on the
@@ -98,6 +100,15 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
               confirm={`Send a reminder to the ${summary.reminderEligibleCount} contact${summary.reminderEligibleCount === 1 ? "" : "s"} who haven't finished? This issues a fresh link and invalidates the previous one.`}
             >
               Send {summary.reminderEligibleCount} reminder{summary.reminderEligibleCount === 1 ? "" : "s"}
+            </ActionButton>
+          ) : null}
+          {summary.status === "IN_PROGRESS" && resendable.length > 0 ? (
+            <ActionButton
+              action={resendFailedAction.bind(null, summary.id, resendable)}
+              pendingLabel="Re-sending…"
+              confirm={`Re-send the ${resendable.length} failed invitation${resendable.length === 1 ? "" : "s"}, one at a time? Each contact gets a fresh link, and their old link stops working. Sending stops at the first unknown result.`}
+            >
+              Re-send {resendable.length} failed invitation{resendable.length === 1 ? "" : "s"}
             </ActionButton>
           ) : null}
         </div>

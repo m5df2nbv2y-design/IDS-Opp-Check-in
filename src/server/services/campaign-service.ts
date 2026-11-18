@@ -999,6 +999,62 @@ export async function resendInvitation(input: {
   return { ok: false, message: outcome === "FAILED" ? RESEND_INVITATION_MESSAGES.FAILED : RESEND_INVITATION_MESSAGES.UNKNOWN };
 }
 
+/** Refusals that sent nothing; any message not listed here or FAILED is treated as unknown. */
+const SKIPPED_RESEND_MESSAGES = new Set<string>([RESEND_INVITATION_MESSAGES.STALE, RESEND_INVITATION_MESSAGES.NOT_ELIGIBLE, RESEND_INVITATION_MESSAGES.OPPORTUNITIES_CHANGED]);
+
+export type ResendBatchCounts = { sent: number; failed: number; unknown: number; skipped: number; notTried: number };
+
+/**
+ * Re-send every failed invitation the page showed, one `resendInvitation` at a time,
+ * each bound to its shown `tokenHint`. Stops at the first unknown outcome: the rest
+ * stay FAILED and untouched until the unknown one is reconciled. A failed-again row
+ * is not retried. Writes one best-effort INVITE_RESEND_BATCH audit with the counts.
+ */
+export async function resendFailedInvitations(input: {
+  campaignId: string;
+  shown: { recipientId: string; tokenHint: string }[];
+  actor: string;
+}): Promise<ResendBatchCounts> {
+  const { campaignId, shown, actor } = input;
+  if (typeof campaignId !== "string" || !Array.isArray(shown) || shown.some((r) => typeof r?.recipientId !== "string" || typeof r?.tokenHint !== "string")) {
+    throw new Error("Invalid re-send input");
+  }
+  const counts: ResendBatchCounts = { sent: 0, failed: 0, unknown: 0, skipped: 0, notTried: shown.length };
+  try {
+    for (const row of shown) {
+      // A throw may follow the claim (row left PENDING), so it is an unknown outcome.
+      const result = await resendInvitation({ campaignId, recipientId: row.recipientId, shownTokenHint: row.tokenHint, actor })
+        .catch(() => ({ ok: false as const, message: RESEND_INVITATION_MESSAGES.UNKNOWN }));
+      counts.notTried -= 1;
+      if (result.ok) counts.sent += 1;
+      else if (result.message === RESEND_INVITATION_MESSAGES.FAILED) counts.failed += 1;
+      else if (SKIPPED_RESEND_MESSAGES.has(result.message)) counts.skipped += 1;
+      else { counts.unknown += 1; break; }
+    }
+  } finally {
+    await recordAudit({
+      type: AUDIT_EVENTS.INVITE_RESEND_BATCH,
+      summary: `Re-sent ${counts.sent} of ${shown.length} failed invitations${counts.unknown ? "; stopped at an unknown outcome" : ""}`,
+      actor, actorKind: "ADMIN", campaignId,
+      detail: JSON.stringify({ version: 1, shown: shown.length, ...counts }),
+    }).catch(() => undefined);
+  }
+  return counts;
+}
+
+/** The one line shown after a batch re-send; null when every shown invitation went out. */
+export function resendBatchMessage(c: ResendBatchCounts): string | null {
+  const total = c.sent + c.failed + c.unknown + c.skipped + c.notTried;
+  if (c.sent + c.failed + c.unknown === 0) return "Nothing to re-send. Reload the page.";
+  if (c.sent === total) return null;
+  const parts = [`${c.sent} of ${total} re-sent`];
+  if (c.failed) parts.push(`${c.failed} failed again`);
+  if (c.skipped) parts.push(`${c.skipped} changed since the page was loaded and ${c.skipped === 1 ? "was" : "were"} skipped`);
+  if (!c.unknown) return `${parts.join("; ")}.`;
+  if (c.notTried) parts.push(`${c.notTried} not tried`);
+  return `Stopped after an unknown result: ${parts.join("; ")}. Check the sending mailbox's Sent Items and reconcile that contact before re-sending the rest.`;
+}
+
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------

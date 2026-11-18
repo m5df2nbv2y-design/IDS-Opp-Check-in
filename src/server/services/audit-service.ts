@@ -21,6 +21,8 @@ export const AUDIT_EVENTS = {
   INVITE_RECONCILED_NOT_SENT: "INVITE_RECONCILED_NOT_SENT",
   /** An admin started a re-send of a FAILED invitation with a fresh link. The outcome is INVITE_SENT / INVITE_FAILED / INVITE_UNCERTAIN. */
   INVITE_RESEND_STARTED: "INVITE_RESEND_STARTED",
+  /** An admin re-sent every failed invitation shown, one by one (each audited on its own). detail: { version: 1, shown, sent, failed, unknown, skipped, notTried }. */
+  INVITE_RESEND_BATCH: "INVITE_RESEND_BATCH",
   REMINDER_STARTED: "REMINDER_STARTED",
   REMINDER_SENT: "REMINDER_SENT",
   REMINDER_FAILED: "REMINDER_FAILED",
