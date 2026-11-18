@@ -269,7 +269,7 @@ export function CheckInFlow({ token, contactName, items, lossReasons, preview = 
       </div>
     </header>
     <main className="mx-auto w-full max-w-lg flex-1 px-5 pb-32 pt-3">
-      {preview ? <p className="mb-5 text-sm text-white/85">Fictional preview · nothing is saved · sample loss reasons</p> : null}
+      {preview ? <p className="mb-5 text-sm text-white/85">Fictional preview · nothing is saved</p> : null}
       <article key={item.id} className="ids-recipient-panel p-5 sm:p-7">
         <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-ink">{item.projectName}</h1>
         <p className="mt-2 text-sm text-muted">Opportunity created {item.createdDate ? formatShortDate(item.createdDate) : "— date unavailable"}</p>

@@ -1,4 +1,4 @@
-import type { LossReasonOption, RecipientOpportunity } from "@/lib/client-response";
+import type { RecipientOpportunity } from "@/lib/client-response";
 
 /**
  * Fictional data for the admin-only recipient preview.
@@ -31,15 +31,4 @@ export const PREVIEW_ITEMS: RecipientOpportunity[] = [
     selectedLossReason: null,
     comment: "",
   },
-];
-
-/**
- * Sample choices only. These are NOT the org's Loss Reason values — Josh has
- * not established them in Salesforce yet — so they are labelled as samples and
- * must never be presented as the final customer choices.
- */
-export const PREVIEW_LOSS_REASONS: LossReasonOption[] = [
-  { value: "SAMPLE_BUDGET", label: "Sample — budget unavailable" },
-  { value: "SAMPLE_TIMING", label: "Sample — timing changed" },
-  { value: "SAMPLE_OTHER_SUPPLIER", label: "Sample — chose another supplier" },
 ];
