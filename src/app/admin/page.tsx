@@ -8,7 +8,7 @@ import { SelectionBar } from "@/components/admin/selection-bar";
 import { SelectionFilters } from "@/components/admin/selection-filters";
 import { SignalList, type SignalListItem } from "@/components/admin/signal-list";
 import { Card, EmptyState, StatTile } from "@/components/ui/primitives";
-import { formatDate, formatDay, pluralize } from "@/lib/format";
+import { formatDay, pluralize } from "@/lib/format";
 import {
   getDraftSummary,
   getOrCreateDraft,

@@ -1007,12 +1007,17 @@ const SKIPPED_RESEND_MESSAGES = new Set<string>([RESEND_INVITATION_MESSAGES.STAL
 
 export type ResendBatchCounts = { sent: number; failed: number; unknown: number; skipped: number; notTried: number };
 
+/** How long "Re-send all failed" keeps starting new sends; the rest wait for the next press. */
+const RESEND_BATCH_BUDGET_MS = 180_000;
+
 /**
  * Re-send every failed invitation the page showed, one `resendInvitation` at a time,
- * each bound to its shown `tokenHint`. Stops at the first unknown outcome: the rest
- * stay FAILED and untouched until the unknown one is reconciled. A failed-again row
+ * each bound to its shown `tokenHint`. Stops at the first unknown outcome (the rest
+ * stay FAILED and untouched until the unknown one is reconciled) or once the time
+ * budget is spent (the rest stay FAILED for the next press). A failed-again row
  * is not retried. Writes one best-effort INVITE_RESEND_BATCH audit with the counts.
  */
+
 export async function resendFailedInvitations(input: {
   campaignId: string;
   shown: { recipientId: string; tokenHint: string }[];
@@ -1023,8 +1028,12 @@ export async function resendFailedInvitations(input: {
     throw new Error("Invalid re-send input");
   }
   const counts: ResendBatchCounts = { sent: 0, failed: 0, unknown: 0, skipped: 0, notTried: shown.length };
+  const startedAt = Date.now();
+  let timedOut = false;
   try {
     for (const row of shown) {
+      // No new send after the budget: one worst-case Graph send (~55 s) still ends inside Vercel's default 300 s function limit.
+      if (Date.now() - startedAt >= RESEND_BATCH_BUDGET_MS) { timedOut = true; break; }
       // A throw may follow the claim (row left PENDING), so it is an unknown outcome.
       const result = await resendInvitation({ campaignId, recipientId: row.recipientId, shownTokenHint: row.tokenHint, actor })
         .catch(() => ({ ok: false as const, message: RESEND_INVITATION_MESSAGES.UNKNOWN }));
@@ -1037,7 +1046,7 @@ export async function resendFailedInvitations(input: {
   } finally {
     await recordAudit({
       type: AUDIT_EVENTS.INVITE_RESEND_BATCH,
-      summary: `Re-sent ${counts.sent} of ${shown.length} failed invitations${counts.unknown ? "; stopped at an unknown outcome" : ""}`,
+      summary: `Re-sent ${counts.sent} of ${shown.length} failed invitations${counts.unknown ? "; stopped at an unknown outcome" : timedOut ? "; stopped at the time limit" : ""}`,
       actor, actorKind: "ADMIN", campaignId,
       detail: JSON.stringify({ version: 1, shown: shown.length, ...counts }),
     }).catch(() => undefined);
@@ -1053,6 +1062,8 @@ export function resendBatchMessage(c: ResendBatchCounts): string | null {
   const parts = [`${c.sent} of ${total} re-sent`];
   if (c.failed) parts.push(`${c.failed} failed again`);
   if (c.skipped) parts.push(`${c.skipped} changed since the page was loaded and ${c.skipped === 1 ? "was" : "were"} skipped`);
+  // notTried without an unknown result means the batch hit its time limit.
+  if (!c.unknown && c.notTried) return `${parts.join("; ")}; ${c.notTried} not tried yet. Press Re-send all failed again to send the rest.`;
   if (!c.unknown) return `${parts.join("; ")}.`;
   if (c.notTried) parts.push(`${c.notTried} not tried`);
   return `Stopped after an unknown result: ${parts.join("; ")}. Check the sending mailbox's Sent Items and reconcile that contact before re-sending the rest.`;
