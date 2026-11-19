@@ -7,7 +7,7 @@
     "demo": "node scripts/demo.mjs",
     "db:up": "node scripts/db-up.mjs",
     "db:down": "docker stop ids-checkin-postgres",
-    "build": "next build",
+    "build": "next build && tsx scripts/check-dynamic-pages.ts",
     "start": "next start",
     "lint": "eslint",
     "db:migrate": "prisma migrate dev",

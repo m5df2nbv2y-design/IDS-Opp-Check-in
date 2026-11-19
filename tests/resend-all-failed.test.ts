@@ -8,7 +8,7 @@ import { prisma } from "@/lib/db";
 import { getEmailService } from "@/server/integrations/email";
 import { ForbiddenError } from "@/server/auth/require-admin";
 import { AUDIT_EVENTS } from "@/server/services/audit-service";
-import { getCampaignSummary } from "@/server/services/campaign-service";
+import { getCampaignSummary, resendBatchMessage } from "@/server/services/campaign-service";
 import { launchCampaignAndCollectTokens, resetDatabase } from "./fixtures";
 
 /** A campaign-level re-send of every FAILED invitation the page showed, one contact at a time. */
@@ -200,6 +200,44 @@ describe("re-send all failed", () => {
     await call(campaignId, shown);
 
     expect(most).toBe(1);
+  });
+
+  it("stops starting new sends after 180 s; the rest are not tried and the admin is told to run it again", async () => {
+    const { campaignId, shown } = await failedInvitations(3);
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const service = getEmailService();
+    const original = service.send.bind(service);
+    // Each send takes 100 s: the 2nd starts at 100 s (under budget), the 3rd would start at 200 s.
+    const send = vi.spyOn(service, "send").mockImplementation(async (message) => { now += 100_000; return original(message); });
+
+    expect(await call(campaignId, shown)).toEqual({ error: "2 of 3 re-sent; 1 not tried yet. Press Re-send all failed again to send the rest." });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await statuses(shown.map((s) => s.recipientId))).toEqual(["SENT", "SENT", "FAILED"]);
+    const [batch] = await batchAudits(campaignId);
+    expect(batch.summary).toBe("Re-sent 2 of 3 failed invitations; stopped at the time limit");
+    expect(JSON.parse(batch.detail!)).toMatchObject({ sent: 2, unknown: 0, notTried: 1 });
+  });
+
+  it("a send that finishes past the budget still counts; nothing after it starts", async () => {
+    const { campaignId, shown } = await failedInvitations(3);
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const service = getEmailService();
+    const original = service.send.bind(service);
+    const send = vi.spyOn(service, "send").mockImplementation(async (message) => { now += 179_999; return original(message); });
+
+    // The 2nd starts at 179.999 s, just inside the budget, and finishes; the 3rd would start at 359.998 s.
+    expect(await call(campaignId, shown)).toEqual({ error: "2 of 3 re-sent; 1 not tried yet. Press Re-send all failed again to send the rest." });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await statuses(shown.map((s) => s.recipientId))).toEqual(["SENT", "SENT", "FAILED"]);
+  });
+
+  it("the time-limit message keeps the failed-again and skipped counts", () => {
+    expect(resendBatchMessage({ sent: 1, failed: 1, unknown: 0, skipped: 1, notTried: 2 })).toBe(
+      "1 of 5 re-sent; 1 failed again; 1 changed since the page was loaded and was skipped; 2 not tried yet. Press Re-send all failed again to send the rest.",
+    );
   });
 
   it("refuses a non-admin and sends nothing", async () => {
