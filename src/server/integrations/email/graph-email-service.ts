@@ -186,13 +186,34 @@ export class GraphEmailService implements EmailService {
     }
   }
 
+  /**
+   * Readiness without sending: settings present, an app token issued, and the
+   * Mail.Send application role on it. Works while EMAIL_PROVIDER is still mock.
+   * Mailbox existence and any mailbox scoping need directory permission we do
+   * not hold, so the internal test send confirms those.
+   */
+  async checkReadiness(): Promise<GraphReadiness> {
+    const result: GraphReadiness = {
+      missing: missingGraphSettings(),
+      mailbox: env.graph.senderMailbox,
+      roles: [],
+      mailSend: false,
+    };
+    if (liveEmailRefusal({ ...process.env, EMAIL_PROVIDER: "graph" })) {
+      return { ...result, error: "The Graph readiness check runs only in Production." };
+    }
+    if (result.missing.length) return result;
+    // Always a fresh token: a cached one predates any consent IT granted since.
+    cachedToken = null;
+    const token = await this.accessToken();
+    if ("error" in token) return { ...result, error: token.error };
+    const roles = tokenRoles(token.value);
+    return { ...result, roles, mailSend: roles.includes("Mail.Send") };
+  }
+
   /** Named so the ledger error says which value is absent, without printing any. */
   private missingConfiguration(): string | null {
-    if (!env.graph.tenantId) return "GRAPH_TENANT_ID";
-    if (!env.graph.clientId) return "GRAPH_CLIENT_ID";
-    if (!env.graph.clientSecret) return "GRAPH_CLIENT_SECRET";
-    if (!env.graph.senderMailbox) return "GRAPH_SENDER_MAILBOX";
-    return null;
+    return missingGraphSettings()[0] ?? null;
   }
 
   /**
@@ -246,6 +267,39 @@ export class GraphEmailService implements EmailService {
       // Falls through to the same fixed message as a body without a token.
     }
     return { error: "Microsoft token response contained no access token. No email was sent." };
+  }
+}
+
+export type GraphReadiness = {
+  /** Names of absent GRAPH_* settings; values are never returned. */
+  missing: string[];
+  mailbox: string;
+  /** Application roles on our own app token (e.g. Mail.Send). */
+  roles: string[];
+  mailSend: boolean;
+  /** A fixed message: not Production, or why no token was issued (HTTP status, transport, empty response). */
+  error?: string;
+};
+
+/** Names of absent GRAPH_* settings, in a fixed order; values are never returned. */
+function missingGraphSettings(): string[] {
+  const settings: [string, string][] = [
+    ["GRAPH_TENANT_ID", env.graph.tenantId],
+    ["GRAPH_CLIENT_ID", env.graph.clientId],
+    ["GRAPH_CLIENT_SECRET", env.graph.clientSecret],
+    ["GRAPH_SENDER_MAILBOX", env.graph.senderMailbox],
+  ];
+  return settings.filter(([, value]) => !value).map(([name]) => name);
+}
+
+/** The `roles` claim of our own access token. Read only, never verified: it came straight from Microsoft. */
+function tokenRoles(accessToken: string): string[] {
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const roles = typeof claims === "object" && claims && "roles" in claims ? claims.roles : [];
+    return Array.isArray(roles) ? roles.filter((role): role is string => typeof role === "string") : [];
+  } catch {
+    return [];
   }
 }
 
