@@ -107,9 +107,8 @@ export async function syncCampaignResponses(
      * the CRM would show a dead opportunity and no explanation, and the
      * explanation is the part the business wanted from the check-in.
      */
-    const closedLostBlocked =
-      isClosedStage(nextStage) &&
-      !(env.salesforce.write.closedLost && env.salesforce.write.lossReasonField && item.lossReason);
+    const closedLostReason = isClosedStage(nextStage) ? closedLostBlockReason(item.lossReason) : null;
+    const closedLostBlocked = closedLostReason !== null;
 
     if (!writeEnabled || (!salesforce.info.simulated && (!approved || closedLostBlocked))) {
       await prisma.checkInOpportunity.updateMany({
@@ -125,8 +124,8 @@ export async function syncCampaignResponses(
         toStatus: nextStage,
         detail: !writeEnabled
           ? "Salesforce write-back is disabled (SALESFORCE_WRITE_ENABLED is not \"true\")."
-          : closedLostBlocked
-            ? closedLostWithholdReason(item.lossReason)
+          : closedLostReason
+            ? closedLostReason
             : "Individual approval is required before this update is pushed.",
         ...auditContext,
       });
@@ -246,7 +245,18 @@ function closedLostWithholdReason(lossReason: string | null): string {
     return "Closed Lost needs a loss reason field: SF_FIELD_LOSS_REASON is not set.";
   }
   if (!lossReason) {
-    return "This response records no loss reason, so Closed Lost was not pushed.";
+    return "This response records no loss reason, so Closed Lost can't be written to Salesforce.";
   }
-  return "Individual approval is required before this update is pushed.";
+  return "Closed Lost can be written to Salesforce.";
 }
+
+/**
+ * Why a Closed Lost answer cannot be written, or null when it can: the switch is
+ * on, a loss-reason field is named and the answer carries a reason. Shared by the
+ * sync and the campaign page, so the Approve button and the server agree.
+ */
+export function closedLostBlockReason(lossReason: string | null): string | null {
+  const ready = env.salesforce.write.closedLost && Boolean(env.salesforce.write.lossReasonField) && Boolean(lossReason);
+  return ready ? null : closedLostWithholdReason(lossReason);
+}
+
