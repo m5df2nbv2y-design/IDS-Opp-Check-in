@@ -11,12 +11,17 @@ const longDate = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+/**
+ * Date-times are shown in IDS's own time zone, with MST/MDT. Date-only values
+ * (formatDate) stay in UTC: a plain date moved into Mountain Time reads as the day before.
+ */
 const shortDateTime = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
   hour: "numeric",
   minute: "2-digit",
-  timeZone: "UTC",
+  timeZone: "America/Denver",
+  timeZoneName: "short",
 });
 
 export function formatAmount(amount: number): string {
@@ -32,6 +37,19 @@ export function formatCompactAmount(amount: number): string {
 export function formatDate(date: Date | string | null | undefined): string {
   if (!date) return "—";
   return longDate.format(new Date(date));
+}
+
+const longDateMountain = new Intl.DateTimeFormat("en-US", {
+  month: "long",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "America/Denver",
+});
+
+/** The Mountain Time calendar day of a moment (launched, completed, modified). Plain dates use formatDate. */
+export function formatDay(date: Date | string | null | undefined): string {
+  if (!date) return "—";
+  return longDateMountain.format(new Date(date));
 }
 
 export function formatDateTime(date: Date | string | null | undefined): string {
