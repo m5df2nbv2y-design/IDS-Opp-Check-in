@@ -22,9 +22,10 @@ import { TestEmailPanel } from "@/components/admin/test-email-panel";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/components/ui/primitives";
 import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
-import { stageLabel } from "@/lib/stages";
+import { isClosedStage, stageLabel } from "@/lib/stages";
 import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses, SHORTFALL_REASONS } from "@/server/services/campaign-service";
 import { isReconcilableWrite, listAppliedAttestations } from "@/server/services/reconcile-service";
+import { closedLostBlockReason } from "@/server/services/sync-service";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -326,10 +327,13 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                 </div>
 
                 <p className="mt-2 text-sm text-muted">Close date: {response.previousCloseDate ? formatDate(response.previousCloseDate) : "Not set"} → {response.updatedCloseDate ? formatDate(response.updatedCloseDate) : "Unchanged"}</p>
-                {response.recipient.completedAt && response.updatedStatus !== "CLOSED_LOST" && ["PENDING", "FAILED", "WITHHELD"].includes(response.syncStatus) && env.salesforce.writeEnabled ? (
+                {response.recipient.completedAt && ["PENDING", "FAILED", "WITHHELD"].includes(response.syncStatus) && env.salesforce.writeEnabled
+                  && (!isClosedStage(response.updatedStatus) || closedLostBlockReason(response.lossReason) === null) ? (
                   <div className="mt-3"><ActionButton
                     action={approveWritebackAction.bind(null, summary.id, response.id, response.updatedAt.toISOString())}
-                    confirm={`Approve this response and write its stage and close date to Salesforce?`}
+                    confirm={isClosedStage(response.updatedStatus)
+                      ? `Approve this response and mark the opportunity Closed Lost in Salesforce, with loss reason "${response.lossReason}"?`
+                      : `Approve this response and write its stage and close date to Salesforce?`}
                     pendingLabel="Applying…"
                   >Approve Salesforce update</ActionButton></div>
                 ) : null}
@@ -354,7 +358,11 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
                   </div>
                 ) : null}
                 <AttestedNote event={response.syncStatus === "SYNCED" ? attestedByHand.get(attestationKey(response.recipient.contactId, response.opportunityId)) : undefined} />
-                {response.updatedStatus === "CLOSED_LOST" ? <p className="mt-2 text-sm text-muted">Closed Lost write-back is deferred until its fields and choices are confirmed.</p> : null}
+                {isClosedStage(response.updatedStatus) ? (
+                  <p className="mt-2 text-sm text-muted">
+                    {closedLostBlockReason(response.lossReason) ?? `Loss reason: ${response.lossReason}`}
+                  </p>
+                ) : null}
                 {response.repComment ? (
                   <p className="mt-3 rounded-xl bg-canvas px-4 py-2.5 text-[14px] text-body">
                     “{response.repComment}”
