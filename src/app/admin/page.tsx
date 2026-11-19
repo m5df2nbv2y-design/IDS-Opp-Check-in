@@ -109,6 +109,31 @@ export default async function AdminDashboardPage({
         <Image src="/brand/ids-login-background.jpg" alt="" fill sizes="(min-width: 1024px) 80vw, 100vw" className="object-cover" priority />
         <div className="p-6 text-white sm:p-8"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/80">IDS Opportunity Check-In</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Keep good projects moving.</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-white/90">Choose the opportunities you want to check in on, review the recipients, then confirm when you’re ready.</p></div>
       </section>
+      {sent.length > 0 ? (
+        <section aria-label="Sent campaigns" className="space-y-3">
+          <h2 className="text-[17px] font-semibold tracking-tight text-ink">Sent campaigns</h2>
+          <Card className="divide-y divide-line">
+            {sent.map((campaign) => (
+              <Link
+                key={campaign.id}
+                href={`/admin/campaigns/${campaign.id}`}
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 transition-colors hover:bg-canvas"
+              >
+                <div>
+                  <div className="font-semibold text-ink">{campaign.name}</div>
+                  <div className="text-[13px] text-muted">
+                    {campaign.recipientCount} contacts · {campaign.opportunityCount} opportunities ·{" "}
+                    {formatDay(campaign.startedAt ?? campaign.createdAt)}
+                  </div>
+                </div>
+                <div className="text-[13px] font-medium text-muted">
+                  {campaign.completedCount} of {campaign.recipientCount} complete
+                </div>
+              </Link>
+            ))}
+          </Card>
+        </section>
+      ) : null}
       <ol aria-label="Check-in workflow" className="ids-workflow"><li><span>1</span> Choose opportunities</li><li><span>2</span> Review recipients</li><li><span>3</span> Confirm sending</li></ol>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -171,32 +196,6 @@ export default async function AdminDashboardPage({
             </h2>
           </div>
           <SignalList signals={signalItems} />
-        </section>
-      ) : null}
-
-      {sent.length > 0 ? (
-        <section className="space-y-3 pt-2">
-          <h2 className="text-[17px] font-semibold tracking-tight text-ink">Sent campaigns</h2>
-          <Card className="divide-y divide-line">
-            {sent.map((campaign) => (
-              <Link
-                key={campaign.id}
-                href={`/admin/campaigns/${campaign.id}`}
-                className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 transition-colors hover:bg-canvas"
-              >
-                <div>
-                  <div className="font-semibold text-ink">{campaign.name}</div>
-                  <div className="text-[13px] text-muted">
-                    {campaign.recipientCount} contacts · {campaign.opportunityCount} opportunities ·{" "}
-                    {formatDay(campaign.startedAt ?? campaign.createdAt)}
-                  </div>
-                </div>
-                <div className="text-[13px] font-medium text-muted">
-                  {campaign.completedCount} of {campaign.recipientCount} complete
-                </div>
-              </Link>
-            ))}
-          </Card>
         </section>
       ) : null}
 
