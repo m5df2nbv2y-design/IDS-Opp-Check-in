@@ -99,8 +99,8 @@ and that copy holds the full message including the live check-in link; who can
 read that mailbox, and how long it retains the message, are to settle with IT.
 For each recipient under "Send outcome unknown" on the campaign page or sending
 results, check the sending mailbox's Sent Items for a message to that address,
-and for an NDR, before anyone resends. No in-app control resolves an unknown
-invitation; a replacement needs an explicitly approved invitation, as for Resend.
+and for an NDR, before anyone resends. The campaign page now has controls for this: record "It was sent" or "It was
+not sent", and "Re-send invitation" for a failed one.
 The count is invitation-only: a recipient still PENDING (not yet attempted, or
 interrupted) and an unresolved reminder stay in the campaign page's
 pending-or-unresolved banner, and a reminder in the recipient's "Delivery
@@ -114,6 +114,8 @@ Diagnostics are fixed text built from this code's own constants and an HTTP
 status number. A provider or token body, thrown text, bearer link, credential or
 mailbox value is never returned, stored in the ledger or written to an audit
 event.
+
+**Go-live procedure:** `docs/runbooks/graph-email-go-live.md`. **IT request:** `docs/runbooks/graph-it-request.md`. Microsoft's current scoping mechanism is Exchange RBAC for Applications, which replaces Application Access Policies; with it, the token carries no Mail.Send role, and the Outbox readiness check accounts for that.
 
 Still blocked on IT approval, and not verified here:
 
