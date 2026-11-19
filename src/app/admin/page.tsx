@@ -8,7 +8,7 @@ import { SelectionBar } from "@/components/admin/selection-bar";
 import { SelectionFilters } from "@/components/admin/selection-filters";
 import { SignalList, type SignalListItem } from "@/components/admin/signal-list";
 import { Card, EmptyState, StatTile } from "@/components/ui/primitives";
-import { formatDate, pluralize } from "@/lib/format";
+import { formatDate, formatDay, pluralize } from "@/lib/format";
 import {
   getDraftSummary,
   getOrCreateDraft,
@@ -188,7 +188,7 @@ export default async function AdminDashboardPage({
                   <div className="font-semibold text-ink">{campaign.name}</div>
                   <div className="text-[13px] text-muted">
                     {campaign.recipientCount} contacts · {campaign.opportunityCount} opportunities ·{" "}
-                    {formatDate(campaign.startedAt ?? campaign.createdAt)}
+                    {formatDay(campaign.startedAt ?? campaign.createdAt)}
                   </div>
                 </div>
                 <div className="text-[13px] font-medium text-muted">

@@ -44,7 +44,7 @@ describe("last Salesforce refresh", () => {
     expect(last?.summary).toContain("1145 open opportunities");
     const html = renderToStaticMarkup(LastRefreshed({ last }));
     expect(html).toContain("Last refreshed");
-    expect(html).toContain("Nov 18, 9:53 PM UTC");
+    expect(html).toContain("Nov 18, 2:53 PM MST");
     expect(html).toContain("Pulled 1145 open opportunities across 982 organizations");
     expect(html).not.toContain("Pulled 1 old");
   });

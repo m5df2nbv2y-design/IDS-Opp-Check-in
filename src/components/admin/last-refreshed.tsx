@@ -4,7 +4,7 @@ import { formatDateTime } from "@/lib/format";
 export function LastRefreshed({ last }: { last: { at: Date; summary: string } | null }) {
   return (
     <p role="status" className="mt-1 ml-auto max-w-sm text-[13px] text-muted">
-      {last ? `Last refreshed ${formatDateTime(last.at)} UTC · ${last.summary}` : "Not refreshed yet"}
+      {last ? `Last refreshed ${formatDateTime(last.at)} · ${last.summary}` : "Not refreshed yet"}
     </p>
   );
 }

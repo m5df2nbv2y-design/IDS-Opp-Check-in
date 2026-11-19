@@ -1,3 +1,4 @@
+import { inBatches } from "@/lib/batches";
 import { prisma } from "@/lib/db";
 import { getSalesforceService } from "@/server/integrations/salesforce";
 import { AUDIT_EVENTS, recordAudit } from "./audit-service";
@@ -36,16 +37,23 @@ export async function refreshCatalogFromSalesforce(
   ]);
   const activeReps = sfReps.filter((rep) => rep.active);
 
-  for (const rep of sfReps) {
-    await prisma.salesRep.upsert({
+  // Independent row writes run a few at a time instead of one by one (a full refresh
+  // took ~3 minutes of round trips). Half the default pg pool (10), so pages and
+  // check-ins still get a connection while a refresh runs.
+  const BATCH = 5;
+  // Two writes to the same row in one batch would race on its unique key; keep one per id.
+  const unique = <T extends { externalId: string }>(rows: readonly T[]) => [...new Map(rows.map((row) => [row.externalId, row])).values()];
+
+  await inBatches(unique(sfReps), BATCH, (rep) =>
+    prisma.salesRep.upsert({
       where: { externalId: rep.externalId },
       create: { externalId: rep.externalId, name: rep.name, email: rep.email, active: rep.active },
       update: { name: rep.name, email: rep.email, active: rep.active },
-    });
-  }
+    }),
+  );
 
-  for (const account of sfAccounts) {
-    await prisma.account.upsert({
+  await inBatches(unique(sfAccounts), BATCH, (account) =>
+    prisma.account.upsert({
       where: { externalId: account.externalId },
       create: {
         externalId: account.externalId,
@@ -54,8 +62,8 @@ export async function refreshCatalogFromSalesforce(
         active: account.active,
       },
       update: { name: account.name, type: account.type, active: account.active },
-    });
-  }
+    }),
+  );
 
   // Every contact is stored, including those without an email: resolution
   // needs them to tell "primary contact has no email" from "contact not found".
@@ -63,13 +71,13 @@ export async function refreshCatalogFromSalesforce(
   // specific record, and substituting another person is never correct.
   const canonical = await salesforce.getExternalContacts();
 
-  const accountIdByExternalId = new Map(
-    (await prisma.account.findMany()).map((account) => [account.externalId, account.id]),
-  );
+  const storedAccounts = await prisma.account.findMany({ select: { id: true, externalId: true, name: true } });
+  const accountIdByExternalId = new Map(storedAccounts.map((account) => [account.externalId, account.id]));
+  const accountNameById = new Map(storedAccounts.map((account) => [account.id, account.name]));
 
-  for (const contact of canonical) {
+  await inBatches(unique(canonical), BATCH, async (contact) => {
     const accountId = accountIdByExternalId.get(contact.accountExternalId);
-    if (!accountId) continue;
+    if (!accountId) return;
 
     await prisma.externalContact.upsert({
       where: { externalId: contact.externalId },
@@ -89,7 +97,7 @@ export async function refreshCatalogFromSalesforce(
         active: contact.active,
       },
     });
-  }
+  });
 
   const opportunities = await salesforce.getOpenOpportunities({
     ownerExternalIds: activeReps.map((rep) => rep.externalId),
@@ -97,9 +105,9 @@ export async function refreshCatalogFromSalesforce(
 
   const resolution = resolveRecipients({ opportunities, contacts: canonical });
 
-  const repIdByExternalId = new Map(
-    (await prisma.salesRep.findMany()).map((rep) => [rep.externalId, rep.id]),
-  );
+  const storedReps = await prisma.salesRep.findMany({ select: { id: true, externalId: true, name: true } });
+  const repIdByExternalId = new Map(storedReps.map((rep) => [rep.externalId, rep.id]));
+  const repNameById = new Map(storedReps.map((rep) => [rep.id, rep.name]));
   const contactIdByExternalId = new Map(
     (await prisma.externalContact.findMany()).map((contact) => [contact.externalId, contact.id]),
   );
@@ -107,12 +115,12 @@ export async function refreshCatalogFromSalesforce(
   const seenExternalIds: string[] = [];
   let snapshotsRecorded = 0;
 
-  for (const { opportunity, resolution: outcome } of resolution.results) {
+  await inBatches([...new Map(resolution.results.map((r) => [r.opportunity.externalId, r])).values()], BATCH, async ({ opportunity, resolution: outcome }) => {
     const accountId = accountIdByExternalId.get(opportunity.accountExternalId);
     const internalRepId = repIdByExternalId.get(opportunity.ownerExternalId);
     // Without an account or an active owner there is nothing to attach the
     // opportunity to; these are counted by the provider's own skip logging.
-    if (!accountId || !internalRepId) continue;
+    if (!accountId || !internalRepId) return;
 
     const contactId =
       outcome.status === "RESOLVED"
@@ -144,7 +152,7 @@ export async function refreshCatalogFromSalesforce(
       where: { externalId: opportunity.externalId },
       create: { externalId: opportunity.externalId, ...fields },
       update: fields,
-      include: { account: true, internalRep: true },
+      // Names come from the maps above, not a join on every row.
     });
 
     // Append-only history. Writes only when something material changed, so a
@@ -160,14 +168,14 @@ export async function refreshCatalogFromSalesforce(
         isOpen: true,
         isWon: null,
         accountId: stored.accountId,
-        accountName: stored.account.name,
+        accountName: accountNameById.get(stored.accountId) ?? "",
         internalRepId: stored.internalRepId,
-        internalRepName: stored.internalRep.name,
+        internalRepName: repNameById.get(stored.internalRepId) ?? "",
       })
     ) {
       snapshotsRecorded += 1;
     }
-  }
+  });
 
   // ---- Terminal outcomes -------------------------------------------------
   // An opportunity that has left the open set can never be returned by the

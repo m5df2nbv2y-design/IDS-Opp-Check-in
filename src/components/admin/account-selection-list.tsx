@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { setSelectionAction } from "@/app/admin/actions";
 import { AccountTypeBadge, Card } from "@/components/ui/primitives";
 import { accountTypeLabel } from "@/lib/account-types";
-import { formatAmount, formatDate, pluralize } from "@/lib/format";
+import { formatAmount, formatDate, formatDay, pluralize } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import type { DraftAccountGroup, DraftOpportunityRow } from "@/server/services/campaign-draft-service";
 
@@ -146,7 +146,7 @@ function OpportunityRow({ row }: { row: DraftOpportunityRow }) {
             Salesforce change may well have come from an integration.
           */}
           <span title={row.lastModifiedAt ? `Salesforce last modified ${new Date(row.lastModifiedAt).toISOString()}` : "No Salesforce modification date has been imported for this opportunity"}>
-            {row.lastModifiedAt ? `SF modified ${formatDate(row.lastModifiedAt)}` : "SF modified — unknown"}
+            {row.lastModifiedAt ? `SF modified ${formatDay(row.lastModifiedAt)}` : "SF modified — unknown"}
           </span>
           <span>IDS: {row.ownerName}</span>
           <a

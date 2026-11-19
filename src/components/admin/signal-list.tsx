@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { markSignalReviewedAction, saveSignalDraftResponseAction } from "@/app/admin/actions";
 import { Button } from "@/components/ui/button";
 import { Card, SignalMatchBadge, SignalStatusBadge } from "@/components/ui/primitives";
-import { formatAmount, formatDateTime } from "@/lib/format";
+import { formatAmount, formatDate, formatDateTime } from "@/lib/format";
 import { stageLabel } from "@/lib/stages";
 import { SIGNAL_MATCH_REASON_LABELS, type SignalMatchReason } from "@/server/services/signal-matching-service";
 
@@ -79,7 +79,7 @@ function SignalRow({ signal }: { signal: SignalListItem }) {
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-muted">
             <span>{formatDateTime(signal.occurredAt)}</span>
             {signal.assignedToName ? <span>Smartsheet assignee: {signal.assignedToName}</span> : null}
-            {signal.dueDate ? <span>Due {formatDateTime(signal.dueDate)}</span> : null}
+            {signal.dueDate ? <span>Due {formatDate(signal.dueDate)}</span> : null}
             {signal.sourceUrl ? (
               <a href={signal.sourceUrl} target="_blank" rel="noreferrer" className="font-medium text-brand hover:underline">
                 Open in Smartsheet ↗

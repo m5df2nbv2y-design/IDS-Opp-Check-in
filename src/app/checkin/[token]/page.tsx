@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import type { Metadata } from "next";
 import { CheckInFlow } from "@/components/checkin/check-in-flow";
 import { brand } from "@/lib/brand";
-import { firstName, formatDate, pluralize } from "@/lib/format";
+import { firstName, formatDay, pluralize } from "@/lib/format";
 import {
   markCheckInOpened,
   resolveCheckInToken,
@@ -53,7 +53,7 @@ export default async function CheckInPage({ params }: PageProps<"/checkin/[token
         body={`Thanks, ${firstName(session.contactName)} — your ${session.items.length} opportunity ${pluralize(
           session.items.length,
           "update",
-        )} ${session.items.length === 1 ? "was" : "were"} recorded on ${formatDate(
+        )} ${session.items.length === 1 ? "was" : "were"} recorded on ${formatDay(
           session.completedAt,
         )}. There's nothing left to do.`}
       />

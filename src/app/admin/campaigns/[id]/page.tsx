@@ -21,7 +21,7 @@ import { RecipientTable } from "@/components/admin/recipient-table";
 import { TestEmailPanel } from "@/components/admin/test-email-panel";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, EmptyState, StageChange, StatTile, SyncStatusBadge } from "@/components/ui/primitives";
-import { formatAmount, formatCompactAmount, formatDate, formatDateTime } from "@/lib/format";
+import { formatAmount, formatCompactAmount, formatDate, formatDateTime, formatDay } from "@/lib/format";
 import { isClosedStage, stageLabel } from "@/lib/stages";
 import { getCampaignSummary, getLegacyRoutingPreview, legacyShownRoutes, listResponses, SHORTFALL_REASONS } from "@/server/services/campaign-service";
 import { isReconcilableWrite, listAppliedAttestations } from "@/server/services/reconcile-service";
@@ -79,8 +79,8 @@ export default async function CampaignDetailPage({ params }: PageProps<"/admin/c
           </ButtonLink>
           <h1 className="text-[26px] font-semibold tracking-tight text-ink">{summary.name}</h1>
           <p className="mt-1 text-[15px] text-muted">
-            {summary.period} · launched {formatDate(summary.startedAt ?? summary.createdAt)}
-            {summary.completedAt ? ` · closed ${formatDate(summary.completedAt)}` : ""}
+            {summary.period} · launched {formatDay(summary.startedAt ?? summary.createdAt)}
+            {summary.completedAt ? ` · closed ${formatDay(summary.completedAt)}` : ""}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
