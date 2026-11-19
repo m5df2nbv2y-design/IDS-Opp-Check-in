@@ -115,9 +115,9 @@ describe("Graph readiness check, edge cases", () => {
 });
 
 describe("the Outbox readiness card", () => {
-  async function renderOutbox(query: Record<string, string>, roles: string[] = ["Mail.Send"]) {
+  async function renderOutbox(query: Record<string, string>, roles: string[] = ["Mail.Send"], extraEnv: Record<string, string> = {}) {
     await resetDatabase();
-    for (const [key, value] of Object.entries({ ...BASE_ENV, AUTH_REQUIRED_APP_ROLE: "SalesOps.Admin" })) vi.stubEnv(key, value);
+    for (const [key, value] of Object.entries({ ...BASE_ENV, AUTH_REQUIRED_APP_ROLE: "SalesOps.Admin", ...extraEnv })) vi.stubEnv(key, value);
     session.current = { user: { id: "u1", name: "Admin", email: "admin@example.com", roles: ["SalesOps.Admin"], oid: "oid-1" } };
     const fetchMock = vi.fn<(url: unknown) => Promise<Response>>(async () => tokenResponse({ roles }));
     vi.stubGlobal("fetch", fetchMock);
@@ -135,20 +135,32 @@ describe("the Outbox readiness card", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("on ?check=1 shows Ready with Mail.Send granted, and no secret", async () => {
+  it("Mail.Send in the token: token OK, but warns the grant is tenant-wide (any mailbox), and no secret", async () => {
     const { html } = await renderOutbox({ check: "1" });
-    expect(html).toContain("Token and Mail.Send permission OK. The internal test send is still required.");
-    expect(html).toContain("granted");
+    expect(html).toContain("Token OK. The internal test send is still required.");
+    expect(html).toContain("tenant-wide");
+    expect(html).toContain("RBAC for Applications");
     expect(html).toContain("hello@idsculpture.test");
-    expect(html).toContain("The internal test send confirms both.");
     for (const leak of LEAKS) expect(html).not.toContain(leak);
   });
 
-  it("on ?check=1 without consent shows Not ready and says consent is missing", async () => {
+  /**
+   * With Exchange RBAC for Applications (Microsoft's current way to limit an app to
+   * one mailbox) IT removes the tenant-wide Entra grant, so the token carries no
+   * Mail.Send role even when sending works. That must not read as a failure.
+   */
+  it("no Mail.Send in the token: token OK, explains scoped grant vs missing consent; the test send decides", async () => {
     const { html } = await renderOutbox({ check: "1" }, []);
+    expect(html).toContain("Token OK. The internal test send is still required.");
+    expect(html).not.toContain("Not ready.");
+    expect(html).toContain("not in the token");
+    expect(html).toContain("RBAC for Applications");
+    expect(html).toContain("admin consent");
+  });
+
+  it("missing settings: Not ready", async () => {
+    const { html } = await renderOutbox({ check: "1" }, ["Mail.Send"], { GRAPH_CLIENT_SECRET: "" });
     expect(html).toContain("Not ready.");
-    expect(html).toContain("not granted");
-    expect(html).toContain("admin consent not given yet");
-    expect(html).not.toContain("The internal test send confirms both.");
+    expect(html).toContain("missing GRAPH_CLIENT_SECRET");
   });
 });

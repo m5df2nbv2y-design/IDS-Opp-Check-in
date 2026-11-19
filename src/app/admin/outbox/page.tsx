@@ -92,26 +92,30 @@ export default async function OutboxPage({ searchParams }: PageProps<"/admin/out
 }
 
 function GraphReadinessResult({ check }: { check: GraphReadiness }) {
-  const ready = check.mailSend && !check.error && check.missing.length === 0;
+  // A token is the most this check can prove: with Exchange RBAC for Applications the
+  // permission lives in Exchange, not in the token, so only a test send settles it.
+  const tokenOk = !check.error && check.missing.length === 0;
   return (
     <div className="space-y-2 text-[14px] text-body">
-      <p className={`font-semibold ${ready ? "text-success" : "text-danger"}`}>
-        {ready ? "Token and Mail.Send permission OK. The internal test send is still required." : "Not ready."}
+      <p className={`font-semibold ${tokenOk ? "text-success" : "text-danger"}`}>
+        {tokenOk ? "Token OK. The internal test send is still required." : "Not ready."}
       </p>
       <ul className="space-y-1">
         <li>Settings: {check.missing.length ? `missing ${check.missing.join(", ")}` : "all GRAPH_* settings are present"}</li>
         {check.mailbox ? <li>Sender mailbox (GRAPH_SENDER_MAILBOX): {check.mailbox}</li> : null}
         {check.error ? <li>Problem: {check.error}</li> : null}
-        {!check.error && check.missing.length === 0 ? (
-          <li>
-            Mail.Send permission: <span className="font-semibold text-ink">{check.mailSend ? "granted" : "not granted"}</span>
-            {" "}(token roles: {check.roles.length ? check.roles.join(", ") : "none — admin consent not given yet"})
-          </li>
-        ) : null}
+        {tokenOk ? <li>Token roles: {check.roles.length ? check.roles.join(", ") : "none"}</li> : null}
       </ul>
-      {ready ? (
+      {tokenOk && check.mailSend ? (
+        <p className="text-[13px] text-danger">
+          Mail.Send is granted tenant-wide in Microsoft Entra, so this app can send as any mailbox. Ask IT to scope it to the
+          sending mailbox with Exchange RBAC for Applications and remove the tenant-wide grant.
+        </p>
+      ) : null}
+      {tokenOk && !check.mailSend ? (
         <p className="text-[13px] text-muted">
-          Not checked here: that the mailbox exists and that IT&apos;s scoping allows this app to send as it. The internal test send confirms both.
+          Mail.Send is not in the token. That is expected when IT granted it through Exchange RBAC for Applications, scoped
+          to the sending mailbox; otherwise admin consent is still missing. The internal test send tells which.
         </p>
       ) : null}
     </div>

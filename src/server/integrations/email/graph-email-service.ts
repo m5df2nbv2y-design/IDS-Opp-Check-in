@@ -187,10 +187,12 @@ export class GraphEmailService implements EmailService {
   }
 
   /**
-   * Readiness without sending: settings present, an app token issued, and the
-   * Mail.Send application role on it. Works while EMAIL_PROVIDER is still mock.
-   * Mailbox existence and any mailbox scoping need directory permission we do
-   * not hold, so the internal test send confirms those.
+   * Readiness without sending: settings present, an app token issued, and which
+   * application roles it carries. Works while EMAIL_PROVIDER is still mock.
+   * `mailSend` means a TENANT-WIDE Entra grant (any mailbox). Its absence is
+   * expected when IT scopes Mail.Send with Exchange RBAC for Applications, which
+   * puts the permission in Exchange, not the token. Only the internal test send
+   * proves the app can send as the mailbox.
    */
   async checkReadiness(): Promise<GraphReadiness> {
     const result: GraphReadiness = {
