@@ -21,7 +21,7 @@ It writes one `PILOT_DATA_CLEARED` audit event with the counts.
 ## Steps
 
 1. **Back up Production.** Take a database backup or branch snapshot (for example a Neon branch) and write down its name. That backup is the only way back.
-2. **No admin activity.** Nobody uses the admin app during the run. The app has no scheduled jobs (no Vercel crons; reminders and refreshes are manual), so this is enough. Pilot contacts can still open their links during the run; if one writes meanwhile, the apply is rolled back (see step 6) and you simply run it again.
+2. **No admin activity.** Nobody uses the admin app during the run. The app's only scheduled job is an hourly read-only health check (`/api/health`, one `SELECT 1`); reminders and refreshes are manual, so this is enough. Pilot contacts can still open their links during the run; if one writes meanwhile, the apply is rolled back (see step 6) and you simply run it again.
 3. **Writes still off.** Confirm Graph email and Salesforce writes are still switched off in Production.
 4. **Point at Production.** In a fresh shell, export only the Production connection string. Paste it at the silent prompt and press Enter, so it never lands in shell history:
    ```sh

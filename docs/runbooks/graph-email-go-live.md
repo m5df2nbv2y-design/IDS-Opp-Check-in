@@ -17,7 +17,7 @@ Turns on real email (Microsoft Graph) in Production. Everything else is already 
 ## 1. IT completes the request
 
 IT confirms:
-1. The app registration exists, and you have its **Directory (tenant) ID**, **Application (client) ID** and a **client secret**, with its expiry date.
+1. Mail.Send goes to the **existing sign-in app** (IDS Opportunity Check-In), so its current client secret serves both sign-in and sending (Josh, 19 Nov). One secret means one expiry date for both, so keep it in a calendar.
 2. Mail.Send is granted **only for the sending mailbox**, with Exchange **RBAC for Applications**, and **no tenant-wide Mail.Send consent in Entra**.
 3. `Test-ServicePrincipalAuthorization -Identity <app> -Resource <mailbox>` shows `Application Mail.Send` with **InScope = True** for the sending mailbox, and False for a mailbox it must not use.
 
@@ -27,9 +27,9 @@ In Vercel, under project `ids-opp-check-in` → Settings → Environment Variabl
 
 | Name | Value |
 |---|---|
-| `GRAPH_TENANT_ID` | from IT |
-| `GRAPH_CLIENT_ID` | from IT |
-| `GRAPH_CLIENT_SECRET` | from IT (mark as Sensitive) |
+| `GRAPH_TENANT_ID` | the tenant ID inside `AUTH_MICROSOFT_ENTRA_ID_ISSUER` |
+| `GRAPH_CLIENT_ID` | same value as `AUTH_MICROSOFT_ENTRA_ID_ID` (the sign-in app) |
+| `GRAPH_CLIENT_SECRET` | same value as `AUTH_MICROSOFT_ENTRA_ID_SECRET` (mark as Sensitive) |
 | `GRAPH_SENDER_MAILBOX` | the sending mailbox, e.g. `hello@idsculpture.com` |
 | `EMAIL_REPLY_TO` | the reply address (optional; usually the same mailbox) |
 
@@ -80,8 +80,8 @@ Set `EMAIL_PROVIDER=mock` and redeploy Production. Email goes back to simulated 
 
 ## Owners to settle before the customer pilot
 
-- Client secret expiry and rotation: who, and the expiry date in a calendar.
+- Client secret expiry and rotation: who, and the expiry date in a calendar. Because sign-in and email share one secret, a rotation means updating **both** `AUTH_MICROSOFT_ENTRA_ID_SECRET` and `GRAPH_CLIENT_SECRET` in the same redeploy, then testing sign-in and running the readiness check.
 - Watching the sending mailbox for non-delivery reports.
-- Mailbox access and retention. Sent Items holds the full message, including each recipient's live check-in link.
+- Mailbox access: settled (Josh, 19 Nov). Josh, Jason, Alix and John Thomas have access to hello@idsculpture.com. Sent Items holds the full message, including each recipient's live check-in link, so keep that list short.
 
 References: [RBAC for Applications](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac) · `docs/live-integration-commissioning.md` (Graph outcomes)

@@ -311,10 +311,16 @@ as a configuration step — no code change required.
 
 ---
 
-## Monitoring — 🔴
+## Monitoring — 🟡 (updated 2026-11-19)
 
-**There is nothing.** No error tracking, no alerting, no uptime check, no
-structured logging beyond `console.*`.
+**Now in place:** an hourly health check (`/api/health`, Vercel cron), a Vercel
+alert rule that emails the team owner on any Production 5xx (which includes a
+failed health check), and a "Problems to fix" banner on the dashboard for failed
+or unconfirmed Salesforce updates and failed or unknown invitations. See
+`docs/runbooks/monitoring.md`. **Still open:** no email when a Salesforce write
+fails (it shows only in the banner), and no structured logging beyond `console.*`.
+
+*Original assessment, kept for the record:*
 
 This is the one item marked RED, because of what it means operationally: if the
 Salesforce integration user's secret expires, if the Run As assignment is
@@ -363,7 +369,7 @@ handling, security headers.
 
 | # | Item | Severity |
 |---|---|---|
-| 1 | **No monitoring or alerting.** A silent integration failure looks like a quiet pipeline. | 🔴 |
+| 1 | **Partly addressed (2026-11-19):** health check, 5xx email alert and dashboard banner. A failed Salesforce write still alerts nobody by email. | 🟡 |
 | 2 | No Content-Security-Policy. Needs a nonce pipeline. | 🟡 |
 | 3 | No application-level rate limiting. Mitigated by unguessable tokens; WAF is the cheap fix. | 🟡 |
 
