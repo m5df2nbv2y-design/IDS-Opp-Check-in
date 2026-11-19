@@ -16,6 +16,7 @@ import {
   listOwnersWithOpenOpportunities,
 } from "@/server/services/campaign-draft-service";
 import { requireAdminActor } from "@/server/auth/require-admin";
+import { listProblemsNeedingAttention } from "@/server/services/attention-service";
 import { listCampaigns } from "@/server/services/campaign-service";
 import { getLastCatalogRefresh } from "@/server/services/catalog-service";
 import {
@@ -52,13 +53,14 @@ export default async function AdminDashboardPage({
   // draft-creation audit entry names a person, not a generic "admin".
   const draft = await getOrCreateDraft(await requireAdminActor());
 
-  const [accounts, summary, owners, campaigns, signals, lastRefresh] = await Promise.all([
+  const [accounts, summary, owners, campaigns, signals, lastRefresh, problems] = await Promise.all([
     listDraftAccounts(draft.id, filters),
     getDraftSummary(draft.id),
     listOwnersWithOpenOpportunities(),
     listCampaigns(),
     listSignals(),
     getLastCatalogRefresh(),
+    listProblemsNeedingAttention(),
   ]);
 
   const sent = campaigns.filter((campaign) => campaign.status !== "DRAFT");
@@ -109,6 +111,23 @@ export default async function AdminDashboardPage({
         <Image src="/brand/ids-login-background.jpg" alt="" fill sizes="(min-width: 1024px) 80vw, 100vw" className="object-cover" priority />
         <div className="p-6 text-white sm:p-8"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/80">IDS Opportunity Check-In</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Keep good projects moving.</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-white/90">Choose the opportunities you want to check in on, review the recipients, then confirm when you’re ready.</p></div>
       </section>
+      {problems.length > 0 ? (
+        <section aria-label="Problems to fix" className="rounded-card border border-danger/25 bg-danger-soft px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-danger">Problems to fix</h2>
+          <ul className="mt-2 space-y-1 text-[14px] text-body">
+            {problems.map((p) => (
+              <li key={p.campaignId}>
+                <Link href={`/admin/campaigns/${p.campaignId}`} className="font-semibold text-ink underline">{p.campaignName}</Link>
+                {": "}
+                {[
+                  p.salesforce ? `${p.salesforce} Salesforce ${pluralize(p.salesforce, "update")} failed or unconfirmed` : null,
+                  p.invitations ? `${p.invitations} ${pluralize(p.invitations, "invitation")} failed or unknown` : null,
+                ].filter(Boolean).join(" · ")}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       {sent.length > 0 ? (
         <section aria-label="Sent campaigns" className="space-y-3">
           <h2 className="text-[17px] font-semibold tracking-tight text-ink">Sent campaigns</h2>
