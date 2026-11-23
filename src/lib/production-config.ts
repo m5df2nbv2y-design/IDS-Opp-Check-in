@@ -14,6 +14,7 @@
  */
 
 import { liveEmailRefusal, liveIntegrationRefusal } from "./deployment-environment";
+import { graphSettings, missingGraphSettingNames } from "./env";
 
 export class ProductionConfigError extends Error {
   readonly violations: string[];
@@ -141,9 +142,12 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
       `EMAIL_PROVIDER is "${env.EMAIL_PROVIDER}". Use "graph", "resend" or "mock".`,
     );
   } else if (emailProvider === "graph") {
-    for (const name of ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"]) {
-      if (!isSet(env[name])) violations.push(`${name} is required for the Microsoft Graph email provider.`);
+    // The first three fall back to the sign-in app's values; see graphSettings.
+    for (const name of missingGraphSettingNames(graphSettings(env))) {
+      violations.push(`${name} is required for the Microsoft Graph email provider.`);
     }
+  } else if (emailProvider === "resend" && !isSet(env.RESEND_API_KEY)) {
+    violations.push("RESEND_API_KEY is required for the Resend email provider.");
   }
 
   const emailRefusal = liveEmailRefusal(env);

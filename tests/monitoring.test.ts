@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as health } from "@/app/api/health/route";
+import { GET as problemsCron } from "@/app/api/cron/problems/route";
 import AdminDashboardPage from "@/app/admin/page";
 import { prisma } from "@/lib/db";
 import { listProblemsNeedingAttention } from "@/server/services/attention-service";
@@ -90,6 +91,100 @@ describe("problems needing attention", () => {
     expect(await listProblemsNeedingAttention()).toEqual([
       { campaignId, campaignName: "Spring Check-In", salesforce: 1, invitations: 1 },
     ]);
+  });
+});
+
+describe("stuck rows", () => {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+  it("a Salesforce write SYNCING for over 15 minutes counts; one younger does not", async () => {
+    const { campaignId } = await launchCampaignAndCollectTokens("Spring Check-In");
+    const [item] = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } }, take: 1 });
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { sendStatus: "SENT" } });
+    // An explicit value overrides @updatedAt.
+    await prisma.checkInOpportunity.update({ where: { id: item.id }, data: { syncStatus: "SYNCING", updatedAt: minutesAgo(14) } });
+    expect(await listProblemsNeedingAttention()).toEqual([]);
+    await prisma.checkInOpportunity.update({ where: { id: item.id }, data: { updatedAt: minutesAgo(16) } });
+    expect(await listProblemsNeedingAttention()).toEqual([{ campaignId, campaignName: "Spring Check-In", salesforce: 1, invitations: 0 }]);
+  });
+
+  it("an invitation PENDING for over 15 minutes counts unless revoked; one younger does not", async () => {
+    const { campaignId } = await launchCampaignAndCollectTokens("Spring Check-In");
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { sendStatus: "SENT" } });
+    const [r] = await prisma.checkInRecipient.findMany({ where: { campaignId }, take: 1 });
+    await prisma.checkInRecipient.update({ where: { id: r.id }, data: { sendStatus: "PENDING", createdAt: minutesAgo(14) } });
+    expect(await listProblemsNeedingAttention()).toEqual([]);
+    await prisma.checkInRecipient.update({ where: { id: r.id }, data: { createdAt: minutesAgo(16) } });
+    expect(await listProblemsNeedingAttention()).toEqual([{ campaignId, campaignName: "Spring Check-In", salesforce: 0, invitations: 1 }]);
+    await prisma.checkInRecipient.update({ where: { id: r.id }, data: { revokedAt: new Date() } });
+    expect(await listProblemsNeedingAttention()).toEqual([]);
+  });
+
+  it("a REMINDER_PENDING row counts, since it carries no timestamp to age it by", async () => {
+    const { campaignId } = await launchCampaignAndCollectTokens("Spring Check-In");
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { sendStatus: "SENT" } });
+    const [r] = await prisma.checkInRecipient.findMany({ where: { campaignId }, take: 1 });
+    await prisma.checkInRecipient.update({ where: { id: r.id }, data: { sendStatus: "REMINDER_PENDING" } });
+    expect(await listProblemsNeedingAttention()).toEqual([{ campaignId, campaignName: "Spring Check-In", salesforce: 0, invitations: 1 }]);
+  });
+});
+
+describe("daily problems alert", () => {
+  const call = (authorization?: string) =>
+    problemsCron(new Request("https://checkin.test/api/cron/problems", { headers: authorization ? { authorization } : {} }));
+
+  it("is called daily at 15:00 UTC by a Vercel cron", () => {
+    const config = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+    expect(config.crons).toContainEqual({ path: "/api/cron/problems", schedule: "0 15 * * *" });
+  });
+
+  it("answers 200 ok, never cached, when nothing is open", async () => {
+    vi.stubEnv("CRON_SECRET", "cron-synthetic");
+    await launchCampaignAndCollectTokens("Spring Check-In");
+    await prisma.checkInRecipient.updateMany({ data: { sendStatus: "SENT" } });
+    const response = await call("Bearer cron-synthetic");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "ok" });
+    expect(response.headers.get("cache-control")).toContain("no-store");
+  });
+
+  it("compares against the raw CRON_SECRET, as Vercel sends it", async () => {
+    vi.stubEnv("CRON_SECRET", " cron-synthetic ");
+    // HTTP strips a header value's outer whitespace; the inner space is kept.
+    expect((await call("Bearer  cron-synthetic ")).status).toBe(200);
+    expect((await call("Bearer cron-synthetic")).status).toBe(401);
+  });
+
+  it("answers 500 with counts only when problems are open, so the 5xx alert fires", async () => {
+    vi.stubEnv("CRON_SECRET", "cron-synthetic");
+    const { campaignId } = await launchCampaignAndCollectTokens("Spring Check-In");
+    await prisma.checkInRecipient.updateMany({ where: { campaignId }, data: { sendStatus: "SENT" } });
+    const [r] = await prisma.checkInRecipient.findMany({ where: { campaignId }, take: 1 });
+    await prisma.checkInRecipient.update({ where: { id: r.id }, data: { sendStatus: "PENDING", createdAt: new Date(Date.now() - 16 * 60_000) } });
+    const [item] = await prisma.checkInOpportunity.findMany({ where: { recipient: { campaignId } }, take: 1 });
+    await prisma.checkInOpportunity.update({ where: { id: item.id }, data: { syncStatus: "FAILED", submittedAt: new Date() } });
+    const response = await call("Bearer cron-synthetic");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ status: "problems", salesforce: 1, invitations: 1 });
+    expect(body).not.toContain(campaignId);
+    expect(body).not.toContain("Spring");
+  });
+
+  it.each([
+    ["no header", "cron-synthetic", undefined],
+    ["a wrong bearer", "cron-synthetic", "Bearer wrong"],
+    ["CRON_SECRET unset", "", "Bearer "],
+    ["CRON_SECRET unset, a guessed value", "", "Bearer undefined"],
+    ["a whitespace-only CRON_SECRET", "  ", "Bearer   "],
+  ])("answers 401 with no counts and no database read for %s", async (_label, secret, authorization) => {
+    vi.stubEnv("CRON_SECRET", secret);
+    const read = vi.spyOn(prisma.checkInRecipient, "findMany");
+    const response = await call(authorization);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ status: "unauthorized" });
+    expect(read).not.toHaveBeenCalled();
   });
 });
 

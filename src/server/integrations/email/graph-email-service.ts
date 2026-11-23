@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { liveEmailRefusal } from "@/lib/deployment-environment";
-import { env } from "@/lib/env";
+import { env, missingGraphSettingNames } from "@/lib/env";
 import { recordOutboundEmail } from "./outbox";
 import type { EmailProviderInfo, EmailSendResult, EmailService, OutboundEmail } from "./types";
 
@@ -196,7 +196,7 @@ export class GraphEmailService implements EmailService {
    */
   async checkReadiness(): Promise<GraphReadiness> {
     const result: GraphReadiness = {
-      missing: missingGraphSettings(),
+      missing: missingGraphSettingNames(env.graph),
       mailbox: env.graph.senderMailbox,
       roles: [],
       mailSend: false,
@@ -215,7 +215,7 @@ export class GraphEmailService implements EmailService {
 
   /** Named so the ledger error says which value is absent, without printing any. */
   private missingConfiguration(): string | null {
-    return missingGraphSettings()[0] ?? null;
+    return missingGraphSettingNames(env.graph)[0] ?? null;
   }
 
   /**
@@ -273,7 +273,7 @@ export class GraphEmailService implements EmailService {
 }
 
 export type GraphReadiness = {
-  /** Names of absent GRAPH_* settings; values are never returned. */
+  /** Labels of absent Graph settings, naming any fallback; values are never returned. */
   missing: string[];
   mailbox: string;
   /** Application roles on our own app token (e.g. Mail.Send). */
@@ -282,17 +282,6 @@ export type GraphReadiness = {
   /** A fixed message: not Production, or why no token was issued (HTTP status, transport, empty response). */
   error?: string;
 };
-
-/** Names of absent GRAPH_* settings, in a fixed order; values are never returned. */
-function missingGraphSettings(): string[] {
-  const settings: [string, string][] = [
-    ["GRAPH_TENANT_ID", env.graph.tenantId],
-    ["GRAPH_CLIENT_ID", env.graph.clientId],
-    ["GRAPH_CLIENT_SECRET", env.graph.clientSecret],
-    ["GRAPH_SENDER_MAILBOX", env.graph.senderMailbox],
-  ];
-  return settings.filter(([, value]) => !value).map(([name]) => name);
-}
 
 /** The `roles` claim of our own access token. Read only, never verified: it came straight from Microsoft. */
 function tokenRoles(accessToken: string): string[] {
@@ -338,8 +327,10 @@ export function classifyGraphSendResponse(
     return {
       status: "FAILED",
       error:
-        "Microsoft rejected the credentials (HTTP 401). Check GRAPH_CLIENT_SECRET and that " +
-        "GRAPH_TENANT_ID and GRAPH_CLIENT_ID belong to the same app registration.",
+        "Microsoft rejected the credentials (HTTP 401). Check the client secret " +
+        "(AUTH_MICROSOFT_ENTRA_ID_SECRET, or its GRAPH_CLIENT_SECRET override) and that the tenant " +
+        "(in AUTH_MICROSOFT_ENTRA_ID_ISSUER, or GRAPH_TENANT_ID) and client id " +
+        "(AUTH_MICROSOFT_ENTRA_ID_ID, or GRAPH_CLIENT_ID) belong to the same app registration.",
     };
   }
   if (httpStatus === 403) {

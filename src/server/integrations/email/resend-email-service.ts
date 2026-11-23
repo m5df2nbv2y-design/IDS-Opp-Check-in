@@ -11,7 +11,12 @@ export class ResendEmailService implements EmailService {
 
   async send(message: OutboundEmail): Promise<EmailSendResult> {
     const refusal = liveEmailRefusal({ ...process.env, EMAIL_PROVIDER: "resend" });
-    if (refusal) throw new Error(refusal);
+    // Returned, not thrown: nothing has left, so this is a definite FAILED. A
+    // throw is read by callers as an unknown send.
+    if (refusal) return { id: "", status: "FAILED", error: refusal };
+    // Before the ledger row, so a missing key does not consume the request
+    // identity and a corrected retry of the same message can still send.
+    if (!env.resendApiKey) return { id: "", status: "FAILED", error: "RESEND_API_KEY is not configured." };
     const payload = JSON.stringify({
       from: `${env.emailFromName} <${env.emailFromAddress}>`,
       to: [message.to.email], subject: message.subject, html: message.html, text: message.text,
@@ -27,7 +32,7 @@ export class ResendEmailService implements EmailService {
     } catch (caught) {
       const existing = await prisma.emailMessage.findUnique({ where: { requestKey } });
       if (!existing) throw caught;
-      // A definite rejection (including a missing API key) sent nothing, so it may
+      // A definite rejection sent nothing, so it may
       // be retried; the conditional update is the claim, so only one caller retries.
       const reclaimed = existing.status === "FAILED"
         && (await prisma.emailMessage.updateMany({ where: { id: existing.id, status: "FAILED" }, data: { status: "PENDING", error: null } })).count === 1;
@@ -44,34 +49,30 @@ export class ResendEmailService implements EmailService {
       // A fresh key, so Resend cannot replay its rejection of the first attempt.
       idempotencyKey = `${requestKey}-${randomUUID()}`;
     }
-    let status: "SENT" | "FAILED" | "UNCERTAIN" = "FAILED";
+    let status: "SENT" | "FAILED" | "UNCERTAIN";
     let error: string | undefined;
     let providerMessageId: string | undefined;
-    if (!env.resendApiKey) {
-      error = "RESEND_API_KEY is not configured.";
-    } else {
-      try {
-        const response = await fetch("https://api.resend.com/emails", {
-          method: "POST", headers: { Authorization: `Bearer ${env.resendApiKey}`,
-            "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-          body: payload, signal: AbortSignal.timeout(15_000),
-        });
-        if (!response.ok) {
-          // 408 and 409 (request timeout, idempotent request in progress) do not
-          // prove nothing was sent, and a FAILED row may be retried, so they are unknown.
-          status = response.status >= 500 || response.status === 408 || response.status === 409 ? "UNCERTAIN" : "FAILED";
-          // Never persist provider bodies: they may echo tokens or credentials.
-          error = `Resend returned HTTP ${response.status}. ${status === "UNCERTAIN" ? "Check Resend before sending again." : "The request was rejected."}`;
-        } else {
-          const data: unknown = await response.json();
-          if (typeof data !== "object" || !data || !("id" in data) || typeof data.id !== "string" || !data.id) throw new Error("Missing provider receipt");
-          providerMessageId = data.id;
-          status = "SENT";
-        }
-      } catch {
-        status = "UNCERTAIN";
-        error = "Email acceptance could not be confirmed. Check Resend before sending again.";
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST", headers: { Authorization: `Bearer ${env.resendApiKey}`,
+          "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: payload, signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) {
+        // 408 and 409 (request timeout, idempotent request in progress) do not
+        // prove nothing was sent, and a FAILED row may be retried, so they are unknown.
+        status = response.status >= 500 || response.status === 408 || response.status === 409 ? "UNCERTAIN" : "FAILED";
+        // Never persist provider bodies: they may echo tokens or credentials.
+        error = `Resend returned HTTP ${response.status}. ${status === "UNCERTAIN" ? "Check Resend before sending again." : "The request was rejected."}`;
+      } else {
+        const data: unknown = await response.json();
+        if (typeof data !== "object" || !data || !("id" in data) || typeof data.id !== "string" || !data.id) throw new Error("Missing provider receipt");
+        providerMessageId = data.id;
+        status = "SENT";
       }
+    } catch {
+      status = "UNCERTAIN";
+      error = "Email acceptance could not be confirmed. Check Resend before sending again.";
     }
     await prisma.emailMessage.update({ where: { id: row.id }, data: { status, error, providerMessageId } });
     return { id: row.id, status, error };

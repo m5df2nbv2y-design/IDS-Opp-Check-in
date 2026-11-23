@@ -34,12 +34,25 @@ it("keeps an uncertain receipt without leaking error text or automatically repla
   expect(row.status).toBe("UNCERTAIN"); expect(row.error).not.toContain("re_test"); expect(row.error).not.toContain("secret-token");
 });
 
-it("refuses direct Resend sends from Preview even when the configured provider is mock", async () => {
+it("refuses direct Resend sends from Preview even when the configured provider is mock, as FAILED (no throw)", async () => {
   vi.stubEnv("VERCEL_ENV", "preview");
   const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-  await expect(new ResendEmailService().send(message)).rejects.toThrow("Refusing");
+  const result = await new ResendEmailService().send(message);
+  expect(result).toMatchObject({ id: "", status: "FAILED" });
+  expect(result.error).toContain("Refusing");
   expect(fetcher).not.toHaveBeenCalled();
   expect(await prisma.emailMessage.count()).toBe(0);
+});
+
+it("a missing API key is FAILED with no ledger row, so a corrected retry still sends", async () => {
+  Object.defineProperty(env, "resendApiKey", { value: "", configurable: true });
+  const fetcher = vi.fn(async () => Response.json({ id: "provider-after-fix" })); vi.stubGlobal("fetch", fetcher);
+  const service = new ResendEmailService();
+  expect(await service.send(message)).toEqual({ id: "", status: "FAILED", error: "RESEND_API_KEY is not configured." });
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(await prisma.emailMessage.count()).toBe(0);
+  Object.defineProperty(env, "resendApiKey", { value: "re_test", configurable: true });
+  expect((await service.send(message)).status).toBe("SENT");
 });
 
 it("an overlapping duplicate preserves the pending ledger as uncertain", async () => {
