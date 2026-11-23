@@ -39,8 +39,18 @@ function createPrismaClient() {
   const schema = readSchemaParam(url);
 
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url }, schema ? { schema } : undefined),
+    adapter: new PrismaPg({ connectionString: withVerifyFullSsl(url) }, schema ? { schema } : undefined),
   });
+}
+
+/**
+ * pg 8.23 already treats sslmode=require/prefer/verify-ca as verify-full and
+ * warns on every connection. Naming verify-full keeps that security and stops
+ * the warning. A URL that opts into libpq semantics is left as written.
+ */
+export function withVerifyFullSsl(url: string): string {
+  if (/[?&]uselibpqcompat=true\b/.test(url)) return url;
+  return url.replace(/([?&]sslmode=)(require|prefer|verify-ca)\b/, "$1verify-full");
 }
 
 function readSchemaParam(url: string): string | undefined {
