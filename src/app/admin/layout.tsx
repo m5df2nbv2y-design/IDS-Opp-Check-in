@@ -7,6 +7,10 @@ import { getSalesforceService } from "@/server/integrations/salesforce";
 import { getEmailService } from "@/server/integrations/email";
 import { requireAdminPage } from "@/server/auth/require-admin";
 
+// Applies to every admin page and its Server Actions. A launch to all 339 eligible
+// contacts sends one email at a time; Vercel's 300 s default is too close (Pro max: 800).
+export const maxDuration = 800;
+
 /**
  * Every /admin route renders through this layout, and nothing else does, which
  * makes it the natural place for the page-level guard.

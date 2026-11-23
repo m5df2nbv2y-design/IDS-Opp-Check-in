@@ -56,6 +56,7 @@ The synthetic Salesforce opportunity "IDS SYNTHETIC WRITE TEST â€” 2026-11-04 â€
    - the campaign page shows the invitation as **Sent**;
    - the email arrives in Josh's inbox from the sending mailbox;
    - a copy is in that mailbox's **Sent Items**.
+   - note how long the launch took: this is the real per-email time for `docs/runbooks/capacity.md`.
 5. Open the link, complete the check-in without changing the stage (so nothing is written to Salesforce), and confirm that the campaign completes.
 
 **If it fails:**
