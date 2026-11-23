@@ -114,7 +114,7 @@ describe("production configuration", () => {
   });
 
   it.each(["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"])(
-    "REFUSES the Graph provider when %s is missing, naming only the variable",
+    "REFUSES the Graph provider when %s is missing with no sign-in fallback, naming only the variable",
     (name) => {
       const graph = {
         GRAPH_TENANT_ID: "tenant",
@@ -123,12 +123,33 @@ describe("production configuration", () => {
         GRAPH_SENDER_MAILBOX: "hello@idsculpture.test",
       };
       expect(productionConfigViolations({ ...VALID, EMAIL_PROVIDER: "graph", ...graph })).toEqual([]);
-      const violations = productionConfigViolations({ ...VALID, EMAIL_PROVIDER: " Graph ", ...graph, [name]: "  " });
+      const noFallback = { AUTH_MICROSOFT_ENTRA_ID_ID: undefined, AUTH_MICROSOFT_ENTRA_ID_SECRET: undefined };
+      const violations = productionConfigViolations({ ...VALID, EMAIL_PROVIDER: " Graph ", ...graph, ...noFallback, [name]: "  " })
+        .filter((v) => v.includes("Microsoft Graph"));
       expect(violations).toHaveLength(1);
       expect(violations[0]).toContain(name);
       expect(violations[0]).not.toContain("secret-value");
     },
   );
+
+  it("accepts the Graph provider with only GRAPH_SENDER_MAILBOX, reusing the sign-in app", () => {
+    expect(productionConfigViolations({
+      ...VALID,
+      EMAIL_PROVIDER: "graph",
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/0000-tenant/v2.0",
+      GRAPH_SENDER_MAILBOX: "hello@idsculpture.test",
+    })).toEqual([]);
+  });
+
+  it("a multi-tenant sign-in issuer gives no Graph tenant", () => {
+    const violations = productionConfigViolations({
+      ...VALID,
+      EMAIL_PROVIDER: "graph",
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/common/v2.0",
+      GRAPH_SENDER_MAILBOX: "hello@idsculpture.test",
+    });
+    expect(violations).toEqual(["GRAPH_TENANT_ID is required for the Microsoft Graph email provider."]);
+  });
 
   it("accepts a Preview deployment running entirely on mock providers", () => {
     const violations = productionConfigViolations({

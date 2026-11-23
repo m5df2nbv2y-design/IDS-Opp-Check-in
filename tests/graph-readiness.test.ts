@@ -75,6 +75,43 @@ describe("Graph readiness check", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("falls back to the sign-in app's tenant, client id and secret when GRAPH_* are unset", async () => {
+    const { result, fetchMock } = await check({
+      GRAPH_TENANT_ID: "", GRAPH_CLIENT_ID: " ", GRAPH_CLIENT_SECRET: "",
+      AUTH_MICROSOFT_ENTRA_ID_ID: "auth-client-synthetic",
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: "auth-secret-synthetic",
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/auth-tenant-synthetic/v2.0",
+    }, () => tokenResponse({ roles: ["Mail.Send"] }));
+    expect(result).toEqual({ missing: [], mailbox: "hello@idsculpture.test", roles: ["Mail.Send"], mailSend: true });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/auth-tenant-synthetic/oauth2/v2.0/token");
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get("client_id")).toBe("auth-client-synthetic");
+    expect(body.get("client_secret")).toBe("auth-secret-synthetic");
+  });
+
+  it("an explicit GRAPH_* value wins over the sign-in app's", async () => {
+    const { fetchMock } = await check({
+      AUTH_MICROSOFT_ENTRA_ID_ID: "auth-client-synthetic",
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: "auth-secret-synthetic",
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/auth-tenant-synthetic/v2.0",
+    }, () => tokenResponse({ roles: ["Mail.Send"] }));
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/tenant-synthetic/oauth2/v2.0/token");
+    expect(url).not.toContain("auth-tenant");
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get("client_id")).toBe("client-synthetic");
+    expect(body.get("client_secret")).toBe("secret-synthetic");
+  });
+
+  it("a multi-tenant issuer names no tenant, so GRAPH_TENANT_ID is still missing", async () => {
+    const { result, fetchMock } = await check({
+      GRAPH_TENANT_ID: "", AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/common/v2.0",
+    }, () => tokenResponse({ roles: ["Mail.Send"] }));
+    expect(result.missing).toEqual(["GRAPH_TENANT_ID"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("a rejected token request shows only the HTTP status, never Microsoft's body", async () => {
     const { result } = await check({}, () => new Response(JSON.stringify({ error: "AADSTS7000215 invalid secret-synthetic" }), { status: 401 }));
     expect(result).toMatchObject({ mailSend: false, roles: [] });

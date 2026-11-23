@@ -14,6 +14,7 @@
  */
 
 import { liveEmailRefusal, liveIntegrationRefusal } from "./deployment-environment";
+import { graphSettings } from "./env";
 
 export class ProductionConfigError extends Error {
   readonly violations: string[];
@@ -141,8 +142,16 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
       `EMAIL_PROVIDER is "${env.EMAIL_PROVIDER}". Use "graph", "resend" or "mock".`,
     );
   } else if (emailProvider === "graph") {
-    for (const name of ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"]) {
-      if (!isSet(env[name])) violations.push(`${name} is required for the Microsoft Graph email provider.`);
+    // The first three fall back to the sign-in app's values; see graphSettings.
+    const graph = graphSettings(env);
+    const settings: [string, string][] = [
+      ["GRAPH_TENANT_ID", graph.tenantId],
+      ["GRAPH_CLIENT_ID", graph.clientId],
+      ["GRAPH_CLIENT_SECRET", graph.clientSecret],
+      ["GRAPH_SENDER_MAILBOX", graph.senderMailbox],
+    ];
+    for (const [name, value] of settings) {
+      if (!value) violations.push(`${name} is required for the Microsoft Graph email provider.`);
     }
   }
 

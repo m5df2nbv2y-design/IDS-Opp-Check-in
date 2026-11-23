@@ -15,6 +15,27 @@ function int(key: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const BROAD_TENANTS = ["common", "organizations", "consumers"];
+
+/**
+ * Graph settings, falling back to the sign-in app's values. The tenant comes
+ * from an issuer like https://login.microsoftonline.com/<tid>/v2.0; a
+ * multi-tenant issuer names no tenant, so it gives none.
+ * Trimmed: a padded value would pass the "is it set" check and then fail every
+ * send as a token 401 or a mailbox 404, and a whitespace-only value is not set.
+ */
+export function graphSettings(source: Record<string, string | undefined>) {
+  const value = (name: string) => (source[name] ?? "").trim();
+  const issuerTenant = /^https:\/\/login\.microsoftonline\.com\/([^/]+)\//.exec(value("AUTH_MICROSOFT_ENTRA_ID_ISSUER"))?.[1] ?? "";
+  return {
+    tenantId: value("GRAPH_TENANT_ID") || (BROAD_TENANTS.includes(issuerTenant.toLowerCase()) ? "" : issuerTenant),
+    clientId: value("GRAPH_CLIENT_ID") || value("AUTH_MICROSOFT_ENTRA_ID_ID"),
+    clientSecret: value("GRAPH_CLIENT_SECRET") || value("AUTH_MICROSOFT_ENTRA_ID_SECRET"),
+    /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
+    senderMailbox: value("GRAPH_SENDER_MAILBOX"),
+  };
+}
+
 export const env = {
   // No default: a missing database must fail loudly in db.ts, never fall back.
   databaseUrl: str("DATABASE_URL", ""),
@@ -124,21 +145,13 @@ export const env = {
    * holds the full message including the live check-in link. Access to that
    * mailbox and its retention are to settle with IT.
    *
-   * GRAPH_TENANT_ID and GRAPH_CLIENT_ID are read on their own: there is no
-   * fallback to the AUTH_MICROSOFT_ENTRA_ID_* sign-in variables, so both must be
-   * set explicitly. Which app registration to use is decided with IT. The
-   * mailbox is explicit rather than derived from emailFromAddress, so a
-   * mis-set From cannot silently redirect which mailbox we send as.
+   * Graph reuses the sign-in app registration, so the tenant, client id and
+   * secret fall back to the AUTH_MICROSOFT_ENTRA_ID_* values (see graphSettings).
+   * An explicit GRAPH_* value always wins. The mailbox has no fallback: it is
+   * explicit rather than derived from emailFromAddress, so a mis-set From
+   * cannot silently redirect which mailbox we send as.
    */
-  // Trimmed: a padded value would pass the "is it set" check and then fail every
-  // send as a token 401 or a mailbox 404, and a whitespace-only value is not set.
-  graph: {
-    tenantId: (process.env.GRAPH_TENANT_ID ?? "").trim(),
-    clientId: (process.env.GRAPH_CLIENT_ID ?? "").trim(),
-    clientSecret: (process.env.GRAPH_CLIENT_SECRET ?? "").trim(),
-    /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
-    senderMailbox: (process.env.GRAPH_SENDER_MAILBOX ?? "").trim(),
-  },
+  graph: graphSettings(process.env),
 
   /**
    * The ONE address the "Send test email" demo action may send to. Read only
