@@ -3,6 +3,14 @@
 Assessed against the current `main`. Deployment steps are in
 [`PRODUCTION-DEPLOYMENT.md`](./PRODUCTION-DEPLOYMENT.md).
 
+> **Refreshed 23 Nov 2026.** Production is live on Vercel with a Neon database.
+> Since the original assessment: contact-facing rate limits are enforced (20 Nov),
+> monitoring and a daily problems email are in place, the database restore window
+> is 7 days and was rehearsed, capacity and dependencies were checked, and Graph
+> email needs only `GRAPH_SENDER_MAILBOX`. Salesforce writes are commissioned;
+> email is still simulated until IT completes the Graph request. Sections below
+> marked "updated" carry the current state; the rest is the original assessment.
+
 | Status | Meaning |
 |---|---|
 | 🟢 **GREEN** | Ready. No code work and no configuration outstanding. |
@@ -21,7 +29,7 @@ admin, an Entra admin, or a database still has to be provisioned, it is YELLOW.
 | Authentication | 🟡 |
 | Authorization | 🟡 |
 | Salesforce integration | 🟡 |
-| Database | 🟡 |
+| Database | 🟢 |
 | Email | 🟡 |
 | Check-in tokens | 🟢 |
 | Input validation | 🟢 |
@@ -31,11 +39,11 @@ admin, an Entra admin, or a database still has to be provisioned, it is YELLOW.
 | Deployment | 🟡 |
 | Secrets | 🟢 |
 | Security headers | 🟢 |
-| Rate limiting | 🟡 |
-| Monitoring | 🔴 |
+| Rate limiting | 🟢 |
+| Monitoring | 🟡 |
 
-**There is one RED: monitoring.** Everything else is either done or waiting on
-an external service. See "Blockers" at the end.
+**No RED remains** (monitoring was the last, now YELLOW). Everything else is
+either done or waiting on an external service. See "Blockers" at the end.
 
 ---
 
@@ -111,7 +119,15 @@ Validate with `npm run sf:smoke` before switching the provider.
 
 ---
 
-## Database — 🟡
+## Database — 🟢 (updated 2026-11-23)
+
+**Now:** Production runs on Neon (Postgres 18). The restore window is **7 days**
+(raised from 6 hours on 23 Nov), and a point-in-time restore was rehearsed the
+same day: a copy one hour back took about a second and matched Production on all
+18 tables. Runbook: `docs/runbooks/database-restore.md`. Size and limits:
+`docs/runbooks/capacity.md`.
+
+*Original assessment:*
 
 **Code complete.** Prisma 7 with driver adapters; the adapter is chosen from the
 `DATABASE_URL` scheme, so SQLite → PostgreSQL is configuration, not code. The
@@ -158,6 +174,13 @@ in production.
 
 **External configuration required, when commissioned:** a verified sending
 domain (SPF/DKIM/DMARC) and a provider API key.
+
+**Updated 2026-11-23:** the chosen provider is Microsoft Graph, sending as
+`hello@idsculpture.com` through the existing sign-in app. Its tenant, client id and
+secret fall back to the sign-in settings, so only `GRAPH_SENDER_MAILBOX` is added
+at go-live (`docs/runbooks/graph-email-go-live.md`). It waits on IT scoping
+Mail.Send to that one mailbox. Production refuses to start with
+`EMAIL_PROVIDER=resend` and no `RESEND_API_KEY`.
 
 ---
 
@@ -286,39 +309,31 @@ doing before any external exposure.
 
 ---
 
-## Rate limiting — 🟡
+## Rate limiting — 🟢 (updated 2026-11-23)
 
-**There is none.** The public, unauthenticated surface is:
+**Enforced since 20 Nov 2026** (`RATE_LIMIT_MODE=enforce`). Per check-in link, per
+minute: page 60, save 120, complete 10; unresolved links 20 per client. The
+counters live in the database (`RateLimitCounter`), so every serverless instance
+shares them. Observed peaks before enforcing were 3, 1 and 1. Code:
+`src/server/security/rate-limit.ts`.
 
-- `GET /checkin/<token>`
-- `POST /api/checkin/<token>/responses`
-- `POST /api/checkin/<token>/complete`
-
-Why this is YELLOW rather than RED: all three require a valid 256-bit random
-token, so they cannot be enumerated — brute-forcing one is not feasible. The
-write path is bounded (allowlisted stage, capped comment, recipient-scoped item)
-and cannot create rows, only update the recipient's own. The realistic exposure
-is repeated submissions against a token someone already legitimately holds.
-
-Why it should still be addressed before wide exposure: nothing stops a holder of
-one link from issuing unlimited requests, and there is no protection on the
-sign-in route either. Durable rate limiting on serverless needs shared state
-(Upstash/Redis or the host's WAF); the host's built-in DDoS protection covers
-volumetric attacks but not per-token abuse.
-
-**Recommendation:** enable the platform's WAF rate limiting on `/api/checkin/*`
-as a configuration step — no code change required.
+The original concern (no limit at all on the three public routes) is closed.
+Platform WAF rules remain an optional extra layer, not a requirement.
 
 ---
 
-## Monitoring — 🟡 (updated 2026-11-19)
+## Monitoring — 🟡 (updated 2026-11-23)
 
 **Now in place:** an hourly health check (`/api/health`, Vercel cron), a Vercel
 alert rule that emails the team owner on any Production 5xx (which includes a
 failed health check), and a "Problems to fix" banner on the dashboard for failed
-or unconfirmed Salesforce updates and failed or unknown invitations. See
-`docs/runbooks/monitoring.md`. **Still open:** no email when a Salesforce write
-fails (it shows only in the banner), and no structured logging beyond `console.*`.
+or unconfirmed Salesforce updates and failed or unknown invitations, including
+rows stuck mid-write for over 15 minutes. A daily cron at 15:00 UTC
+(`/api/cron/problems`) answers 500 while any problem is open, so the same alert
+emails once a day. It needs `CRON_SECRET` set in Production; until then it
+answers 401 and sends nothing. See `docs/runbooks/monitoring.md`.
+**Still open:** no structured logging beyond `console.*`, and no error tracking
+service.
 
 *Original assessment, kept for the record:*
 
@@ -362,21 +377,23 @@ handling, security headers.
 | 4 | PostgreSQL provisioned with TLS; `prisma migrate deploy` run | IT / you |
 | 5 | Host project created and every environment variable set | You |
 | 6 | Custom domain pointed; `APP_BASE_URL` and the Entra redirect URI matched | You |
-| 7 | WAF rate limiting enabled on `/api/checkin/*` | You |
-| 8 | Verified sending domain + provider API key — **only when email is commissioned** | You / IT |
+| 7 | ~~WAF rate limiting~~ — **not needed:** application limits enforced since 20 Nov | — |
+| 8 | Graph Mail.Send scoped to the sending mailbox (IT request ready) — **only when email is commissioned** | IT |
+| 9 | `CRON_SECRET` in Production, for the daily problems email | Josh |
 
 ### OPEN RISK — requires a decision
 
 | # | Item | Severity |
 |---|---|---|
-| 1 | **Partly addressed (2026-11-19):** health check, 5xx email alert and dashboard banner. A failed Salesforce write still alerts nobody by email. | 🟡 |
-| 2 | No Content-Security-Policy. Needs a nonce pipeline. | 🟡 |
-| 3 | No application-level rate limiting. Mitigated by unguessable tokens; WAF is the cheap fix. | 🟡 |
+| 1 | **Mostly addressed (2026-11-23):** health check, 5xx email alert, dashboard banner, and a daily problems email (once `CRON_SECRET` is set). No error-tracking service. | 🟡 |
+| 2 | ~~No Content-Security-Policy~~ — **closed:** a per-request nonce CSP is set in `src/proxy.ts`. | 🟢 |
+| 3 | ~~No application-level rate limiting~~ — **closed:** enforced since 20 Nov. | 🟢 |
+| 4 | Dependencies: `npm audit` clean on 23 Nov; majors deliberately deferred and `next-auth` is still a beta. See `docs/runbooks/capacity.md`. | 🟡 |
 
-### NOT DONE, DELIBERATELY
+### NOT DONE, DELIBERATELY (updated 2026-11-23)
 
-- **Salesforce write-back.** Still off. The eventual scope is `StageName` and
-  `CloseDate` only, and commissioning it is a separate change.
-- **Real customer email.** Still mock.
-- **Deployment.** Nothing has been deployed.
-- **Production database migration.** Not run.
+- **Salesforce write-back.** Commissioned (stage and Closed Lost tested on
+  19 Nov).
+- **Real customer email.** Still simulated, waiting on the Graph IT request.
+- **Deployment.** Production is live on Vercel.
+- **Production database migration.** Done; Neon, 7-day restore window.

@@ -3,7 +3,7 @@
 Turns on real email (Microsoft Graph) in Production. Everything else is already live. Salesforce writes were commissioned on 19 Nov 2026.
 
 **Owner:** Josh (sole approver). **Time:** about 30 minutes, plus up to 2 hours if IT has just changed permissions (Exchange caches them).
-**Never:** put `GRAPH_*` values in Preview or Development, in chat, or in any doc. Production only.
+**Never:** put `GRAPH_*` or other email values in Preview or Development, in chat, or in any doc. Production only.
 
 ---
 
@@ -27,11 +27,10 @@ In Vercel, under project `ids-opp-check-in` → Settings → Environment Variabl
 
 | Name | Value |
 |---|---|
-| `GRAPH_TENANT_ID` | the tenant ID inside `AUTH_MICROSOFT_ENTRA_ID_ISSUER` |
-| `GRAPH_CLIENT_ID` | same value as `AUTH_MICROSOFT_ENTRA_ID_ID` (the sign-in app) |
-| `GRAPH_CLIENT_SECRET` | same value as `AUTH_MICROSOFT_ENTRA_ID_SECRET` (mark as Sensitive) |
 | `GRAPH_SENDER_MAILBOX` | the sending mailbox, e.g. `hello@idsculpture.com` |
 | `EMAIL_REPLY_TO` | the reply address (optional; usually the same mailbox) |
+
+That is all. Graph reuses the sign-in app, so the tenant, client ID and secret come from the sign-in settings already in Production: `AUTH_MICROSOFT_ENTRA_ID_ID`, `AUTH_MICROSOFT_ENTRA_ID_SECRET`, and the tenant ID inside `AUTH_MICROSOFT_ENTRA_ID_ISSUER` (`https://login.microsoftonline.com/<tenant id>/v2.0`). Do **not** add `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID` or `GRAPH_CLIENT_SECRET`: a value set there overrides the sign-in value and becomes a second copy to keep in step. If the issuer is the multi-tenant `common` form, it names no tenant, and the readiness check reports `GRAPH_TENANT_ID` missing; set it in that case only.
 
 Leave `EMAIL_PROVIDER=mock` for now. Redeploy Production so the new values load: Deployments → latest → Redeploy.
 
@@ -71,7 +70,7 @@ The synthetic Salesforce opportunity "IDS SYNTHETIC WRITE TEST — 2026-11-04 �
 
 ## 5. Roll back at any time
 
-Set `EMAIL_PROVIDER=mock` and redeploy Production. Email goes back to simulated immediately, and nothing else changes. The `GRAPH_*` values can stay.
+Set `EMAIL_PROVIDER=mock` and redeploy Production. Email goes back to simulated immediately, and nothing else changes. `GRAPH_SENDER_MAILBOX` can stay.
 
 ## 6. After a passing test
 
@@ -81,7 +80,7 @@ Set `EMAIL_PROVIDER=mock` and redeploy Production. Email goes back to simulated 
 
 ## Owners to settle before the customer pilot
 
-- Client secret expiry and rotation: who, and the expiry date in a calendar. Because sign-in and email share one secret, a rotation means updating **both** `AUTH_MICROSOFT_ENTRA_ID_SECRET` and `GRAPH_CLIENT_SECRET` in the same redeploy, then testing sign-in and running the readiness check.
+- Client secret expiry and rotation: who, and the expiry date in a calendar. Sign-in and email share one secret, read from `AUTH_MICROSOFT_ENTRA_ID_SECRET`, so a rotation updates that one value; redeploy, then test sign-in and run the readiness check. (If a `GRAPH_CLIENT_SECRET` was ever set, it overrides the sign-in value: update or delete it in the same redeploy.)
 - Watching the sending mailbox for non-delivery reports.
 - Mailbox access: settled (Josh, 19 Nov). Josh, Jason, Alix and John Thomas have access to hello@idsculpture.com. Sent Items holds the full message, including each recipient's live check-in link, so keep that list short.
 
