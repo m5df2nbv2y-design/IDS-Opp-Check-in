@@ -7,7 +7,7 @@ How to get Production's data back after a bad change, a bad script or accidental
 
 ## The restore window
 
-Neon can rewind Production to any moment inside its **history retention window**. On 23 Nov this was **6 hours** (`history_retention_seconds` = 21600). Older than that, the only way back is a saved branch (for example `backup-before-pilot-cleanup-2026-11-18`, which expires 17 Dec 2026).
+Neon can rewind Production to any moment inside its **history retention window**. Since 23 Nov 2026 this is **7 days** (`history_retention_seconds` = 604800; raised from 6 hours with Josh's OK). Older than that, the only way back is a saved branch (for example `backup-before-pilot-cleanup-2026-11-18`, which expires 17 Dec 2026).
 
 Check it: `neon projects get still-thunder-23570420`.
 
