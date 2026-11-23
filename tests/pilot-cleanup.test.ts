@@ -114,6 +114,7 @@ describe("pilot data cleanup", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("dry run counts pilot data and changes nothing", async () => {
@@ -245,6 +246,30 @@ describe("pilot data cleanup", () => {
 
     expect(await prisma.emailMessage.count({ where: { provider: "resend" } })).toBe(0);
     expect((await inventoryPilotData()).counts).toEqual(ZERO_COUNTS);
+  });
+
+  it("a concurrent write on a second connection aborts the Serializable apply, which removes nothing", async () => {
+    const { draft } = await seedPilot();
+    const auditBefore = await prisma.auditEvent.count();
+    const emailsBefore = await prisma.emailMessage.count();
+    const original = prisma.$transaction.bind(prisma) as (fn: (tx: unknown) => Promise<unknown>, options?: unknown) => Promise<unknown>;
+    vi.spyOn(prisma, "$transaction").mockImplementationOnce(((fn: (tx: unknown) => Promise<unknown>, options?: unknown) =>
+      original(async (tx) => {
+        // The cleanup's snapshot is taken by its first read; an admin then edits a
+        // pilot campaign on another connection and commits before the deletes run.
+        await (tx as typeof prisma).campaign.count();
+        await prisma.campaign.update({ where: { id: draft.id }, data: { emailSubject: "Edited mid-cleanup" } });
+        return fn(tx);
+      }, options)) as never);
+
+    const error = await clearPilotData({ actor: "Josh" }).catch((caught) => caught);
+
+    // P2034 is Prisma's serialization failure; under Read Committed the apply would succeed.
+    expect(error).toMatchObject({ code: "P2034" });
+    expect(await prisma.campaign.count()).toBe(2);
+    expect(await prisma.auditEvent.count()).toBe(auditBefore);
+    expect(await prisma.emailMessage.count()).toBe(emailsBefore);
+    expect(await prisma.auditEvent.count({ where: { type: "PILOT_DATA_CLEARED" } })).toBe(0);
   });
 
   it("rolls back everything when a delete fails mid-apply", async () => {
