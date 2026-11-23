@@ -153,6 +153,8 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
     for (const [name, value] of settings) {
       if (!value) violations.push(`${name} is required for the Microsoft Graph email provider.`);
     }
+  } else if (emailProvider === "resend" && !isSet(env.RESEND_API_KEY)) {
+    violations.push("RESEND_API_KEY is required for the Resend email provider.");
   }
 
   const emailRefusal = liveEmailRefusal(env);

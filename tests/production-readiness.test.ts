@@ -151,6 +151,12 @@ describe("production configuration", () => {
     expect(violations).toEqual(["GRAPH_TENANT_ID is required for the Microsoft Graph email provider."]);
   });
 
+  it("REFUSES the Resend provider without RESEND_API_KEY, naming only the variable", () => {
+    expect(productionConfigViolations({ ...VALID, EMAIL_PROVIDER: "resend", RESEND_API_KEY: "re_value" })).toEqual([]);
+    expect(productionConfigViolations({ ...VALID, EMAIL_PROVIDER: " Resend ", RESEND_API_KEY: " " }))
+      .toEqual(["RESEND_API_KEY is required for the Resend email provider."]);
+  });
+
   it("accepts a Preview deployment running entirely on mock providers", () => {
     const violations = productionConfigViolations({
       ...VALID,
