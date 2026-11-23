@@ -13,9 +13,11 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: Request) {
   const headers = { "Cache-Control": "no-store" };
-  const secret = process.env.CRON_SECRET?.trim();
+  // Raw value, as Vercel sends it; only the outer whitespace HTTP strips from
+  // a header value is trimmed. Trim also decides whether it is blank.
+  const secret = process.env.CRON_SECRET ?? "";
   const digest = (value: string) => createHash("sha256").update(value).digest();
-  if (!secret || !timingSafeEqual(digest(request.headers.get("authorization") ?? ""), digest(`Bearer ${secret}`))) {
+  if (!secret.trim() || !timingSafeEqual(digest(request.headers.get("authorization") ?? ""), digest(`Bearer ${secret}`.trim()))) {
     return NextResponse.json({ status: "unauthorized" }, { status: 401, headers });
   }
   const problems = await listProblemsNeedingAttention();

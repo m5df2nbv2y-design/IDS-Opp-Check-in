@@ -14,7 +14,7 @@
  */
 
 import { liveEmailRefusal, liveIntegrationRefusal } from "./deployment-environment";
-import { graphSettings } from "./env";
+import { graphSettings, missingGraphSettingNames } from "./env";
 
 export class ProductionConfigError extends Error {
   readonly violations: string[];
@@ -143,15 +143,8 @@ export function productionConfigViolations(env: ConfigEnv): string[] {
     );
   } else if (emailProvider === "graph") {
     // The first three fall back to the sign-in app's values; see graphSettings.
-    const graph = graphSettings(env);
-    const settings: [string, string][] = [
-      ["GRAPH_TENANT_ID", graph.tenantId],
-      ["GRAPH_CLIENT_ID", graph.clientId],
-      ["GRAPH_CLIENT_SECRET", graph.clientSecret],
-      ["GRAPH_SENDER_MAILBOX", graph.senderMailbox],
-    ];
-    for (const [name, value] of settings) {
-      if (!value) violations.push(`${name} is required for the Microsoft Graph email provider.`);
+    for (const name of missingGraphSettingNames(graphSettings(env))) {
+      violations.push(`${name} is required for the Microsoft Graph email provider.`);
     }
   } else if (emailProvider === "resend" && !isSet(env.RESEND_API_KEY)) {
     violations.push("RESEND_API_KEY is required for the Resend email provider.");

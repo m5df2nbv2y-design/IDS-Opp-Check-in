@@ -518,7 +518,7 @@ describe("the send path", () => {
     const result = await (await graphService()).send(MESSAGE);
 
     expect(result.status).toBe("FAILED");
-    expect(result.error).toBe(`${name} is not configured.`);
+    expect(result.error).toMatch(new RegExp(`^${name}( \\(or [^)]+\\))? is not configured\\.$`));
     expect(fetchMock).not.toHaveBeenCalled();
     // Refused before the ledger: no row, so the request identity is not consumed.
     expect(result.id).toBe("");
@@ -541,7 +541,7 @@ describe("the send path", () => {
     const result = await (await graphService()).send(MESSAGE);
 
     expect(result.status).toBe("FAILED");
-    expect(result.error).toBe(`${name} is not configured.`);
+    expect(result.error).toMatch(new RegExp(`^${name}( \\(or [^)]+\\))? is not configured\\.$`));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

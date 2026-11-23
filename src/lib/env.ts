@@ -20,20 +20,34 @@ const BROAD_TENANTS = ["common", "organizations", "consumers"];
 /**
  * Graph settings, falling back to the sign-in app's values. The tenant comes
  * from an issuer like https://login.microsoftonline.com/<tid>/v2.0; a
- * multi-tenant issuer names no tenant, so it gives none.
+ * multi-tenant issuer names no tenant, so it gives none. The client id and
+ * secret are a pair: if either GRAPH_* one is set, both come from GRAPH_*, so a
+ * half-set override is reported missing instead of mixing two apps' values.
  * Trimmed: a padded value would pass the "is it set" check and then fail every
  * send as a token 401 or a mailbox 404, and a whitespace-only value is not set.
  */
 export function graphSettings(source: Record<string, string | undefined>) {
   const value = (name: string) => (source[name] ?? "").trim();
-  const issuerTenant = /^https:\/\/login\.microsoftonline\.com\/([^/]+)\//.exec(value("AUTH_MICROSOFT_ENTRA_ID_ISSUER"))?.[1] ?? "";
+  const issuerTenant = /^https:\/\/login\.microsoftonline\.com\/([^/]+)(?:\/|$)/.exec(value("AUTH_MICROSOFT_ENTRA_ID_ISSUER"))?.[1] ?? "";
+  const ownPair = Boolean(value("GRAPH_CLIENT_ID") || value("GRAPH_CLIENT_SECRET"));
   return {
     tenantId: value("GRAPH_TENANT_ID") || (BROAD_TENANTS.includes(issuerTenant.toLowerCase()) ? "" : issuerTenant),
-    clientId: value("GRAPH_CLIENT_ID") || value("AUTH_MICROSOFT_ENTRA_ID_ID"),
-    clientSecret: value("GRAPH_CLIENT_SECRET") || value("AUTH_MICROSOFT_ENTRA_ID_SECRET"),
+    clientId: ownPair ? value("GRAPH_CLIENT_ID") : value("AUTH_MICROSOFT_ENTRA_ID_ID"),
+    clientSecret: ownPair ? value("GRAPH_CLIENT_SECRET") : value("AUTH_MICROSOFT_ENTRA_ID_SECRET"),
     /** The UPN or object id of the mailbox we send as, e.g. hello@idsculpture.com */
     senderMailbox: value("GRAPH_SENDER_MAILBOX"),
   };
+}
+
+/** Labels of absent Graph settings, in a fixed order, naming any fallback; values are never returned. */
+export function missingGraphSettingNames(settings: ReturnType<typeof graphSettings>): string[] {
+  const checks: [string, string][] = [
+    ["GRAPH_TENANT_ID (or a single-tenant AUTH_MICROSOFT_ENTRA_ID_ISSUER)", settings.tenantId],
+    ["GRAPH_CLIENT_ID (or AUTH_MICROSOFT_ENTRA_ID_ID)", settings.clientId],
+    ["GRAPH_CLIENT_SECRET (or AUTH_MICROSOFT_ENTRA_ID_SECRET)", settings.clientSecret],
+    ["GRAPH_SENDER_MAILBOX", settings.senderMailbox],
+  ];
+  return checks.filter(([, value]) => !value).map(([name]) => name);
 }
 
 export const env = {
@@ -128,7 +142,7 @@ export const env = {
 
   emailReplyTo: process.env.EMAIL_REPLY_TO ?? "",
   resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? "",
-  resendApiKey: process.env.RESEND_API_KEY ?? "",
+  resendApiKey: (process.env.RESEND_API_KEY ?? "").trim(),
 
   /**
    * Microsoft Graph send-as-mailbox.

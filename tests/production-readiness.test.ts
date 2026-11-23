@@ -148,7 +148,7 @@ describe("production configuration", () => {
       AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/common/v2.0",
       GRAPH_SENDER_MAILBOX: "hello@idsculpture.test",
     });
-    expect(violations).toEqual(["GRAPH_TENANT_ID is required for the Microsoft Graph email provider."]);
+    expect(violations).toEqual(["GRAPH_TENANT_ID (or a single-tenant AUTH_MICROSOFT_ENTRA_ID_ISSUER) is required for the Microsoft Graph email provider."]);
   });
 
   it("REFUSES the Resend provider without RESEND_API_KEY, naming only the variable", () => {

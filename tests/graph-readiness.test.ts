@@ -71,7 +71,7 @@ describe("Graph readiness check", () => {
 
   it("names the missing settings and calls Microsoft for nothing", async () => {
     const { result, fetchMock } = await check({ GRAPH_CLIENT_SECRET: "", GRAPH_SENDER_MAILBOX: " " }, () => tokenResponse({ roles: ["Mail.Send"] }));
-    expect(result).toEqual({ missing: ["GRAPH_CLIENT_SECRET", "GRAPH_SENDER_MAILBOX"], mailbox: "", roles: [], mailSend: false });
+    expect(result).toEqual({ missing: ["GRAPH_CLIENT_SECRET (or AUTH_MICROSOFT_ENTRA_ID_SECRET)", "GRAPH_SENDER_MAILBOX"], mailbox: "", roles: [], mailSend: false });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -80,7 +80,8 @@ describe("Graph readiness check", () => {
       GRAPH_TENANT_ID: "", GRAPH_CLIENT_ID: " ", GRAPH_CLIENT_SECRET: "",
       AUTH_MICROSOFT_ENTRA_ID_ID: "auth-client-synthetic",
       AUTH_MICROSOFT_ENTRA_ID_SECRET: "auth-secret-synthetic",
-      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/auth-tenant-synthetic/v2.0",
+      // No path after the tenant is accepted too.
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/auth-tenant-synthetic",
     }, () => tokenResponse({ roles: ["Mail.Send"] }));
     expect(result).toEqual({ missing: [], mailbox: "hello@idsculpture.test", roles: ["Mail.Send"], mailSend: true });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -104,11 +105,21 @@ describe("Graph readiness check", () => {
     expect(body.get("client_secret")).toBe("secret-synthetic");
   });
 
+  it("client id and secret are a pair: GRAPH_CLIENT_ID alone never borrows the sign-in secret", async () => {
+    const { result, fetchMock } = await check({
+      GRAPH_CLIENT_SECRET: "",
+      AUTH_MICROSOFT_ENTRA_ID_ID: "auth-client-synthetic",
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: "auth-secret-synthetic",
+    }, () => tokenResponse({ roles: ["Mail.Send"] }));
+    expect(result.missing).toEqual(["GRAPH_CLIENT_SECRET (or AUTH_MICROSOFT_ENTRA_ID_SECRET)"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("a multi-tenant issuer names no tenant, so GRAPH_TENANT_ID is still missing", async () => {
     const { result, fetchMock } = await check({
       GRAPH_TENANT_ID: "", AUTH_MICROSOFT_ENTRA_ID_ISSUER: "https://login.microsoftonline.com/common/v2.0",
     }, () => tokenResponse({ roles: ["Mail.Send"] }));
-    expect(result.missing).toEqual(["GRAPH_TENANT_ID"]);
+    expect(result.missing).toEqual(["GRAPH_TENANT_ID (or a single-tenant AUTH_MICROSOFT_ENTRA_ID_ISSUER)"]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

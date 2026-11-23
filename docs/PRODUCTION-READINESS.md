@@ -28,7 +28,7 @@ admin, an Entra admin, or a database still has to be provisioned, it is YELLOW.
 |---|---|
 | Authentication | 🟡 |
 | Authorization | 🟡 |
-| Salesforce integration | 🟡 |
+| Salesforce integration | 🟢 |
 | Database | 🟢 |
 | Email | 🟡 |
 | Check-in tokens | 🟢 |
@@ -87,7 +87,10 @@ Operations security group to it.
 
 ---
 
-## Salesforce integration — 🟡
+## Salesforce integration — 🟢 (updated 2026-11-23)
+
+**Now:** live in Production, and writes are commissioned (stage and Closed Lost
+tested on 19 Nov). The read-only description below is the original assessment.
 
 **Code complete, and read-only.**
 
@@ -263,7 +266,12 @@ two exports cannot disagree.
 
 ---
 
-## Deployment — 🟡
+## Deployment — 🟡 (updated 2026-11-23)
+
+**Now:** Production is live on Vercel (project `ids-opp-check-in`) with every
+required environment variable set. **Still open:** no custom domain; Production
+is served at `ids-opp-check-in.vercel.app`. The text below is the original
+assessment.
 
 Production build succeeds. No localhost assumption remains in a production path:
 the single `localhost` default in `env.ts` is now refused at startup in
@@ -371,11 +379,11 @@ handling, security headers.
 
 | # | Item | Who |
 |---|---|---|
-| 1 | Entra app registration, client secret, redirect URI, admin consent | Entra admin |
+| 1 | ~~Entra app registration, client secret, redirect URI, admin consent~~ — **DONE:** sign-in is live in Production | Entra admin |
 | 2 | ~~App Role created and assigned~~ — **DONE.** Value `Admin`, five administrators verified; do not recreate | Entra admin |
-| 3 | Production External Client App; Run As user assigned via Permission Set | Salesforce admin |
-| 4 | PostgreSQL provisioned with TLS; `prisma migrate deploy` run | IT / you |
-| 5 | Host project created and every environment variable set | You |
+| 3 | ~~Production External Client App; Run As user assigned via Permission Set~~ — **DONE:** live, writes commissioned 19 Nov | Salesforce admin |
+| 4 | ~~PostgreSQL provisioned with TLS; `prisma migrate deploy` run~~ — **DONE:** Neon Postgres, 7-day restore window | IT / you |
+| 5 | ~~Host project created and every environment variable set~~ — **DONE:** Vercel project `ids-opp-check-in` | You |
 | 6 | Custom domain pointed; `APP_BASE_URL` and the Entra redirect URI matched | You |
 | 7 | ~~WAF rate limiting~~ — **not needed:** application limits enforced since 20 Nov | — |
 | 8 | Graph Mail.Send scoped to the sending mailbox (IT request ready) — **only when email is commissioned** | IT |

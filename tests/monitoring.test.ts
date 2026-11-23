@@ -148,6 +148,13 @@ describe("daily problems alert", () => {
     expect(response.headers.get("cache-control")).toContain("no-store");
   });
 
+  it("compares against the raw CRON_SECRET, as Vercel sends it", async () => {
+    vi.stubEnv("CRON_SECRET", " cron-synthetic ");
+    // HTTP strips a header value's outer whitespace; the inner space is kept.
+    expect((await call("Bearer  cron-synthetic ")).status).toBe(200);
+    expect((await call("Bearer cron-synthetic")).status).toBe(401);
+  });
+
   it("answers 500 with counts only when problems are open, so the 5xx alert fires", async () => {
     vi.stubEnv("CRON_SECRET", "cron-synthetic");
     const { campaignId } = await launchCampaignAndCollectTokens("Spring Check-In");
@@ -170,6 +177,7 @@ describe("daily problems alert", () => {
     ["a wrong bearer", "cron-synthetic", "Bearer wrong"],
     ["CRON_SECRET unset", "", "Bearer "],
     ["CRON_SECRET unset, a guessed value", "", "Bearer undefined"],
+    ["a whitespace-only CRON_SECRET", "  ", "Bearer   "],
   ])("answers 401 with no counts and no database read for %s", async (_label, secret, authorization) => {
     vi.stubEnv("CRON_SECRET", secret);
     const read = vi.spyOn(prisma.checkInRecipient, "findMany");

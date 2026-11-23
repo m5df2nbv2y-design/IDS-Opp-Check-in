@@ -25,6 +25,7 @@ Vercel's built-in **Default Alert Rule** (all built-in triggers, minimum severit
 
 - **Time:** 15:00 UTC is 08:00 MST. During daylight time (mid-March to early November) it runs at 09:00 MDT. Vercel crons are UTC-only.
 - **`CRON_SECRET`:** must be set in Production. Vercel then sends `Authorization: Bearer $CRON_SECRET` with each cron call. Any call without that header, or any call while `CRON_SECRET` is unset, gets 401 and never a 5xx, so nobody can trigger the alert from outside. Until it is set, the check answers 401 and no email is sent.
+- **A single alert that has cleared when you look:** a reminder batch running at the moment of the check can count briefly, because REMINDER_PENDING has no timestamp to age it by. If the banner is empty by the time you open `/admin`, no action is needed.
 - **Body:** counts only. No campaign names, contacts, emails or ids.
 - **Run it by hand:** `curl -i -H "Authorization: Bearer $CRON_SECRET" https://ids-opp-check-in.vercel.app/api/cron/problems`. A 500 here also triggers the alert email.
 
@@ -49,5 +50,5 @@ The rule is created with `vercel monitors add` from a JSON body (see `vercel mon
 
 ## Not covered yet
 
-- The problems email is daily, not immediate. A failure in the morning is reported the next day at 15:00 UTC, unless someone opens the dashboard first.
+- The problems email is daily, not immediate. A problem is reported at the next 15:00 UTC check: the same day if it starts before then, otherwise the next day (worst case about 24 hours), unless someone opens the dashboard first.
 - No structured logging beyond `console.*`.
