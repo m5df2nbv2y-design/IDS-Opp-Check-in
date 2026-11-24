@@ -419,6 +419,7 @@ export async function renderExecutiveBrief(report: PipelineReport): Promise<Uint
       value: orDash(summary.responseRate, (rate) => `${Math.round(rate * 100)}%`),
     },
     { label: "Stage movements observed", value: orDash(summary.stageMovementCount, count) },
+    { label: "Closed out by the customer", value: orDash(summary.closedOutCount, count) },
     { label: "Close-date changes observed", value: orDash(summary.closeDateChangeCount, count) },
   ]);
   brief.note(

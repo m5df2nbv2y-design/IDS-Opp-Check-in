@@ -47,8 +47,12 @@ export type CampaignAnalytics = {
   /** Opportunities a contact answered. */
   respondedCount: number;
   respondedValue: number;
+  /** Moved to another open stage. Closed Lost is counted in closedOut instead. */
   stageMovedCount: number;
   stageMovedValue: number;
+  /** The contact said the project is over (Closed Lost). */
+  closedOutCount: number;
+  closedOutValue: number;
   closeDateMovedCount: number;
   closeDateMovedValue: number;
   confirmedNoChangeCount: number;
@@ -102,8 +106,9 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
   });
 
   const responded = items.filter((item) => item.submittedAt !== null);
+  const closedOut = responded.filter((item) => isClosedStage(item.updatedStatus));
   const stageMoved = responded.filter(
-    (item) => item.updatedStatus !== null && item.updatedStatus !== item.previousStatus,
+    (item) => item.updatedStatus !== null && item.updatedStatus !== item.previousStatus && !isClosedStage(item.updatedStatus),
   );
   const closeDateMoved = responded.filter(
     (item) =>
@@ -130,10 +135,12 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
     respondedValue: sum(responded),
     stageMovedCount: stageMoved.length,
     stageMovedValue: sum(stageMoved),
+    closedOutCount: closedOut.length,
+    closedOutValue: sum(closedOut),
     closeDateMovedCount: closeDateMoved.length,
     closeDateMovedValue: sum(closeDateMoved),
-    confirmedNoChangeCount: responded.length - stageMoved.length,
-    confirmedNoChangeValue: sum(responded) - sum(stageMoved),
+    confirmedNoChangeCount: responded.length - stageMoved.length - closedOut.length,
+    confirmedNoChangeValue: sum(responded) - sum(stageMoved) - sum(closedOut),
     withheldCount: items.filter((item) => item.syncStatus === "WITHHELD").length,
     movements: responded.map((item) => ({
       opportunityName: item.projectName ?? item.opportunityName,

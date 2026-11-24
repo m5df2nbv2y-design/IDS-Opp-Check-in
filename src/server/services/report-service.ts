@@ -36,6 +36,8 @@ export type ReportSummary = {
   /** Responses ÷ contacted, as a fraction. Null when nothing was contacted. */
   responseRate: number | null;
   stageMovementCount: number | null;
+  /** Contacts who said the project is over (Closed Lost); not a stage movement. */
+  closedOutCount: number | null;
   closeDateChangeCount: number | null;
 };
 
@@ -167,6 +169,7 @@ export async function buildPipelineReport(): Promise<PipelineReport> {
         ? analytics.respondedCount / analytics.contactedCount
         : null,
     stageMovementCount: analytics?.stageMovedCount ?? null,
+    closedOutCount: analytics?.closedOutCount ?? null,
     closeDateChangeCount: analytics?.closeDateMovedCount ?? null,
   };
 

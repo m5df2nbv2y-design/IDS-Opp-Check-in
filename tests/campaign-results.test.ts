@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { getCampaignResults } from "@/server/services/analytics-service";
+import { getCampaignAnalytics, getCampaignResults } from "@/server/services/analytics-service";
 import { launchCampaignAndCollectTokens, resetDatabase } from "./fixtures";
 
 /**
@@ -100,5 +100,31 @@ describe("getCampaignResults", () => {
     const after = await getCampaignResults();
     expect(before.emailed.count).toBeGreaterThan(0);
     expect(after.emailed.count).toBe(0);
+  });
+});
+
+describe("the latest-campaign figures keep Closed Lost apart (Josh, 2026-11-24)", () => {
+  beforeEach(resetDatabase);
+
+  it("does not count a closed-out project as a stage movement or as confirmed", async () => {
+    const { campaignId } = await launchCampaignAndCollectTokens();
+    const [moved, lost, same] = await prisma.checkInOpportunity.findMany({
+      where: { recipient: { campaignId } },
+      orderBy: { amount: "desc" },
+    });
+    for (const item of [moved, lost, same]) {
+      await prisma.checkInOpportunity.update({ where: { id: item.id }, data: { previousStatus: "PROPOSAL" } });
+    }
+    await answer(moved.id, { updatedStatus: "NEGOTIATION" });
+    await answer(lost.id, { updatedStatus: "CLOSED_LOST" });
+    await answer(same.id, { updatedStatus: "PROPOSAL" });
+
+    const analytics = (await getCampaignAnalytics(campaignId))!;
+    expect(analytics.stageMovedCount).toBe(1);
+    expect(analytics.stageMovedValue).toBe(moved.amount);
+    expect(analytics.closedOutCount).toBe(1);
+    expect(analytics.closedOutValue).toBe(lost.amount);
+    expect(analytics.confirmedNoChangeCount).toBe(1);
+    expect(analytics.confirmedNoChangeValue).toBe(same.amount);
   });
 });
