@@ -148,26 +148,30 @@ export async function listDraftAccounts(
       ...(filters.status === "eligible" ? { resolutionStatus: "RESOLVED" } : {}),
       ...(filters.status === "needs_attention" ? { resolutionStatus: "UNRESOLVED" } : {}),
       ...(filters.status === "selected" ? { selections: { some: { campaignId } } } : {}),
-      ...(() => {
-        const range = toDayRange(filters.modifiedFrom, filters.modifiedTo);
-        if (range.gte === undefined && range.lte === undefined) return {};
-        // Unknown dates are kept by default: excluding them would quietly drop
-        // records we simply have not imported a date for yet.
-        return filters.includeUnknownModified === false
-          ? { salesforceLastModifiedAt: range }
-          : { OR: [{ salesforceLastModifiedAt: range }, { salesforceLastModifiedAt: null }] };
-      })(),
-      ...(search
-        ? {
-            OR: [
-              { opportunityName: { contains: search } },
-              { customerName: { contains: search } },
-              { account: { name: { contains: search } } },
-              { contact: { name: { contains: search } } },
-              { contact: { email: { contains: search } } },
-            ],
-          }
-        : {}),
+      // AND, because the date window and search are each an OR: spread into one
+      // object, search's OR silently replaced the date window's.
+      AND: [
+        (() => {
+          const range = toDayRange(filters.modifiedFrom, filters.modifiedTo);
+          if (range.gte === undefined && range.lte === undefined) return {};
+          // Unknown dates are kept by default: excluding them would quietly drop
+          // records we simply have not imported a date for yet.
+          return filters.includeUnknownModified === false
+            ? { salesforceLastModifiedAt: range }
+            : { OR: [{ salesforceLastModifiedAt: range }, { salesforceLastModifiedAt: null }] };
+        })(),
+        search
+          ? {
+              OR: [
+                { opportunityName: { contains: search, mode: "insensitive" as const } },
+                { customerName: { contains: search, mode: "insensitive" as const } },
+                { account: { name: { contains: search, mode: "insensitive" as const } } },
+                { contact: { name: { contains: search, mode: "insensitive" as const } } },
+                { contact: { email: { contains: search, mode: "insensitive" as const } } },
+              ],
+            }
+          : {},
+      ],
     },
     include: {
       account: true,

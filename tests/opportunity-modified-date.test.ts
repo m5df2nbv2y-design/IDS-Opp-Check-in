@@ -197,3 +197,35 @@ describe("filtering never changes what is selected", () => {
     expect(stillSelected).toBe(1);
   });
 });
+
+describe("search combined with the other filters (Josh, 2026-11-24)", () => {
+  let campaignId: string;
+  let recent: { id: string; opportunityName: string };
+  let old: { id: string; opportunityName: string };
+
+  beforeEach(async () => {
+    await resetDatabase();
+    await refreshCatalogFromSalesforce("test");
+    campaignId = (await getOrCreateDraft("test")).id;
+    const open = await prisma.opportunity.findMany({
+      where: { isOpen: true }, orderBy: { externalId: "asc" }, take: 2, select: { id: true, opportunityName: true },
+    });
+    [recent, old] = open;
+    // Same name on both, so only the date window can tell them apart.
+    await prisma.opportunity.update({ where: { id: recent.id }, data: { opportunityName: "Zebra Park Phase 1", salesforceLastModifiedAt: new Date("2026-03-20T10:00:00.000Z") } });
+    await prisma.opportunity.update({ where: { id: old.id }, data: { opportunityName: "Zebra Park Phase 2", salesforceLastModifiedAt: new Date("2025-01-05T10:00:00.000Z") } });
+  });
+
+  it("ignores letter case", async () => {
+    for (const search of ["zebra park", "ZEBRA PARK", "Zebra Park"]) {
+      const ids = (await rows(campaignId, { search })).map((row) => row.id);
+      expect(ids, search).toEqual(expect.arrayContaining([recent.id, old.id]));
+    }
+  });
+
+  it("keeps the date window when unknown dates are included", async () => {
+    const ids = (await rows(campaignId, { search: "zebra", modifiedFrom: "2026-03-01", includeUnknownModified: true })).map((row) => row.id);
+    expect(ids).toContain(recent.id);
+    expect(ids).not.toContain(old.id);
+  });
+});

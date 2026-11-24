@@ -67,7 +67,7 @@ export default async function AdminDashboardPage({
   const shownOpportunities = accounts.reduce((sum, a) => sum + a.opportunities.length, 0);
   const shownSendable = accounts.reduce((sum, a) => sum + a.selectableCount, 0);
   const shownNeedsAttention = accounts.reduce((sum, a) => sum + a.needsAttentionCount, 0);
-  const filtered = Boolean(filters.search || filters.ownerId || filters.status);
+  const filtered = Boolean(filters.search || filters.ownerId || filters.status || filters.modifiedFrom || filters.modifiedTo);
 
   const signalItems: SignalListItem[] = await Promise.all(
     signals.slice(0, 5).map(async (signal) => ({
