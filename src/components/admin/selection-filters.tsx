@@ -1,7 +1,8 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useTransition } from "react";
+import { Button } from "@/components/ui/button";
 
 type Owner = { id: string; name: string; count: number };
 
@@ -12,84 +13,58 @@ const STATUS_OPTIONS = [
   { value: "needs_attention", label: "Needs attention" },
 ];
 
+const fieldClass = "h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none";
+
+/**
+ * Turns the submitted form into the dashboard's URL query. Blank and "all"
+ * values are left out; the checkbox is on by default, so only unticking it is
+ * written (munknown=0).
+ */
+export function filterQuery(form: FormData): string {
+  const next = new URLSearchParams();
+  for (const key of ["q", "owner", "status", "mfrom", "mto", "sort"]) {
+    const value = String(form.get(key) ?? "").trim();
+    if (value && value !== "all") next.set(key, value);
+  }
+  if (!form.get("munknown")) next.set("munknown", "0");
+  return next.toString();
+}
+
 /**
  * Filters live in the URL, so a filtered view is shareable and survives a
- * refresh — which matters when an admin is working through 140 accounts.
+ * refresh. Nothing applies until Search (or Enter) is pressed (Josh,
+ * 2026-11-24). The fields are uncontrolled and the form is keyed on the URL,
+ * so each applied search, and Clear filters, starts the fields from the URL.
  */
 export function SelectionFilters({ owners }: { owners: Owner[] }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
-  const [, startTransition] = useTransition();
+  const [pending, startTransition] = useTransition();
 
-  const [search, setSearch] = useState(params.get("q") ?? "");
-  const clearingFilters = useRef(false);
-  // The date fields are uncontrolled (see updateDate), so "Clear filters" empties them directly.
-  const fromField = useRef<HTMLInputElement>(null);
-  const toField = useRef<HTMLInputElement>(null);
-
-  // Debounced, so typing doesn't fire a query per keystroke.
-  useEffect(() => {
-    // A slower navigation must not let the debounce restore old owner/status
-    // values while the reset is waiting for the unfiltered server response.
-    if (clearingFilters.current) {
-      if (!params.get("q") && !params.get("owner") && !params.get("status")) {
-        clearingFilters.current = false;
-      }
-      return;
-    }
-    const current = params.get("q") ?? "";
-    if (search === current) return;
-
-    const timer = setTimeout(() => {
-      const next = new URLSearchParams(params.toString());
-      if (search) next.set("q", search);
-      else next.delete("q");
-      startTransition(() => router.replace(`${pathname}?${next.toString()}`));
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [search, params, pathname, router]);
-
-  function update(key: string, value: string) {
-    const next = new URLSearchParams(params.toString());
-    if (value && value !== "all") next.set(key, value);
-    else next.delete(key);
-    startTransition(() => router.replace(`${pathname}?${next.toString()}`));
-  }
-
-  // Uncontrolled, so a half-typed date is not wiped: while typing, the field's
-  // value is "" until the date is complete. Only a full date, or a cleared
-  // field, changes the URL.
-  function updateDate(key: string, input: HTMLInputElement) {
-    if (input.value || !input.validity.badInput) update(key, input.value || "all");
-  }
-
-  const status = params.get("status") ?? "all";
-  const owner = params.get("owner") ?? "all";
-  const hasFilters = Boolean(
-    params.get("q") || params.get("status") || params.get("owner") ||
-    params.get("mfrom") || params.get("mto") || params.get("sort") || params.get("munknown"),
-  );
+  const go = (query: string) => startTransition(() => router.replace(query ? `${pathname}?${query}` : pathname));
+  const hasFilters = ["q", "status", "owner", "mfrom", "mto", "sort", "munknown"].some((key) => params.get(key));
 
   return (
-    <div className="ids-filters flex flex-wrap items-center gap-3">
+    <form
+      key={params.toString()}
+      onSubmit={(event) => {
+        event.preventDefault();
+        go(filterQuery(new FormData(event.currentTarget)));
+      }}
+      className="ids-filters flex flex-wrap items-end gap-3"
+    >
       <label className="min-w-0 basis-full flex-1 text-xs font-semibold text-muted sm:basis-auto">Search
       <input
         type="search"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
+        name="q"
+        defaultValue={params.get("q") ?? ""}
         placeholder="Search account, opportunity, contact or email…"
         aria-label="Search accounts, opportunities and contacts"
-        className="h-10 min-w-0 basis-full flex-1 rounded-xl border border-line bg-surface px-3.5 text-[14px] text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none sm:min-w-[19rem] sm:basis-auto"
+        className={`${fieldClass} min-w-0 basis-full flex-1 px-3.5 placeholder:text-muted/70 sm:min-w-[19rem] sm:basis-auto`}
       /></label>
 
-      <label className="text-xs font-semibold text-muted">Owner<select
-        value={owner}
-        onChange={(event) => update("owner", event.target.value)}
-        aria-label="Filter by opportunity owner"
-        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
-      >
+      <label className="text-xs font-semibold text-muted">Owner<select name="owner" defaultValue={params.get("owner") ?? "all"} aria-label="Filter by opportunity owner" className={fieldClass}>
         <option value="all">All owners</option>
         {owners.map((entry) => (
           <option key={entry.id} value={entry.id}>
@@ -98,12 +73,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         ))}
       </select></label>
 
-      <label className="text-xs font-semibold text-muted">Status<select
-        value={status}
-        onChange={(event) => update("status", event.target.value)}
-        aria-label="Filter by resolution status"
-        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
-      >
+      <label className="text-xs font-semibold text-muted">Status<select name="status" defaultValue={params.get("status") ?? "all"} aria-label="Filter by resolution status" className={fieldClass}>
         {STATUS_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -121,59 +91,49 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
       */}
       <label className="text-xs font-semibold text-muted">SF modified from<input
         type="date"
+        name="mfrom"
         defaultValue={params.get("mfrom") ?? ""}
-        ref={fromField}
-        onChange={(event) => updateDate("mfrom", event.target)}
         aria-label="Only opportunities modified in Salesforce on or after this date"
-        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
+        className={fieldClass}
       /></label>
 
       <label className="text-xs font-semibold text-muted">to<input
         type="date"
+        name="mto"
         defaultValue={params.get("mto") ?? ""}
-        ref={toField}
-        onChange={(event) => updateDate("mto", event.target)}
         aria-label="Only opportunities modified in Salesforce on or before this date"
-        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
+        className={fieldClass}
       /></label>
 
-      <label className="text-xs font-semibold text-muted">Sort<select
-        value={params.get("sort") ?? "all"}
-        onChange={(event) => update("sort", event.target.value)}
-        aria-label="Sort by Salesforce modification date"
-        className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
-      >
+      <label className="text-xs font-semibold text-muted">Sort<select name="sort" defaultValue={params.get("sort") ?? "all"} aria-label="Sort by Salesforce modification date" className={fieldClass}>
         <option value="all">Account order</option>
         <option value="modified_desc">Modified — newest first</option>
         <option value="modified_asc">Modified — oldest first</option>
       </select></label>
 
-      <label className="flex items-center gap-2 text-xs font-semibold text-muted">
+      <label className="flex h-10 items-center gap-2 text-xs font-semibold text-muted">
         <input
           type="checkbox"
-          checked={params.get("munknown") !== "0"}
-          onChange={(event) => update("munknown", event.target.checked ? "all" : "0")}
+          name="munknown"
+          defaultChecked={params.get("munknown") !== "0"}
           aria-label="Include opportunities with no known Salesforce modification date"
           className="size-4 accent-[var(--color-brand)]"
         />
         Include unknown dates
       </label>
 
-      {hasFilters ? (
-        <button
-          type="button"
-          onClick={() => {
-            clearingFilters.current = true;
-            setSearch("");
-            if (fromField.current) fromField.current.value = "";
-            if (toField.current) toField.current.value = "";
-            startTransition(() => router.replace(pathname));
-          }}
-          className="h-10 rounded-xl px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink"
-        >
-          Clear filters
-        </button>
-      ) : null}
-    </div>
+      <div className="ml-auto flex items-center gap-2">
+        {hasFilters ? (
+          <button
+            type="button"
+            onClick={() => go("")}
+            className="h-10 rounded-xl px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink"
+          >
+            Clear filters
+          </button>
+        ) : null}
+        <Button type="submit" disabled={pending}>{pending ? "Searching…" : "Search"}</Button>
+      </div>
+    </form>
   );
 }
