@@ -98,6 +98,7 @@ export async function renderPipelineWorkbook(report: PipelineReport): Promise<Bu
       { metric: "Responses", value: orDash(summary.responseCount) },
       { metric: "Response Rate", value: percent(summary.responseRate) },
       { metric: "Stage Movements", value: orDash(summary.stageMovementCount) },
+      { metric: "Closed Out by Customer", value: orDash(summary.closedOutCount) },
       { metric: "Close-Date Changes", value: orDash(summary.closeDateChangeCount) },
     ],
   );

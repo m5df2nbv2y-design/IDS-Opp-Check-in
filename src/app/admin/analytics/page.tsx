@@ -105,7 +105,7 @@ export default async function AnalyticsPage() {
             <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-muted">
               Outcome observed after contact
             </h2>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
               <ValueTile
                 label="Pipeline that moved stage"
                 value={formatCompactAmount(analytics.stageMovedValue)}
@@ -116,6 +116,12 @@ export default async function AnalyticsPage() {
                 label="Pipeline with new close date"
                 value={formatCompactAmount(analytics.closeDateMovedValue)}
                 count={analytics.closeDateMovedCount}
+              />
+              <ValueTile
+                label="Closed out by the customer"
+                value={formatCompactAmount(analytics.closedOutValue)}
+                count={analytics.closedOutCount}
+                hint="pipeline cleaned up"
               />
               <ValueTile
                 label="Confirmed, no change"
