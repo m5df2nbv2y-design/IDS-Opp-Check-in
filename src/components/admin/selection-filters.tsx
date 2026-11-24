@@ -24,6 +24,9 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
 
   const [search, setSearch] = useState(params.get("q") ?? "");
   const clearingFilters = useRef(false);
+  // The date fields are uncontrolled (see updateDate), so "Clear filters" empties them directly.
+  const fromField = useRef<HTMLInputElement>(null);
+  const toField = useRef<HTMLInputElement>(null);
 
   // Debounced, so typing doesn't fire a query per keystroke.
   useEffect(() => {
@@ -53,6 +56,13 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
     if (value && value !== "all") next.set(key, value);
     else next.delete(key);
     startTransition(() => router.replace(`${pathname}?${next.toString()}`));
+  }
+
+  // Uncontrolled, so a half-typed date is not wiped: while typing, the field's
+  // value is "" until the date is complete. Only a full date, or a cleared
+  // field, changes the URL.
+  function updateDate(key: string, input: HTMLInputElement) {
+    if (input.value || !input.validity.badInput) update(key, input.value || "all");
   }
 
   const status = params.get("status") ?? "all";
@@ -111,16 +121,18 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
       */}
       <label className="text-xs font-semibold text-muted">SF modified from<input
         type="date"
-        value={params.get("mfrom") ?? ""}
-        onChange={(event) => update("mfrom", event.target.value || "all")}
+        defaultValue={params.get("mfrom") ?? ""}
+        ref={fromField}
+        onChange={(event) => updateDate("mfrom", event.target)}
         aria-label="Only opportunities modified in Salesforce on or after this date"
         className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
       /></label>
 
       <label className="text-xs font-semibold text-muted">to<input
         type="date"
-        value={params.get("mto") ?? ""}
-        onChange={(event) => update("mto", event.target.value || "all")}
+        defaultValue={params.get("mto") ?? ""}
+        ref={toField}
+        onChange={(event) => updateDate("mto", event.target)}
         aria-label="Only opportunities modified in Salesforce on or before this date"
         className="h-10 rounded-xl border border-line bg-surface px-3 text-[14px] text-ink focus:border-brand focus:outline-none"
       /></label>
@@ -153,6 +165,8 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
           onClick={() => {
             clearingFilters.current = true;
             setSearch("");
+            if (fromField.current) fromField.current.value = "";
+            if (toField.current) toField.current.value = "";
             startTransition(() => router.replace(pathname));
           }}
           className="h-10 rounded-xl px-3 text-[13px] font-medium text-muted transition-colors hover:text-ink"

@@ -15,7 +15,7 @@
 .ids-workflow { display:flex; flex-wrap:wrap; gap:12px 28px; font-size:13px; color:var(--color-muted); }
 .ids-workflow li { display:flex; align-items:center; gap:8px; }
 .ids-workflow span { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; background:var(--color-brand-soft); color:var(--color-brand); font-weight:600; }
-.ids-filters input,.ids-filters select { display:block; width:100%; margin-top:7px; max-width:100%; font-size:16px; height:44px; }
+.ids-filters input:not([type=checkbox]),.ids-filters select { display:block; width:100%; margin-top:7px; max-width:100%; font-size:16px; height:44px; }
 .ids-account { overflow:hidden; } .ids-account input[type=checkbox] { width:20px; height:20px; }
 .ids-selection-bar { position:fixed; bottom:0; left:220px; right:0; z-index:20; box-shadow:0 -8px 24px #1f252f08; }
 @media(max-width:1023px) {
@@ -96,7 +96,7 @@ body {
 @media(max-width:639px) {
  .ids-account-header { grid-template-columns:20px minmax(0,1fr); }
  .ids-account-header > div:last-child { grid-column:2; }
- .ids-filters input { width:100%; min-width:0; }
+ .ids-filters input:not([type=checkbox]) { width:100%; min-width:0; }
 }
 
 /* Recipient-only IDS presentation. Admin/auth styling is unchanged. */
