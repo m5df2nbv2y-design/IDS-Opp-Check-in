@@ -6,10 +6,10 @@ import { readFileSync } from "node:fs";
  * and the policy blocks them. Guards `await connection()` in src/app/layout.tsx.
  *
  * /_global-error is Next's own fallback, shown only if the root layout crashes;
- * /favicon.ico is an image, not a page. A new static non-page route (robots.txt,
+ * /icon.png and /apple-icon.png are images, not pages. A new static non-page route (robots.txt,
  * sitemap) belongs in ALLOWED.
  */
-const ALLOWED = new Set(["/_global-error", "/favicon.ico"]);
+const ALLOWED = new Set(["/_global-error", "/icon.png", "/apple-icon.png"]);
 
 export function prerenderedPages(manifest: { routes: Record<string, unknown>; dynamicRoutes?: Record<string, unknown> }): string[] {
   // dynamicRoutes holds prerendered shells of [param] pages (generateStaticParams).

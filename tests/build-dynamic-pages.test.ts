@@ -8,7 +8,7 @@ import { prerenderedPages } from "../scripts/check-dynamic-pages";
  */
 describe("dynamic pages build check", () => {
   it("passes when only Next's own fallbacks are prerendered", () => {
-    expect(prerenderedPages({ routes: { "/_global-error": {}, "/favicon.ico": {} } })).toEqual([]);
+    expect(prerenderedPages({ routes: { "/_global-error": {}, "/icon.png": {}, "/apple-icon.png": {} } })).toEqual([]);
   });
 
   it("names every other prerendered page", () => {
