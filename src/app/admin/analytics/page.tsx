@@ -107,35 +107,36 @@ export default async function AnalyticsPage() {
             </h2>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
               <ValueTile
-                label="Pipeline that moved stage"
+                label="Moved stage"
                 value={formatCompactAmount(analytics.stageMovedValue)}
                 count={analytics.stageMovedCount}
                 tone={analytics.stageMovedCount > 0 ? "success" : "default"}
               />
               <ValueTile
-                label="Pipeline with new close date"
+                label="New date"
                 value={formatCompactAmount(analytics.closeDateMovedValue)}
                 count={analytics.closeDateMovedCount}
               />
               <ValueTile
-                label="Closed out by the customer"
+                label="Closed out"
                 value={formatCompactAmount(analytics.closedOutValue)}
                 count={analytics.closedOutCount}
-                hint="pipeline cleaned up"
               />
               <ValueTile
-                label="Confirmed, no change"
+                label="No change"
                 value={formatCompactAmount(analytics.confirmedNoChangeValue)}
                 count={analytics.confirmedNoChangeCount}
               />
               <StatTile
-                label="Held from Salesforce"
+                label="Held back"
                 value={analytics.withheldCount}
                 tone={analytics.withheldCount > 0 ? "warning" : "default"}
-                hint="write-back disabled"
+                hint="not written"
               />
             </div>
             <p className="text-[13px] text-muted">
+              New date means the customer gave a new close date. Closed out means the customer said the project is over (Closed Lost). Held back
+              means write-back was disabled, so the answer was not written to Salesforce.
               Exact figures — pipeline that moved stage{" "}
               <strong className="font-semibold text-ink">
                 {formatAmount(analytics.stageMovedValue)}
