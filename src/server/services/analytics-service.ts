@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { isClosedStage, OPEN_PIPELINE_STAGES } from "@/lib/stages";
 
 /**
  * The minimum evidence needed to show that the system measures intervention and
@@ -56,13 +57,27 @@ export type CampaignAnalytics = {
   movements: MovementRow[];
 };
 
-export type OutcomeTotals = {
-  wonCount: number;
-  wonValue: number;
-  lostCount: number;
-  lostValue: number;
-  openCount: number;
-  openValue: number;
+type Tally = { count: number; value: number };
+
+/**
+ * What check-ins achieved across every sent campaign (Josh, 2026-11-24). Only
+ * what contacts told us: Closed Won happens when IDS receives an order, so it
+ * is never a campaign result. An opportunity reached by more than one campaign
+ * counts once, by its latest answer.
+ */
+export type CampaignResults = {
+  campaignCount: number;
+  emailed: Tally;
+  responded: Tally;
+  movedForward: Tally;
+  movedBack: Tally;
+  /** The contact said the project is over (Closed Lost). */
+  closedOut: Tally;
+  closeDateUpdated: Tally;
+  /** Answered with the same stage and close date. */
+  confirmedNoChange: Tally;
+  /** Answers the app wrote back to Salesforce. */
+  writtenToSalesforce: number;
 };
 
 /** Everything the campaign story needs, in one pass. */
@@ -217,25 +232,46 @@ export async function getSnapshotEvidence(): Promise<SnapshotEvidence> {
  * captured when each opportunity left the open set — no attribution to any
  * campaign is implied or calculated.
  */
-export async function getOutcomeTotals(): Promise<OutcomeTotals> {
-  const [closed, open] = await Promise.all([
-    prisma.opportunity.findMany({
-      where: { outcomeObservedAt: { not: null } },
-      select: { isWon: true, finalAmount: true, amount: true },
+export async function getCampaignResults(): Promise<CampaignResults> {
+  const [campaignCount, items] = await Promise.all([
+    prisma.campaign.count({ where: { status: { not: "DRAFT" } } }),
+    prisma.checkInOpportunity.findMany({
+      where: { recipient: { sentAt: { not: null }, campaign: { status: { not: "DRAFT" } } } },
+      select: {
+        opportunityId: true, amount: true, submittedAt: true, syncStatus: true,
+        previousStatus: true, updatedStatus: true, previousCloseDate: true, updatedCloseDate: true,
+      },
     }),
-    prisma.opportunity.findMany({ where: { isOpen: true }, select: { amount: true } }),
   ]);
 
-  const value = (row: { finalAmount: number | null; amount: number }) => row.finalAmount ?? row.amount;
-  const won = closed.filter((row) => row.isWon === true);
-  const lost = closed.filter((row) => row.isWon === false);
+  // One row per opportunity: its latest answer, else any unanswered invitation.
+  const latest = new Map<string, (typeof items)[number]>();
+  for (const item of items) {
+    const kept = latest.get(item.opportunityId);
+    if (!kept || (item.submittedAt && (!kept.submittedAt || item.submittedAt > kept.submittedAt))) {
+      latest.set(item.opportunityId, item);
+    }
+  }
+  const rows = [...latest.values()];
+  const answered = rows.filter((row) => row.submittedAt !== null);
+
+  const order = (stage: string | null) => OPEN_PIPELINE_STAGES.findIndex((s) => s.value === stage);
+  const closed = (row: (typeof rows)[number]) => isClosedStage(row.updatedStatus);
+  const stageChanged = (row: (typeof rows)[number]) => row.updatedStatus !== null && row.updatedStatus !== row.previousStatus;
+  const dateChanged = (row: (typeof rows)[number]) =>
+    row.updatedCloseDate !== null && row.updatedCloseDate.getTime() !== (row.previousCloseDate?.getTime() ?? NaN);
+  const tally = (list: typeof rows): Tally => ({ count: list.length, value: list.reduce((total, row) => total + row.amount, 0) });
+  const open = answered.filter((row) => !closed(row));
 
   return {
-    wonCount: won.length,
-    wonValue: won.reduce((total, row) => total + value(row), 0),
-    lostCount: lost.length,
-    lostValue: lost.reduce((total, row) => total + value(row), 0),
-    openCount: open.length,
-    openValue: open.reduce((total, row) => total + row.amount, 0),
+    campaignCount,
+    emailed: tally(rows),
+    responded: tally(answered),
+    movedForward: tally(open.filter((row) => stageChanged(row) && order(row.updatedStatus) > order(row.previousStatus) && order(row.previousStatus) >= 0)),
+    movedBack: tally(open.filter((row) => stageChanged(row) && order(row.updatedStatus) >= 0 && order(row.updatedStatus) < order(row.previousStatus))),
+    closedOut: tally(answered.filter(closed)),
+    closeDateUpdated: tally(open.filter(dateChanged)),
+    confirmedNoChange: tally(open.filter((row) => !stageChanged(row) && !dateChanged(row))),
+    writtenToSalesforce: answered.filter((row) => row.syncStatus === "SYNCED").length,
   };
 }
