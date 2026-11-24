@@ -32,8 +32,8 @@ export function filterQuery(form: FormData): string {
 
 /**
  * Filters live in the URL, so a filtered view is shareable and survives a
- * refresh. Nothing applies until Search (or Enter) is pressed (Josh,
- * 2026-11-24). The fields are uncontrolled and the form is keyed on the URL,
+ * refresh. Owner and status apply as soon as they are picked; the other
+ * fields wait for Search (or Enter) (Josh, 2026-11-24). The fields are uncontrolled and the form is keyed on the URL,
  * so each applied search, and Clear filters, starts the fields from the URL.
  */
 export function SelectionFilters({ owners }: { owners: Owner[] }) {
@@ -43,6 +43,8 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
   const [pending, startTransition] = useTransition();
 
   const go = (query: string) => startTransition(() => router.replace(query ? `${pathname}?${query}` : pathname));
+  // Submits the whole form, so anything already typed applies along with it.
+  const applyNow = (event: React.ChangeEvent<HTMLSelectElement>) => event.currentTarget.form?.requestSubmit();
   const hasFilters = ["q", "status", "owner", "mfrom", "mto", "sort", "munknown"].some((key) => params.get(key));
 
   return (
@@ -64,7 +66,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         className={`${fieldClass} min-w-0 basis-full flex-1 px-3.5 placeholder:text-muted/70 sm:min-w-[19rem] sm:basis-auto`}
       /></label>
 
-      <label className="text-xs font-semibold text-muted">Owner<select name="owner" defaultValue={params.get("owner") ?? "all"} aria-label="Filter by opportunity owner" className={fieldClass}>
+      <label className="text-xs font-semibold text-muted">Owner<select name="owner" defaultValue={params.get("owner") ?? "all"} onChange={applyNow} aria-label="Filter by opportunity owner" className={fieldClass}>
         <option value="all">All owners</option>
         {owners.map((entry) => (
           <option key={entry.id} value={entry.id}>
@@ -73,7 +75,7 @@ export function SelectionFilters({ owners }: { owners: Owner[] }) {
         ))}
       </select></label>
 
-      <label className="text-xs font-semibold text-muted">Status<select name="status" defaultValue={params.get("status") ?? "all"} aria-label="Filter by resolution status" className={fieldClass}>
+      <label className="text-xs font-semibold text-muted">Status<select name="status" defaultValue={params.get("status") ?? "all"} onChange={applyNow} aria-label="Filter by resolution status" className={fieldClass}>
         {STATUS_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
