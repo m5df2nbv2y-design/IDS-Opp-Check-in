@@ -10,7 +10,7 @@ import { formatAmount, formatCompactAmount, formatDateTime, formatShortDate } fr
 import { stageLabel } from "@/lib/stages";
 import {
   getCampaignAnalytics,
-  getOutcomeTotals,
+  getCampaignResults,
   getSnapshotEvidence,
 } from "@/server/services/analytics-service";
 import { listCampaigns } from "@/server/services/campaign-service";
@@ -29,10 +29,10 @@ export const dynamic = "force-dynamic";
 export default async function AnalyticsPage() {
   const campaigns = await listCampaigns();
   const sent = campaigns.filter((campaign) => campaign.status !== "DRAFT");
-  const [analytics, evidence, outcomes] = await Promise.all([
+  const [analytics, evidence, results] = await Promise.all([
     sent[0] ? getCampaignAnalytics(sent[0].id) : Promise.resolve(null),
     getSnapshotEvidence(),
-    getOutcomeTotals(),
+    getCampaignResults(),
   ]);
 
   return (
@@ -209,31 +209,49 @@ export default async function AnalyticsPage() {
 
       <section className="space-y-3">
         <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-muted">
-          Realised outcomes · all opportunities
+          What check-ins achieved · {results.campaignCount === 0 ? "no campaign sent yet" : results.campaignCount === 1 ? "1 sent campaign" : `all ${results.campaignCount} sent campaigns`}
         </h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
           <ValueTile
-            label="Won"
-            value={formatCompactAmount(outcomes.wonValue)}
-            count={outcomes.wonCount}
-            tone={outcomes.wonCount > 0 ? "success" : "default"}
+            label="Responses"
+            value={formatCompactAmount(results.responded.value)}
+            count={results.responded.count}
+            hint={results.emailed.count > 0 ? `${Math.round((results.responded.count / results.emailed.count) * 100)}% of ${results.emailed.count} emailed` : "none emailed yet"}
+            tone={results.responded.count > 0 ? "success" : "default"}
           />
           <ValueTile
-            label="Lost"
-            value={formatCompactAmount(outcomes.lostValue)}
-            count={outcomes.lostCount}
-            tone={outcomes.lostCount > 0 ? "danger" : "default"}
+            label="Moved forward"
+            value={formatCompactAmount(results.movedForward.value)}
+            count={results.movedForward.count}
+            hint={results.movedBack.count > 0 ? `${results.movedBack.count} moved back` : undefined}
+            tone={results.movedForward.count > 0 ? "success" : "default"}
           />
           <ValueTile
-            label="Still open"
-            value={formatCompactAmount(outcomes.openValue)}
-            count={outcomes.openCount}
+            label="Close date updated"
+            value={formatCompactAmount(results.closeDateUpdated.value)}
+            count={results.closeDateUpdated.count}
+          />
+          <ValueTile
+            label="Closed out by the customer"
+            value={formatCompactAmount(results.closedOut.value)}
+            count={results.closedOut.count}
+            hint="pipeline cleaned up"
+          />
+          <ValueTile
+            label="Confirmed, no change"
+            value={formatCompactAmount(results.confirmedNoChange.value)}
+            count={results.confirmedNoChange.count}
+          />
+          <StatTile
+            label="Written to Salesforce"
+            value={results.writtenToSalesforce}
+            hint={`of ${results.responded.count} answered`}
           />
         </div>
         <p className="max-w-3xl text-[13px] text-muted">
-          Won and lost values are the amount recorded when the opportunity closed, captured
-          before Salesforce moved on. Shown for the whole book of business, not as a result
-          of any campaign.
+          Only what contacts told us in their check-in, across every sent campaign. An
+          opportunity reached by more than one campaign counts once, by its latest answer.
+          Closed Won is never shown here: it follows an order, not a check-in.
         </p>
       </section>
 
